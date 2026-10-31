@@ -1,3 +1,4 @@
+
 name: iOS build
 on:
   workflow_dispatch:
@@ -12,6 +13,41 @@ jobs:
         run: brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate
+      - name: Resolve Swift packages
+        run: xcodebuild -resolvePackageDependencies -project GlassRemote.xcodeproj -scheme GlassRemote
+      - name: Patch SwiftADB iOS compatibility
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("build/SourcePackages/checkouts/SwiftADB/Sources")
+          patches = {
+              root / "SwiftADB/AdbConnection.swift": (
+                  r"    private func getSecIdentity\(\) -> sec_identity_t\? \{.*?^    \}",
+                  """    private func getSecIdentity() -> sec_identity_t? {
+                  // Direct ADB TCP does not require a TLS client identity.
+                  return nil
+              }"""
+              ),
+              root / "SwiftADB/KeyPair+ADBKeyPair.swift": (
+                  r"        guard let identity = SecIdentityCreate\(nil, cert, privateKey\) else \{.*?^        return sec_identity_create\(identity\)!",
+                  """        throw NSError(domain: "KeyPair", code: 11,
+                      userInfo: [NSLocalizedDescriptionKey:
+                      "TLS pairing identity is unavailable in this iOS build"])"""
+              )
+          }
+
+          for path, (pattern, replacement) in patches.items():
+              source = path.read_text()
+              updated, count = re.subn(pattern, replacement, source, count=1,
+                                       flags=re.MULTILINE | re.DOTALL)
+              if count != 1:
+                  raise SystemExit(f"Patch target not found exactly once: {path}")
+              path.write_text(updated)
+              print(f"Patched {path}")
+          PY
       - name: Build for iPhone simulator
         run: xcodebuild -project GlassRemote.xcodeproj -scheme GlassRemote -sdk iphonesimulator -configuration Debug -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
       - name: Upload build logs
