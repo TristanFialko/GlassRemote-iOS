@@ -28,9 +28,10 @@ jobs:
         run: |
           find build -name AdbConnection.swift -print
 
-      - name: Patch SwiftADB iOS compatibility
+          - name: Patch SwiftADB iOS compatibility
         shell: bash
         run: |
+          chmod -R u+w build/SourcePackages/checkouts/SwiftADB
           python3 <<'PY'
           from pathlib import Path
           import re
