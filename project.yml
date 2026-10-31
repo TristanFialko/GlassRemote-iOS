@@ -1,0 +1,35 @@
+name: GlassRemote
+options:
+  bundleIdPrefix: com.glassremote
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: 5.0
+    TARGETED_DEVICE_FAMILY: "1"
+    INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Glass Remote connects directly to your Android TV over your local Wi-Fi."
+    INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
+targets:
+  GlassRemote:
+    type: application
+    platform: iOS
+    sources:
+      - path: GlassRemote
+        excludes:
+          - "Assets.xcassets/**"
+    resources:
+      - path: GlassRemote/Assets.xcassets
+      - path: GlassRemote/glass_uhid_bridge
+      - path: GlassRemote/glass_cursor_setter.jar
+      - path: GlassRemote/glass_cursor_white.png
+    dependencies:
+      - package: SwiftADB
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.glassremote.ios
+packages:
+  SwiftADB:
+    url: https://github.com/akshaynexus/SwiftADB.git
+    from: 1.0.0

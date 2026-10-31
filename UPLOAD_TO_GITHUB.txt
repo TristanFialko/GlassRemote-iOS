@@ -1,0 +1,11 @@
+WINDOWS SETUP
+
+1. Extract GlassRemote_iOS_v0.1.zip.
+2. Open your private GitHub repository GlassRemote-iOS.
+3. Click Add file > Upload files.
+4. Drag ALL CONTENTS inside the extracted GlassRemote_iOS folder into the GitHub upload page. The .github folder must be included.
+5. Commit to main.
+6. Open Actions > iOS build > Run workflow.
+7. Wait for the macOS build. Download glassremote-build-logs if it fails and send the error log back.
+
+Do not upload your Safari config.json or access token. They are not needed by the native app.
