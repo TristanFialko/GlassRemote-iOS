@@ -4,17 +4,30 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+
 jobs:
   build:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
       - name: Install XcodeGen
         run: brew install xcodegen
+
       - name: Generate Xcode project
         run: xcodegen generate
+
       - name: Resolve Swift packages
-        run: xcodebuild -resolvePackageDependencies -project GlassRemote.xcodeproj -scheme GlassRemote
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project GlassRemote.xcodeproj \
+            -scheme GlassRemote \
+            -derivedDataPath build
+
+      - name: Locate SwiftADB source
+        run: |
+          find build -name AdbConnection.swift -print
+
       - name: Patch SwiftADB iOS compatibility
         shell: bash
         run: |
@@ -23,6 +36,7 @@ jobs:
           import re
 
           root = Path("build/SourcePackages/checkouts/SwiftADB/Sources")
+
           patches = {
               root / "SwiftADB/AdbConnection.swift": (
                   r"    private func getSecIdentity\(\) -> sec_identity_t\? \{.*?^    \}",
@@ -40,16 +54,36 @@ jobs:
           }
 
           for path, (pattern, replacement) in patches.items():
+              if not path.is_file():
+                  raise SystemExit(f"SwiftADB source file not found: {path}")
+
               source = path.read_text()
-              updated, count = re.subn(pattern, replacement, source, count=1,
-                                       flags=re.MULTILINE | re.DOTALL)
+              updated, count = re.subn(
+                  pattern,
+                  replacement,
+                  source,
+                  count=1,
+                  flags=re.MULTILINE | re.DOTALL
+              )
+
               if count != 1:
-                  raise SystemExit(f"Patch target not found exactly once: {path}")
+                  raise SystemExit(
+                      f"Patch target not found exactly once: {path}"
+                  )
+
               path.write_text(updated)
               print(f"Patched {path}")
           PY
+
       - name: Build for iPhone simulator
-        run: xcodebuild -project GlassRemote.xcodeproj -scheme GlassRemote -sdk iphonesimulator -configuration Debug -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+        run: |
+          xcodebuild -project GlassRemote.xcodeproj \
+            -scheme GlassRemote \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO build
+
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
