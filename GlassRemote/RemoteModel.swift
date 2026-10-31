@@ -44,12 +44,14 @@ final class RemoteModel: ObservableObject {
             UserDefaults.standard.set(Int(port) ?? 5555, forKey: "tvPort")
             do {
                 let identity = try ADBIdentity.loadOrCreate()
-                let connection = try AdbConnection.Builder()
-                    .setHost(host.trimmingCharacters(in: .whitespacesAndNewlines))
-                    .setPort(Int(port) ?? 5555)
-                    .setKeyPair(identity)
-                    .setDeviceName("Glass Remote iPhone")
-                    .build()
+var builder = AdbConnection.Builder()
+
+builder.setHost(host.trimmingCharacters(in: .whitespacesAndNewlines))
+builder.setPort(UInt16(port) ?? 5555)
+builder.setKeyPair(identity)
+builder.setDeviceName("Glass Remote iPhone")
+
+let connection = try builder.build()
                 let ok = try await connection.connect(timeout: 35, throwOnUnauthorised: false)
                 guard ok else { throw NSError(domain: "GlassRemote", code: 2, userInfo: [NSLocalizedDescriptionKey: "TV did not accept the ADB connection"]) }
                 adb = connection
