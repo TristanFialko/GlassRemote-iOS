@@ -23,6 +23,7 @@ struct RemoteView: View {
     @State private var pendingPower: PowerAction?
     @State private var didAutoConnect = false
     @State private var showPlayer = false
+    @State private var volumeSliderValue: Double = 0.5
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
 
@@ -147,6 +148,7 @@ struct RemoteView: View {
     private var appsSection: some View {
         VStack(spacing: 10) {
             Button {
+                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded.toggle() }
             } label: {
                 HStack(spacing: 12) {
@@ -447,39 +449,31 @@ struct RemoteView: View {
     }
 
     private var volumeBar: some View {
-        HStack(spacing: 0) {
-            volumeButton("speaker.minus", "Volume down") { remote.volume("VOLUME_DOWN") }
-            Button { remote.volume("MUTE") } label: {
-                VStack(spacing: 1) {
-                    Image(systemName: "speaker.slash").font(.system(size: 18, weight: .medium))
-                    // Only claims "Soundbar" while volume is actually routed through the Samsung TV.
-                    Text(remote.tvVolumeEnabled && remote.tvVolumeReady ? "SOUNDBAR" : "MUTE")
-                        .font(.system(size: 10, weight: .semibold)).tracking(0.4)
-                        .foregroundStyle(.white.opacity(0.7))
+        HStack(spacing: 13) {
+            Image(systemName: volumeSliderValue <= 0.02 ? "speaker" : "speaker.wave.2.fill")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.white.opacity(0.92))
+                .frame(width: 30)
+                .accessibilityHidden(true)
+
+            Slider(value: $volumeSliderValue, in: 0...1)
+                .tint(.white)
+                .accessibilityLabel("Volume")
+                .accessibilityHint("Drag horizontally to adjust the TV volume")
+                .onChange(of: volumeSliderValue) { oldValue, newValue in
+                    let oldStep = Int((oldValue * 20).rounded())
+                    let newStep = Int((newValue * 20).rounded())
+                    let difference = newStep - oldStep
+                    guard difference != 0 else { return }
+                    let key = difference > 0 ? "VOLUME_UP" : "VOLUME_DOWN"
+                    for _ in 0..<min(abs(difference), 4) {
+                        remote.volume(key)
+                    }
                 }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 46)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(PressStyle())
-            .accessibilityLabel("Mute")
-            volumeButton("speaker.plus", "Volume up") { remote.volume("VOLUME_UP") }
         }
-        .padding(.horizontal, 6)
-        .frame(height: 56)
-        .glassSurface(Capsule())
+        .padding(.horizontal, 18)
+        .frame(height: 58)
+        .glassSurface(Capsule(), interactive: true, elevated: true)
     }
 
-    private func volumeButton(_ icon: String, _ label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 19, weight: .medium))
-                .foregroundStyle(.white)
-                .frame(width: 64, height: 46)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(PressStyle())
-        .accessibilityLabel(label)
-    }
 }

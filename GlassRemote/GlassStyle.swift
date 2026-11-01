@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Smoked native Liquid Glass styling shared by the app's interactive surfaces.
 ///
@@ -89,6 +90,11 @@ struct PressStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .opacity(configuration.isPressed ? 0.88 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .onChange(of: configuration.isPressed) { _, pressed in
+                if pressed {
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                }
+            }
     }
 }
 
@@ -111,7 +117,10 @@ struct ModeSelector: View {
     }
 
     private func segment(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+            action()
+        } label: {
             HStack(spacing: 7) {
                 Image(systemName: icon).font(.system(size: 15, weight: .semibold))
                 Text(title).font(.system(size: 14, weight: .semibold))
@@ -145,8 +154,8 @@ struct AmbientBackdrop: View {
                 Color.black
                 RadialGradient(
                     colors: [
-                        Color(white: 0.15),
-                        Color(white: 0.095),
+                        Color(white: 0.105),
+                        Color(white: 0.068),
                         Color(white: 0.045),
                         .black
                     ],
@@ -160,7 +169,7 @@ struct AmbientBackdrop: View {
                     endPoint: .bottom
                 )
                 RadialGradient(
-                    colors: [Color(white: 0.075).opacity(0.72), .clear],
+                    colors: [Color(white: 0.052).opacity(0.72), .clear],
                     center: UnitPoint(x: 0.5, y: 0.80),
                     startRadius: 0,
                     endRadius: w * 0.90
