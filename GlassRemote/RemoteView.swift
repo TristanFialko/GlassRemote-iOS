@@ -78,8 +78,6 @@ private func appGrid(compact: Bool) -> some View {
                     .aspectRatio(1, contentMode: .fit)
             }
             .buttonStyle(PressStyle())
-            .disabled(remote.connected && !remote.installed.contains(app.package))
-            .opacity(remote.connected && !remote.installed.contains(app.package) ? 0.28 : 1)
             .accessibilityLabel(app.name)
         }
     }
