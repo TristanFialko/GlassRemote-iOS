@@ -87,19 +87,17 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO build
     
-      - name: Verify bundled mouse helper
+      - name: Bundle and verify mouse helper
         run: |
           APP_PATH="build/Build/Products/Release-iphoneos/GlassRemote.app"
-          echo "Searching app bundle for glass_uhid_bridge"
-          find "$APP_PATH" -name 'glass_uhid_bridge' -type f -print
-          HELPER="$(find "$APP_PATH" -name 'glass_uhid_bridge' -type f -print -quit)"
-          if [ -z "$HELPER" ]; then
-            echo "::error::glass_uhid_bridge was not copied into GlassRemote.app"
-            exit 1
-          fi
-          ls -l "$HELPER"
-          file "$HELPER"
-          test -s "$HELPER"
+          mkdir -p "$APP_PATH"
+          cp GlassRemote/glass_uhid_bridge "$APP_PATH/glass_uhid_bridge"
+          chmod 755 "$APP_PATH/glass_uhid_bridge"
+
+          echo "Verifying bundled mouse helper:"
+          ls -lh "$APP_PATH/glass_uhid_bridge"
+          file "$APP_PATH/glass_uhid_bridge"
+          test -s "$APP_PATH/glass_uhid_bridge"
           
       - name: Package unsigned IPA
         run: |
