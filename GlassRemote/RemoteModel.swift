@@ -101,14 +101,12 @@ final class RemoteModel: ObservableObject {
     // Independent of the mouse: its failure never affects mouse or keyboard startup.
     private var cursorStream: AdbStream?
     private var cursorReaderTask: Task<Void, Never>?
-    @Published var cursorStatus = "Cursor: not started"
-    /// Feeds "R" (re-apply) lines to the cursor helper. Its `watch` mode sets the custom icon once
-    /// and then re-applies it ONLY when it reads "R"; without these, the first app that requests
-    /// its own pointer (hand, text beam, hover…) replaces the white cursor for good.
+    /// Writer attached to the persistent cursor helper's FIFO; writes "R" to reapply the icon.
     private var cursorInput: AdbStream?
-    private let cursorQueue = TaskQueue()
+    private var cursorQueue = TaskQueue()
     private var lastCursorNudge = Date.distantPast
     private var cursorTrailTask: Task<Void, Never>?
+    @Published var cursorStatus = "Cursor: not started"
     private var commandQueue = TaskQueue()
     private var reportQueue = TaskQueue()
 
@@ -268,8 +266,8 @@ final class RemoteModel: ObservableObject {
 
                 try await startCommandShell(connection)
                 status = "Connected · low-latency shell ready"
-                // The package list only labels tiles. Re-reading it on every automatic reconnect
-                // (each phone lock/unlock) runs `pm` on the box mid-playback for nothing.
+                // The package list only labels app tiles. Re-running `pm list packages` on
+                // every reconnect adds avoidable load while a video may be playing.
                 if installed.isEmpty { await refreshApps() }
                 guard session == sessionID else { return }
                 applyTVSettings()
@@ -279,15 +277,13 @@ final class RemoteModel: ObservableObject {
                 guard session == sessionID else { return }
                 await startKeyboard()
                 guard session == sessionID else { return }
-                // Polling starts only after the mouse/keyboard helpers have finished their
-                // startup handshakes, so no extra ADB stream competes with them. It no longer
-                // waits for the cursor (up to 40 s), so Now Playing comes back right away.
+                // Media status is independent of the cursor. Start it before the optional
+                // cursor setup so a slow cursor helper cannot delay Now Playing recovery.
                 startMediaPolling()
                 reconnectAttempt = 0
-                // Controls are usable now; the optional cursor step must not hold the session in
-                // the "connecting" state (that also pauses media polling).
+                // The optional cursor step is bounded and must not hold the session in
+                // "connecting" or delay the media poller.
                 if connectingSession == session { connectingSession = nil }
-                // Cursor appearance only: bounded and non-fatal, runs after mouse + keyboard.
                 _ = await withDeadline(40) { await self.startCursor() }
                 guard session == sessionID else { return }
 
@@ -793,40 +789,6 @@ final class RemoteModel: ObservableObject {
         reportQueue.enqueue { [weak self] in await self?.sendButtonReport(buttons) }
     }
 
-    /// Asks the TV cursor helper to re-apply the white icon. Throttled while the pointer moves,
-    /// plus a trailing request after it stops, because Android switches the icon when the
-    /// hovered view changes (which happens just after motion, scrolling or a click).
-    private func nudgeCursor() {
-        guard cursorInput != nil else { return }
-        let now = Date()
-        if now.timeIntervalSince(lastCursorNudge) >= 0.08 {
-            lastCursorNudge = now
-            sendCursorReapply()
-        }
-        cursorTrailTask?.cancel()
-        cursorTrailTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 180_000_000)
-            guard !Task.isCancelled, let self else { return }
-            self.lastCursorNudge = Date()
-            self.sendCursorReapply()
-        }
-    }
-
-    private func sendCursorReapply() {
-        guard let stream = cursorInput else { return }
-        cursorQueue.enqueue { [weak self] in
-            do {
-                try await stream.write(Data("R\n".utf8))
-            } catch {
-                await MainActor.run {
-                    guard let self, self.cursorInput === stream else { return }
-                    self.cursorInput = nil
-                    GRLog.note("cursor", "re-apply stream failed: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
-
     private func drainPointerMotion() async {
         moveDrainQueued = false
         guard mouseReady, let stream = mouseStream else {
@@ -943,21 +905,25 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-    /// Persistent cursor helper. Renamed from "glass_cursor_setter" because that older instance
-    /// was started with a keeper that never asks for a re-apply; it is stopped once (below).
+    /// Persistent cursor helper. The `watch` command accepts `R` on stdin to reapply its icon.
     private static let cursorHelperName = "glass_cursor"
-    /// Matches the helper's command line (its image argument is glass_cursor_white.png).
     private static let cursorMatch = "glass_cursor"
 
     private func startCursor() async {
         guard let adb else { return }
         await stopCursor()
 
-        // Already running from an earlier connection: nothing to upload or restart.
+        // Migrate away from the old helper name, whose FIFO keeper never sent reapply commands.
+        await PersistentHelper.stop(adb: adb, name: "glass_cursor_setter", match: "com.glassremote.cursor")
+
         if await PersistentHelper.isRunning(adb: adb, name: Self.cursorHelperName, match: Self.cursorMatch) {
             cursorInput = await PersistentHelper.openInput(adb: adb, name: Self.cursorHelperName)
-            sendCursorReapply()
-            cursorStatus = "Cursor: custom white cursor active (helper already running)"
+            if cursorInput != nil {
+                cursorStatus = "Cursor: custom white cursor active · persistent helper"
+                nudgeCursor()
+            } else {
+                cursorStatus = "Cursor: helper running · input feed reconnect pending"
+            }
             return
         }
 
@@ -974,98 +940,89 @@ final class RemoteModel: ObservableObject {
             try await uploadToTV(adb, data: jar, remote: "/data/local/tmp/glass_cursor_setter.jar", mode: "644")
             try await uploadToTV(adb, data: png, remote: "/data/local/tmp/glass_cursor_white.png", mode: "644")
 
-            // Stop the instance left by the previous build (one-time; no-op when absent).
-            _ = try? await runShell(adb, ["sh", "-c", PersistentHelper.killScript(name: "glass_cursor_setter", match: "com.glassremote.cursor")])
-
             let hotspot = Self.cursorHotspot
-            // The keeper writes "R" once a second, so the box re-applies the white cursor even
-            // while the phone is away (e.g. an app swapped the icon under a still pointer). While
-            // the trackpad is used the phone sends extra "R" lines (nudgeCursor).
-            if await PersistentHelper.launch(
-                adb: adb, name: Self.cursorHelperName, match: Self.cursorMatch,
+            let launched = await PersistentHelper.launch(
+                adb: adb,
+                name: Self.cursorHelperName,
+                match: Self.cursorMatch,
                 command: "export CLASSPATH=/data/local/tmp/glass_cursor_setter.jar; exec app_process /system/bin com.glassremote.cursor.Main watch /data/local/tmp/glass_cursor_white.png \(hotspot.x) \(hotspot.y)",
                 ready: "READY|GLASS_CURSOR_SET_OK",
-                keeper: "while :; do echo R; sleep 1; done") {
-                cursorInput = await PersistentHelper.openInput(adb: adb, name: Self.cursorHelperName)
-                cursorStatus = "Cursor: custom white cursor applied"
-                GRLog.note("cursor", "persistent helper running")
+                // The jar only reapplies when it receives R. Keep sending a low-rate heartbeat
+                // while the phone is suspended, and let phone-side nudges cover active movement.
+                keeper: "while :; do echo R; sleep 1; done"
+            )
+            guard launched else {
+                cursorStatus = "Cursor: persistent helper failed to start"
+                GRLog.note("cursor", "persistent cursor helper failed to start")
                 return
             }
 
-            // `watch` re-applies the icon each time it reads "R" on stdin (sent by nudgeCursor).
-            let stream = try await adb.open(destination: "shell:sh")
-            let hot = Self.cursorHotspot
-            let command = "stty -echo 2>/dev/null; CLASSPATH=/data/local/tmp/glass_cursor_setter.jar exec app_process /system/bin com.glassremote.cursor.Main watch /data/local/tmp/glass_cursor_white.png \(hot.x) \(hot.y)\n"
-            try await stream.write(Data(command.utf8))
-
-            let watchdog = Task { [stream] in
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                if !Task.isCancelled { try? await stream.close() }
+            cursorInput = await PersistentHelper.openInput(adb: adb, name: Self.cursorHelperName)
+            guard cursorInput != nil else {
+                cursorStatus = "Cursor: helper started · input feed unavailable"
+                return
             }
-
-            var output = Data()
-            var applied = false
-            while !applied {
-                if await stream.getIsClosed() { break }
-                let chunk: Data
-                do { chunk = try await stream.read() } catch { break }
-                if chunk.isEmpty { break }
-                output.append(chunk)
-                let text = String(decoding: output, as: UTF8.self)
-                if text.contains("GLASS_CURSOR_SET_OK") || text.contains("READY") { applied = true }
-                else if text.contains("GLASS_CURSOR_ERROR") { break }
-            }
-            watchdog.cancel()
-
-            guard applied else {
-                try? await stream.close()
-                let text = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                throw NSError(
-                    domain: "GlassRemote", code: 32,
-                    userInfo: [NSLocalizedDescriptionKey: text.isEmpty ? "cursor helper gave no response" : text]
-                )
-            }
-
-            cursorStream = stream
-            cursorInput = stream
-            cursorStatus = "Cursor: custom white cursor applied" + PersistentHelper.fallbackNote(Self.cursorHelperName)
-            GRLog.note("cursor", "custom white cursor applied")
-
-            // Keep draining the helper's output so its pipe never fills; note when it ends.
-            cursorReaderTask = Task { [weak self] in
-                while !Task.isCancelled {
-                    do {
-                        let chunk = try await stream.read()
-                        if chunk.isEmpty { break }
-                    } catch { break }
-                }
-                await MainActor.run {
-                    guard let self, self.cursorStream === stream else { return }
-                    self.cursorStream = nil
-                    if self.cursorInput === stream { self.cursorInput = nil }
-                    self.cursorStatus = "Cursor: helper stopped"
-                    GRLog.note("cursor", "helper stream ended")
-                }
-            }
+            cursorStatus = "Cursor: custom white cursor applied · persistent reapply active" + PersistentHelper.fallbackNote(Self.cursorHelperName)
+            GRLog.note("cursor", "persistent white cursor helper running with 1 s reapply heartbeat")
+            nudgeCursor()
         } catch {
-            cursorStream = nil
+            cursorInput = nil
             cursorStatus = "Cursor failed: \(error.localizedDescription)"
             GRLog.note("cursor", "start failed: \(error.localizedDescription)")
         }
     }
 
+    /// Throttled while the pointer moves, with a trailing reapply after hover state settles.
+    private func nudgeCursor() {
+        guard let input = cursorInput else { return }
+        let now = Date()
+        if now.timeIntervalSince(lastCursorNudge) >= 0.08 {
+            lastCursorNudge = now
+            cursorQueue.enqueue { [weak self] in
+                do {
+                    try await input.write(Data("R\n".utf8))
+                } catch {
+                    await MainActor.run {
+                        guard let self, self.cursorInput === input else { return }
+                        self.cursorInput = nil
+                        self.cursorStatus = "Cursor: reapply feed disconnected · will retry on resume"
+                        GRLog.note("cursor", "reapply feed write failed: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+
+        cursorTrailTask?.cancel()
+        cursorTrailTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled, let self, let current = self.cursorInput else { return }
+            self.cursorQueue.enqueue {
+                do { try await current.write(Data("R\n".utf8)) }
+                catch {
+                    await MainActor.run {
+                        guard let self, self.cursorInput === current else { return }
+                        self.cursorInput = nil
+                        self.cursorStatus = "Cursor: reapply feed disconnected · will retry on resume"
+                        GRLog.note("cursor", "trailing reapply failed: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+    }
+
     private func stopCursor() async {
-        cursorReaderTask?.cancel()
-        cursorReaderTask = nil
         cursorTrailTask?.cancel()
         cursorTrailTask = nil
-        // Closing the persistent pipe feed only ends the phone's `cat`; the helper keeps running.
-        let oldInput = cursorInput
+        let input = cursorInput
         cursorInput = nil
+        cursorReaderTask?.cancel()
+        cursorReaderTask = nil
         let old = cursorStream
         cursorStream = nil
-        if let oldInput, oldInput !== old {
-            _ = await withDeadline(2) { () async -> Void in _ = try? await oldInput.close() }
+        // In persistent mode, closing the phone-side writer does NOT send STOP to the helper.
+        // The TV-side heartbeat keeps it alive and continues restoring the white cursor.
+        if let input {
+            _ = await withDeadline(2) { () async -> Void in _ = try? await input.close() }
         }
         if let old {
             _ = await withDeadline(2) { () async -> Void in
@@ -1080,7 +1037,7 @@ final class RemoteModel: ObservableObject {
     /// Detaches every session object first, then closes the old (possibly dead) ones with a
     /// deadline each. Close calls on a broken socket can otherwise block indefinitely.
     private func teardownSession() async {
-        GRLog.note("adb", "teardownSession: closing mouse/keyboard/command streams + ADB connection (UHID devices on the box are destroyed)")
+        GRLog.note("adb", "teardownSession: closing phone-side ADB streams + transport; persistent TV helpers should retain UHID devices")
         stopMediaPolling()
         mouseReady = false
         let oldMouse = mouseStream
@@ -1199,20 +1156,45 @@ final class RemoteModel: ObservableObject {
         }
         guard session == sessionID, wantsConnection else { return }
 
-        // Never recreate a UHID device as part of automatic resume recovery. Even if
-        // ADB itself is healthy, starting a missing helper causes Android to enumerate
-        // a new input device. Keep playback-facing recovery non-invasive and let the
-        // user choose when to re-enumerate devices via the explicit reconnect action.
-        if !mouseReady || !keyboard.isReady {
-            GRLog.note("adb", "HID helper stream missing (mouse=\(mouseReady) keyboard=\(keyboard.isReady)); reconnecting automatically")
-            connect()
-            return
+        // ADB can remain healthy while iOS has dropped one of its shell streams. Check the
+        // mouse stream's explicit closed state as well as its readiness flag; it has no reader
+        // task, so a dead stream may otherwise remain marked ready until the next pointer move.
+        if let mouseStream, await mouseStream.getIsClosed() {
+            self.mouseStream = nil
+            mouseReady = false
+            GRLog.note("mouse", "phone-side input stream was closed while backgrounded")
         }
+
+        // Reattach ONLY to helpers that are already alive on the TV; never launch a new UHID
+        // device during automatic foreground recovery, because Android may treat enumeration
+        // as a configuration change and interrupt the foreground video app.
+        if !mouseReady {
+            if let input = await PersistentHelper.attach(adb: connection, name: "glass_uhid_bridge", match: "glass_uhid_bridge") {
+                mouseStream = input
+                pendingMoveDX = 0; pendingMoveDY = 0; mouseButtonsHeld = 0
+                mouseReady = true
+                status = "Connected · mouse reattached to existing TV helper"
+                GRLog.note("mouse", "reattached to existing helper without UHID recreation")
+            } else {
+                requiresUserReconnect = true
+                status = "Connected · mouse helper missing on TV; tap Connect to recreate it"
+                GRLog.note("mouse", "persistent helper missing; automatic recovery stopped to avoid playback disruption")
+                return
+            }
+        }
+        if !keyboard.isReady {
+            let restored = await keyboard.reattachExisting(adb: connection)
+            guard restored else {
+                requiresUserReconnect = true
+                status = "Connected · keyboard helper missing on TV; tap Connect to recreate it"
+                GRLog.note("keyboard", "persistent helper missing; automatic recovery stopped to avoid HID recreation")
+                return
+            }
+        }
+        // Reopen the phone-side cursor feed on every foreground recovery. This is cheap when
+        // the TV helper is alive and repairs a stale FIFO writer left by iOS suspension.
+        _ = await withDeadline(15) { await self.startCursor() }
         recoveryPending = false
-        // Re-attach the cursor's re-apply feed if iOS dropped it (reuses the running helper).
-        if cursorInput == nil {
-            _ = await withDeadline(40) { await self.startCursor() }
-        }
     }
 }
 

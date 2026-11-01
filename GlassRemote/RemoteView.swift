@@ -90,6 +90,7 @@ struct RemoteView: View {
     // MARK: - Header
 
     private var statusLabel: String {
+        if remote.requiresUserReconnect { return "Reconnect needed" }
         if remote.connected { return "Connected" }
         if remote.status.hasPrefix("Connecting") || remote.status.contains("reconnect") { return "Connecting…" }
         return "Offline"
@@ -108,12 +109,12 @@ struct RemoteView: View {
 
             Spacer(minLength: 0)
 
-            Button { if !remote.connected { remote.connect() } } label: {
+            Button { if !remote.connected || remote.requiresUserReconnect { remote.connect() } } label: {
                 HStack(spacing: 8) {
                     Circle()
-                        .fill(remote.connected ? Color.green : Color.orange)
+                        .fill(remote.connected && !remote.requiresUserReconnect ? Color.green : Color.orange)
                         .frame(width: 8, height: 8)
-                        .shadow(color: (remote.connected ? Color.green : Color.orange).opacity(0.35), radius: 2)
+                        .shadow(color: (remote.connected && !remote.requiresUserReconnect ? Color.green : Color.orange).opacity(0.35), radius: 2)
                     Text(statusLabel).font(.system(size: 13, weight: .semibold))
                 }
                 .foregroundStyle(Color.white.opacity(0.85))
@@ -122,7 +123,7 @@ struct RemoteView: View {
                 .glassSurface(Capsule(), interactive: true)
             }
             .buttonStyle(PressStyle())
-            .accessibilityLabel(remote.connected ? "Connected" : "Reconnect")
+            .accessibilityLabel(remote.requiresUserReconnect ? "Reconnect required" : (remote.connected ? "Connected" : "Reconnect"))
 
             Spacer(minLength: 0)
 

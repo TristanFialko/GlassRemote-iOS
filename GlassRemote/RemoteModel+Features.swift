@@ -44,7 +44,9 @@ extension RemoteModel {
         mediaTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollMedia()
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                // `dumpsys media_session` is relatively expensive on this small TV box.
+                // Five-second refresh keeps Now Playing useful without hammering playback.
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
         }
     }

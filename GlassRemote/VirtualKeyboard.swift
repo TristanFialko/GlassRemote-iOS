@@ -88,13 +88,34 @@ final class VirtualKeyboard {
         }
     }
 
+    /// Reattaches only to an already-running TV helper. Unlike `start`, this never uploads
+    /// or launches the binary, so foreground recovery cannot enumerate a new Android keyboard.
+    func reattachExisting(adb: AdbConnection) async -> Bool {
+        await stop()
+        generation += 1
+        let gen = generation
+        guard let existing = await PersistentHelper.attach(
+            adb: adb, name: Self.helperName, match: Self.helperName
+        ) else {
+            report("Virtual keyboard: TV helper is not running · explicit reconnect required")
+            return false
+        }
+        guard gen == generation else { try? await existing.close(); return false }
+        stream = existing
+        isReady = true
+        report("Virtual keyboard: reattached to existing TV helper")
+        startReader(existing, generation: gen)
+        return true
+    }
+
     func stop() async {
         generation += 1
         isReady = false
         readerTask?.cancel()
         readerTask = nil
         // Detach first, then close with a deadline: closing a dead stream must never block.
-        // Closing stdin makes the helper see EOF, destroy its UHID device and exit.
+        // This closes only the phone-side FIFO writer. The TV-side keeper keeps the
+        // helper's FIFO open, so the UHID device remains registered across app suspension.
         let old = stream
         stream = nil
         if let old {
