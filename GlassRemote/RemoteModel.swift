@@ -35,8 +35,11 @@ final class RemoteModel: ObservableObject {
     ]
 
     private var adb: AdbConnection?
+    private var commandStream: AdbStream?
+    private var commandReaderTask: Task<Void, Never>?
     private var mouseStream: AdbStream?
     private var mouseReady = false
+    private var commandQueue = TaskQueue()
     private var reportQueue = TaskQueue()
 
     func connect() {
@@ -78,7 +81,8 @@ final class RemoteModel: ObservableObject {
                     )
                 }
 
-                status = "Connected · ADB shell working"
+                try await startCommandShell(connection)
+                status = "Connected · low-latency shell ready"
                 await refreshApps()
                 await startMouse()
 
@@ -92,11 +96,67 @@ final class RemoteModel: ObservableObject {
     func disconnect() {
         Task {
             await stopMouse()
+            await stopCommandShell()
             await adb?.close()
             adb = nil
             connected = false
             installed.removeAll()
             status = "Disconnected"
+        }
+    }
+
+    // One persistent shell is used for frequent remote key presses. This avoids
+    // opening and closing an ADB shell stream for every button tap.
+    private func startCommandShell(_ connection: AdbConnection) async throws {
+        await stopCommandShell()
+
+        let stream = try await connection.open(destination: "shell:sh")
+        commandStream = stream
+
+        commandReaderTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    let data = try await stream.read()
+                    if data.isEmpty { break }
+                } catch {
+                    break
+                }
+            }
+
+            guard let self else { return }
+            if self.commandStream === stream {
+                self.commandStream = nil
+                if self.connected {
+                    self.status = "ADB command shell closed · reconnect to restore controls"
+                }
+            }
+        }
+    }
+
+    private func stopCommandShell() async {
+        commandReaderTask?.cancel()
+        commandReaderTask = nil
+
+        if let commandStream {
+            try? await commandStream.close()
+        }
+        commandStream = nil
+    }
+
+    private func sendPersistentCommand(_ command: String) {
+        guard let stream = commandStream else {
+            status = "Command shell unavailable · reconnect"
+            return
+        }
+
+        commandQueue.enqueue { [weak self] in
+            do {
+                try await stream.write(Data((command + "\n").utf8))
+            } catch {
+                await MainActor.run {
+                    self?.status = "Command send failed: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
@@ -132,11 +192,13 @@ final class RemoteModel: ObservableObject {
                     ["sh", "-c", "monkey -p \(app.package) 1 2>&1; rc=$?; echo GLASSREMOTE_LAUNCH_EXIT:$rc"]
                 )
 
-                if output.localizedCaseInsensitiveContains("no activities found") ||
-                    output.localizedCaseInsensitiveContains("monkey aborted") {
-                    status = "Launch failed · \(app.name) is not launchable on this TV"
-                } else if output.contains("GLASSREMOTE_LAUNCH_EXIT:0") {
+                // Trust the actual process exit marker before interpreting Monkey's
+                // human-readable output, which can be misleading on some TV builds.
+                if output.contains("GLASSREMOTE_LAUNCH_EXIT:0") {
                     status = "Android accepted launch request · \(app.name)"
+                } else if output.localizedCaseInsensitiveContains("no activities found") ||
+                            output.localizedCaseInsensitiveContains("monkey aborted") {
+                    status = "Launch response · \(app.name): \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
                 } else {
                     status = "Launch result · \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
                 }
@@ -160,30 +222,12 @@ final class RemoteModel: ObservableObject {
             return
         }
 
-        Task {
-            guard let adb else {
-                status = "Button failed · not connected"
-                return
-            }
-
-            do {
-                let output = try await runShell(
-                    adb,
-                    ["sh", "-c", "input keyevent \(code); rc=$?; echo GLASSREMOTE_KEYEVENT_EXIT:$rc"]
-                )
-
-                if output.contains("GLASSREMOTE_KEYEVENT_EXIT:0") {
-                    status = "Android accepted \(key) · keycode \(code)"
-                } else if let result = output.components(separatedBy: "GLASSREMOTE_KEYEVENT_EXIT:").last {
-                    status = "Android rejected \(key) · exit \(result.trimmingCharacters(in: .whitespacesAndNewlines))"
-                } else {
-                    status = "Key result · \(output.isEmpty ? "no shell response" : output)"
-                }
-            } catch {
-                status = "Button \(key) failed: \(error.localizedDescription)"
-            }
+        guard connected else {
+            status = "Button failed · not connected"
+            return
         }
 
+        sendPersistentCommand("input keyevent \(code)")
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
     }
 
@@ -302,21 +346,37 @@ final class RemoteModel: ObservableObject {
                 )
             }
 
-            let stream = try await adb.open(service: .shell, args: [])
-            try await stream.write(Data("exec /data/local/tmp/glass_uhid_bridge\n".utf8))
+            // Disable shell echo before exec. Read until READY rather than assuming
+            // the first ADB packet contains the helper's startup message.
+            let stream = try await adb.open(destination: "shell:sh")
+            try await stream.write(Data("stty -echo 2>/dev/null; exec /data/local/tmp/glass_uhid_bridge\n".utf8))
 
-            // The helper prints READY only after successfully creating /dev/uhid.
-            let startup = try await stream.read()
-            let startupText = String(data: startup, encoding: .utf8) ?? ""
+            var startupData = Data()
+            var ready = false
 
-            guard startupText.contains("READY") else {
+            while !ready && !(await stream.getIsClosed()) {
+                let chunk = try await stream.read()
+                if chunk.isEmpty { break }
+                startupData.append(chunk)
+
+                let response = String(data: startupData, encoding: .utf8) ?? ""
+                ready = response.contains("READY")
+
+                if response.contains("ERROR") {
+                    break
+                }
+            }
+
+            let startupText = String(data: startupData, encoding: .utf8) ?? ""
+
+            guard ready else {
                 try? await stream.close()
                 throw NSError(
                     domain: "GlassRemote",
                     code: 12,
                     userInfo: [NSLocalizedDescriptionKey: startupText.isEmpty
                         ? "Mouse helper exited without a READY response"
-                        : "Mouse helper did not start: \(startupText)"]
+                        : "Mouse helper did not start: \(startupText.trimmingCharacters(in: .whitespacesAndNewlines))"]
                 )
             }
 
