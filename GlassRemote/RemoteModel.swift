@@ -31,8 +31,8 @@ final class RemoteModel: ObservableObject {
     @Published var samsungStatus = "Samsung TV: off"
     @Published private(set) var tvVolumeReady = false
     // Real volume read from the TV over UPnP RenderingControl (see SamsungVolume.swift).
-    @Published private(set) var volumeLinkReady = false
-    @Published private(set) var tvVolumeFraction: Double?
+    @Published var volumeLinkReady = false
+    @Published var tvVolumeFraction: Double?
     @Published var volumeStatus = "TV volume: not read yet"
     let volumeLink = SamsungVolumeLink()
     /// Last time the user touched the slider; TV readings are not pushed onto it right after.
