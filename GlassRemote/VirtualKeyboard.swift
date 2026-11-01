@@ -59,6 +59,15 @@ final class VirtualKeyboard {
         report("Virtual keyboard: starting…")
 
         do {
+            // Helper (and its UHID device) outlives the phone connection: reuse it when present.
+            if let existing = await PersistentHelper.attach(adb: adb, name: "glass_uhid_keyboard", match: "glass_uhid_keyboard") {
+                guard gen == generation else { try? await existing.close(); return }
+                stream = existing
+                isReady = true
+                report("Virtual keyboard: running · TV helper already present")
+                startReader(existing, generation: gen)
+                return
+            }
             let helper = try loadBundledHelper()
             try await ensureUploaded(adb: adb, helper: helper)
             let newStream = try await launch(adb: adb)
@@ -269,6 +278,12 @@ final class VirtualKeyboard {
 
     private func launch(adb: AdbConnection) async throws -> AdbStream {
         report("Virtual keyboard: starting helper…")
+
+        if await PersistentHelper.launch(adb: adb, name: "glass_uhid_keyboard", match: "glass_uhid_keyboard",
+                                         command: "exec \(Self.remotePath)", ready: "READY"),
+           let input = await PersistentHelper.openInput(adb: adb, name: "glass_uhid_keyboard") {
+            return input
+        }
 
         let stream = try await adb.open(destination: "shell:sh")
         try await stream.write(Data("stty -echo 2>/dev/null; exec \(Self.remotePath)\n".utf8))

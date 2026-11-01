@@ -550,6 +550,14 @@ final class RemoteModel: ObservableObject {
 
     private func startMouse() async {
         guard let adb else { return }
+        // The helper (and its UHID device) outlives the phone connection: reuse it when present.
+        if let input = await PersistentHelper.attach(adb: adb, name: "glass_uhid_bridge", match: "glass_uhid_bridge") {
+            mouseStream = input
+            pendingMoveDX = 0; pendingMoveDY = 0; mouseButtonsHeld = 0
+            mouseReady = true
+            status = "Mouse ready · TV helper already running"
+            return
+        }
         await stopMouse()
 
         guard let helperURL = findMouseHelper() else {
@@ -627,7 +635,12 @@ final class RemoteModel: ObservableObject {
             var launched: AdbStream?
             var lastStartupText = ""
 
-            for _ in 0..<12 {
+            if await PersistentHelper.launch(adb: adb, name: "glass_uhid_bridge", match: "glass_uhid_bridge",
+                                             command: "exec /data/local/tmp/glass_uhid_bridge", ready: "READY") {
+                launched = await PersistentHelper.openInput(adb: adb, name: "glass_uhid_bridge")
+            }
+
+            for _ in 0..<(launched == nil ? 12 : 0) {
                 let stream = try await adb.open(destination: "shell:sh")
                 try await stream.write(Data("stty -echo 2>/dev/null; exec /data/local/tmp/glass_uhid_bridge\n".utf8))
 
@@ -862,6 +875,12 @@ final class RemoteModel: ObservableObject {
         guard let adb else { return }
         await stopCursor()
 
+        // Already running from an earlier connection: nothing to upload or restart.
+        if await PersistentHelper.isRunning(adb: adb, name: "glass_cursor_setter", match: "com.glassremote.cursor") {
+            cursorStatus = "Cursor: custom white cursor active (helper already running)"
+            return
+        }
+
         guard let jarURL = findBundledFile("glass_cursor_setter.jar"),
               let pngURL = findBundledFile("glass_cursor_white.png") else {
             cursorStatus = "Cursor: helper files are not inside the app bundle"
@@ -874,6 +893,16 @@ final class RemoteModel: ObservableObject {
             let png = try Data(contentsOf: pngURL)
             try await uploadToTV(adb, data: jar, remote: "/data/local/tmp/glass_cursor_setter.jar", mode: "644")
             try await uploadToTV(adb, data: png, remote: "/data/local/tmp/glass_cursor_white.png", mode: "644")
+
+            let hotspot = Self.cursorHotspot
+            if await PersistentHelper.launch(
+                adb: adb, name: "glass_cursor_setter", match: "com.glassremote.cursor",
+                command: "export CLASSPATH=/data/local/tmp/glass_cursor_setter.jar; exec app_process /system/bin com.glassremote.cursor.Main watch /data/local/tmp/glass_cursor_white.png \(hotspot.x) \(hotspot.y)",
+                ready: "GLASS_CURSOR_SET_OK") {
+                cursorStatus = "Cursor: custom white cursor applied"
+                GRLog.note("cursor", "persistent helper running")
+                return
+            }
 
             // `watch` keeps re-applying the icon so it stays white and is not reset by the
             // system while the pointer moves, hovers, clicks or drags.
