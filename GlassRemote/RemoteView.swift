@@ -218,7 +218,10 @@ private func appGrid(compact: Bool) -> some View {
                         if remote.connected { remote.disconnect() } else { remote.connect() }
                     }
                 }
-                Section("Status") { Text(remote.status).font(.footnote).textSelection(.enabled) }
+                Section("Status") {
+                    Text(remote.status).font(.footnote).textSelection(.enabled)
+                    Text(remote.keyboardStatus).font(.footnote).textSelection(.enabled)
+                }
                 Section { Text("The first connection may show an ADB authorization prompt on the TV. Approve the Glass Remote host key. Keep the TV and iPhone on the same trusted Wi-Fi network.").font(.footnote).foregroundStyle(.secondary) }
             }
             .scrollContentBackground(.hidden).background(Color.black)
