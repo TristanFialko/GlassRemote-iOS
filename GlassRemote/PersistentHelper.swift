@@ -83,11 +83,12 @@ enum PersistentHelper {
         \(killScript(name: name, match: match))
         rm -f \(p.log)
         mkfifo \(p.fifo) 2>/dev/null || mknod \(p.fifo) p 2>/dev/null || { echo GLASS_FIFO_FAIL; exit 0; }
-        SS=; command -v setsid >/dev/null 2>&1 && SS=setsid
-        $SS nohup sh -c "echo \\$\\$ > \(p.pid); \(writer) > \(p.fifo) & \(command) < \(p.fifo) > \(p.log) 2>&1" </dev/null >/dev/null 2>&1 &
+        command -v setsid >/dev/null 2>&1 || { echo GLASS_NO_SETSID; exit 0; }
+        command -v nohup >/dev/null 2>&1 || { echo GLASS_NO_NOHUP; exit 0; }
+        setsid nohup sh -c "echo \\$\\$ > \(p.pid); \(writer) > \(p.fifo) & \(command) < \(p.fifo) > \(p.log) 2>&1" </dev/null >/dev/null 2>&1 &
         i=0
         while [ $i -lt 60 ]; do
-          if grep -q -E '\(ready)' \(p.log) 2>/dev/null; then echo GLASS_STARTED; exit 0; fi
+          if grep -F -q '\(ready)' \(p.log) 2>/dev/null; then echo GLASS_STARTED; exit 0; fi
           if grep -q 'ERROR' \(p.log) 2>/dev/null; then break; fi
           i=$((i+1)); sleep 0.2
         done
@@ -105,9 +106,17 @@ enum PersistentHelper {
             failures[name] = nil
             return true
         }
-        failures[name] = out.contains("GLASS_FIFO_FAIL")
-            ? "could not create FIFO"
-            : String(summary.prefix(80))
+        if out.contains("GLASS_NO_SETSID") {
+            failures[name] = "setsid is unavailable; detached helper cannot be guaranteed"
+        } else if out.contains("GLASS_NO_NOHUP") {
+            failures[name] = "nohup is unavailable"
+        } else if out.contains("GLASS_FIFO_FAIL") {
+            failures[name] = "could not create FIFO"
+        } else if out.contains("GLASS_NOT_READY") {
+            failures[name] = String(summary.replacingOccurrences(of: "GLASS_NOT_READY", with: "").trimmingCharacters(in: .whitespacesAndNewlines).suffix(180))
+        } else {
+            failures[name] = String(summary.prefix(180))
+        }
         return false
     }
 

@@ -214,6 +214,14 @@ struct RemoteView: View {
                 }
                 .buttonStyle(PressStyle())
                 .accessibilityLabel(app.name)
+                .contextMenu {
+                    Button(role: .destructive) {
+                        remote.restartApp(app)
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded = false }
+                    } label: {
+                        Label("Restart \\(app.name)", systemImage: "arrow.clockwise")
+                    }
+                }
             }
         }
     }

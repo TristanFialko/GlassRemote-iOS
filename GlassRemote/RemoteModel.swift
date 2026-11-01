@@ -107,6 +107,7 @@ final class RemoteModel: ObservableObject {
     private var lastCursorNudge = Date.distantPast
     private var cursorTrailTask: Task<Void, Never>?
     @Published var cursorStatus = "Cursor: not started"
+    @Published var playbackDiagnostics = "No diagnostics captured yet. Reproduce the playback interruption, then capture diagnostics before reconnecting if possible."
     private var commandQueue = TaskQueue()
     private var reportQueue = TaskQueue()
 
@@ -415,6 +416,64 @@ final class RemoteModel: ObservableObject {
         Task {
             await launchApp(app)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+    }
+
+    /// Force-stops and relaunches one selected app without rebooting the TV box.
+    func restartApp(_ app: TVApp) {
+        Task {
+            guard let connection = adb, connected else {
+                status = "Cannot restart \(app.name) · not connected"
+                return
+            }
+            status = "Restarting \(app.name)…"
+            do {
+                let command = "am force-stop '\(app.package)' && sleep 1 && monkey -p '\(app.package)' 1 2>&1; rc=$?; echo GLASSREMOTE_RESTART_EXIT:$rc"
+                let output = try await runShell(connection, ["sh", "-c", command])
+                if output.contains("GLASSREMOTE_RESTART_EXIT:0") {
+                    status = "\(app.name) restarted"
+                    GRLog.note("apps", "user restarted \(app.package)")
+                } else {
+                    status = "Restart response · \(app.name): \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
+                }
+            } catch {
+                status = "Restart failed · \(app.name): \(error.localizedDescription)"
+            }
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        }
+    }
+
+    /// Captures a bounded, read-only Android logcat slice plus persistent-helper state.
+    /// Run after a playback interruption so the TV-side process/activity events are still in the ring buffer.
+    func capturePlaybackDiagnostics() {
+        Task {
+            guard let connection = adb, connected else {
+                playbackDiagnostics = "Connect to the TV box before capturing diagnostics."
+                return
+            }
+            playbackDiagnostics = "Collecting recent TV logs…"
+            let command = """
+            echo '=== PERSISTENT HELPERS ==='
+            for n in glass_uhid_bridge glass_uhid_keyboard glass_cursor; do
+              echo "--- $n ---"
+              if [ -s /data/local/tmp/$n.pid ]; then
+                P=$(cat /data/local/tmp/$n.pid)
+                echo "pid=$P"
+                if [ -r /proc/$P/cmdline ]; then tr '\\000' ' ' < /proc/$P/cmdline; echo; else echo 'process=not-running'; fi
+              else echo 'pid-file=missing'; fi
+              ls -l /data/local/tmp/$n.fifo 2>&1
+              if [ -f /data/local/tmp/$n.log ]; then tail -n 18 /data/local/tmp/$n.log; else echo 'helper-log=missing'; fi
+            done
+            echo '=== RECENT PLAYBACK / INPUT / ACTIVITY LOG ==='
+            logcat -d -v threadtime -t 1400 2>&1 | grep -i -E 'stremio|InputReader|InputDispatcher|InputManager|ActivityTaskManager|ActivityManager|WindowManager|MediaSession|am_proc_died|Start proc|Displayed|Configuration' | tail -n 220
+            """
+            do {
+                let output = try await runShell(connection, ["sh", "-c", command])
+                playbackDiagnostics = output.isEmpty ? "No matching log lines were returned. Reproduce the issue and capture immediately afterwards." : output
+                GRLog.note("diagnostics", "captured TV helper state and filtered logcat (\(output.count) chars)")
+            } catch {
+                playbackDiagnostics = "Diagnostics capture failed: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -909,6 +968,14 @@ final class RemoteModel: ObservableObject {
     private static let cursorHelperName = "glass_cursor"
     private static let cursorMatch = "glass_cursor"
 
+    func retryCursorHelper() {
+        guard connected else {
+            cursorStatus = "Cursor: connect to the TV first"
+            return
+        }
+        Task { _ = await withDeadline(20) { await self.startCursor() } }
+    }
+
     private func startCursor() async {
         guard let adb else { return }
         await stopCursor()
@@ -946,14 +1013,15 @@ final class RemoteModel: ObservableObject {
                 name: Self.cursorHelperName,
                 match: Self.cursorMatch,
                 command: "export CLASSPATH=/data/local/tmp/glass_cursor_setter.jar; exec app_process /system/bin com.glassremote.cursor.Main watch /data/local/tmp/glass_cursor_white.png \(hotspot.x) \(hotspot.y)",
-                ready: "READY|GLASS_CURSOR_SET_OK",
+                ready: "READY",
                 // The jar only reapplies when it receives R. Keep sending a low-rate heartbeat
                 // while the phone is suspended, and let phone-side nudges cover active movement.
                 keeper: "while :; do echo R; sleep 1; done"
             )
             guard launched else {
-                cursorStatus = "Cursor: persistent helper failed to start"
-                GRLog.note("cursor", "persistent cursor helper failed to start")
+                let reason = PersistentHelper.failures[Self.cursorHelperName] ?? "TV helper did not report READY"
+                cursorStatus = "Cursor: persistent helper failed · \(reason)"
+                GRLog.note("cursor", "persistent cursor helper failed to start: \(reason)")
                 return
             }
 

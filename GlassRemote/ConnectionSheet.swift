@@ -39,6 +39,19 @@ struct ConnectionSheet: View {
                     Text(remote.status).font(.footnote).textSelection(.enabled)
                     Text(remote.keyboardStatus).font(.footnote).textSelection(.enabled)
                     Text(remote.cursorStatus).font(.footnote).textSelection(.enabled)
+                    Button("Retry cursor helper") { remote.retryCursorHelper() }
+                        .disabled(!remote.connected)
+                }
+
+                Section("Playback diagnostics") {
+                    Button("Capture TV playback diagnostics") { remote.capturePlaybackDiagnostics() }
+                        .disabled(!remote.connected)
+                    Text("After Stremio stops or reloads, capture this before manually reconnecting. It records recent app/activity events and whether the persistent input helpers are still alive.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text(remote.playbackDiagnostics)
+                        .font(.system(size: 10, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxHeight: 240, alignment: .topLeading)
                 }
 
                 Section {
