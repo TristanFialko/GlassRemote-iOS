@@ -25,7 +25,9 @@ targets:
         excludes:
           - "glass_uhid_bridge"
           - "glass_uhid_keyboard"
+          - "glass_tcp_input_server"
           - "glass_uhid_keyboard.c"
+          - "glass_tcp_input_server.c"
           - "glass_cursor_setter.jar"
           - "glass_cursor_white.png"
     resources:
