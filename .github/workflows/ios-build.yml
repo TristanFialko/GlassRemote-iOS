@@ -1,4 +1,3 @@
-
 name: iOS build
 on:
   workflow_dispatch:
@@ -78,6 +77,30 @@ jobs:
             -configuration Debug \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO build
+
+      - name: Build for physical iPhone
+        run: |
+          xcodebuild -project GlassRemote.xcodeproj \
+            -scheme GlassRemote \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH="build/Build/Products/Release-iphoneos/GlassRemote.app"
+          test -d "$APP_PATH"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          /usr/bin/zip -qry GlassRemote-unsigned.ipa Payload
+
+      - name: Upload unsigned iPhone app
+        uses: actions/upload-artifact@v4
+        with:
+          name: glassremote-unsigned-ipa
+          path: GlassRemote-unsigned.ipa
+          if-no-files-found: error
 
       - name: Upload build logs
         if: always()
