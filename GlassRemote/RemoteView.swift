@@ -430,16 +430,21 @@ struct RemoteView: View {
     private var navRow: some View {
         HStack(spacing: 10) {
             navButton("arrow.uturn.backward", "Back") { remote.key("BACK") }
-            navButton("house", "Home") { remote.key("HOME") }
+            navButton("Home", action: { remote.key("HOME") }) { HomeGlyph() }
             navButton("line.3.horizontal", "Menu") { remote.key("MENU") }
             navButton("keyboard", "Keyboard") { showKeyboard = true }
         }
     }
 
     private func navButton(_ icon: String, _ label: String, action: @escaping () -> Void) -> some View {
+        navButton(label, action: action) {
+            Image(systemName: icon).font(.system(size: 19, weight: .medium))
+        }
+    }
+
+    private func navButton<Icon: View>(_ label: String, action: @escaping () -> Void, @ViewBuilder icon: () -> Icon) -> some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 19, weight: .medium))
+            icon()
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
                 .frame(height: 48)
@@ -451,35 +456,21 @@ struct RemoteView: View {
 
 
     private var volumeBar: some View {
-        HStack(spacing: 13) {
-            Image(systemName: volumeSliderValue <= 0.02 ? "speaker" : "speaker.wave.2.fill")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(.white.opacity(0.92))
-                .frame(width: 30)
-                .accessibilityHidden(true)
+        GlassVolumeSlider(value: $volumeSliderValue)
+            .onChange(of: volumeSliderValue) { newValue in
+                let oldStep = Int((volumeLastCommandValue * 20).rounded())
+                let newStep = Int((newValue * 20).rounded())
 
-            Slider(value: $volumeSliderValue, in: 0...1)
-                .tint(.white)
-                .accessibilityLabel("Volume")
-                .accessibilityHint("Drag horizontally to adjust the TV volume")
-                .onChange(of: volumeSliderValue) { newValue in
-                    let oldStep = Int((volumeLastCommandValue * 20).rounded())
-                    let newStep = Int((newValue * 20).rounded())
+                volumeLastCommandValue = newValue
 
-                    volumeLastCommandValue = newValue
+                let difference = newStep - oldStep
+                guard difference != 0 else { return }
 
-                    let difference = newStep - oldStep
-                    guard difference != 0 else { return }
+                let key = difference > 0 ? "VOLUME_UP" : "VOLUME_DOWN"
 
-                    let key = difference > 0 ? "VOLUME_UP" : "VOLUME_DOWN"
-
-                    for _ in 0..<min(abs(difference), 4) {
-                        remote.volume(key)
-                    }
+                for _ in 0..<min(abs(difference), 4) {
+                    remote.volume(key)
                 }
-        }
-        .padding(.horizontal, 18)
-        .frame(height: 58)
-        .glassSurface(Capsule(), interactive: true, elevated: true)
+            }
     }
 }
