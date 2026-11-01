@@ -510,7 +510,7 @@ final class RemoteModel: ObservableObject {
             status = "Mouse helper found · uploading \(data.count) bytes"
 
             let upload = try await adb.open(
-                destination: "exec:sh -c 'cat > /data/local/tmp/glass_uhid_bridge && chmod 700 /data/local/tmp/glass_uhid_bridge'"
+                destination: "exec:sh -c 'cat > /data/local/tmp/glass_uhid_bridge.upload'"
             )
             try await upload.write(data)
             try await upload.close()
@@ -525,7 +525,7 @@ final class RemoteModel: ObservableObject {
             for attempt in 0..<50 {
                 lastOutput = try await runShell(
                     adb,
-                    ["sh", "-c", "if [ -f /data/local/tmp/glass_uhid_bridge ]; then wc -c < /data/local/tmp/glass_uhid_bridge; else echo MISSING; fi"]
+                    ["sh", "-c", "if [ -f /data/local/tmp/glass_uhid_bridge.upload ]; then wc -c < /data/local/tmp/glass_uhid_bridge.upload; else echo MISSING; fi"]
                 )
                 remoteBytes = lastOutput
                     .split(whereSeparator: { $0.isWhitespace })
@@ -548,7 +548,7 @@ final class RemoteModel: ObservableObject {
 
             let chmodOutput = try await runShell(
                 adb,
-                ["sh", "-c", "chmod 700 /data/local/tmp/glass_uhid_bridge && echo GLASSREMOTE_CHMOD_OK"]
+                ["sh", "-c", "chmod 700 /data/local/tmp/glass_uhid_bridge.upload && mv -f /data/local/tmp/glass_uhid_bridge.upload /data/local/tmp/glass_uhid_bridge && echo GLASSREMOTE_CHMOD_OK"]
             )
             guard chmodOutput.contains("GLASSREMOTE_CHMOD_OK") else {
                 throw NSError(
@@ -559,51 +559,70 @@ final class RemoteModel: ObservableObject {
             }
 
             // Disable shell echo before exec. Read until READY rather than assuming
-            // the first ADB packet contains the helper's startup message.
-            let stream = try await adb.open(destination: "shell:sh")
-            try await stream.write(Data("stty -echo 2>/dev/null; exec /data/local/tmp/glass_uhid_bridge\n".utf8))
+            // the first ADB packet contains the helper's startup message. The upload's
+            // `cat` may still hold the file open for a moment after the size matches, which
+            // makes exec fail with "Text file busy", so retry that case briefly.
+            var launched: AdbStream?
+            var lastStartupText = ""
 
-            // If the helper never answers, closing the stream unblocks the read below.
-            let watchdog = Task { [stream] in
-                try? await Task.sleep(nanoseconds: 8_000_000_000)
-                if !Task.isCancelled { try? await stream.close() }
-            }
+            for _ in 0..<12 {
+                let stream = try await adb.open(destination: "shell:sh")
+                try await stream.write(Data("stty -echo 2>/dev/null; exec /data/local/tmp/glass_uhid_bridge\n".utf8))
 
-            var startupData = Data()
-            var ready = false
+                // If the helper never answers, closing the stream unblocks the read below.
+                let watchdog = Task { [stream] in
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    if !Task.isCancelled { try? await stream.close() }
+                }
 
-            while !ready {
-                let streamClosed = await stream.getIsClosed()
-                if streamClosed { break }
+                var startupData = Data()
+                var ready = false
 
-                let chunk: Data
-                do {
-                    chunk = try await stream.read()
-                } catch {
+                while !ready {
+                    let streamClosed = await stream.getIsClosed()
+                    if streamClosed { break }
+
+                    let chunk: Data
+                    do {
+                        chunk = try await stream.read()
+                    } catch {
+                        break
+                    }
+                    if chunk.isEmpty { break }
+                    startupData.append(chunk)
+
+                    let response = String(data: startupData, encoding: .utf8) ?? ""
+                    ready = response.contains("READY")
+
+                    if response.contains("ERROR") || response.contains("Text file busy") {
+                        break
+                    }
+                }
+
+                watchdog.cancel()
+                lastStartupText = String(data: startupData, encoding: .utf8) ?? ""
+
+                if ready {
+                    launched = stream
                     break
                 }
-                if chunk.isEmpty { break }
-                startupData.append(chunk)
 
-                let response = String(data: startupData, encoding: .utf8) ?? ""
-                ready = response.contains("READY")
-
-                if response.contains("ERROR") {
-                    break
-                }
-            }
-
-            watchdog.cancel()
-            let startupText = String(data: startupData, encoding: .utf8) ?? ""
-
-            guard ready else {
                 try? await stream.close()
+                if lastStartupText.contains("Text file busy") {
+                    GRLog.note("mouse", "helper file still busy; retrying launch")
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                    continue
+                }
+                break
+            }
+
+            guard let stream = launched else {
                 throw NSError(
                     domain: "GlassRemote",
                     code: 12,
-                    userInfo: [NSLocalizedDescriptionKey: startupText.isEmpty
+                    userInfo: [NSLocalizedDescriptionKey: lastStartupText.isEmpty
                         ? "Mouse helper exited without a READY response"
-                        : "Mouse helper did not start: \(startupText.trimmingCharacters(in: .whitespacesAndNewlines))"]
+                        : "Mouse helper did not start: \(lastStartupText.trimmingCharacters(in: .whitespacesAndNewlines))"]
                 )
             }
 
