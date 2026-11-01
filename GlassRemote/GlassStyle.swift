@@ -90,7 +90,7 @@ struct PressStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .opacity(configuration.isPressed ? 0.88 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-            .onChange(of: configuration.isPressed) { _, pressed in
+            .onChange(of: configuration.isPressed) { pressed in
                 if pressed {
                     UIImpactFeedbackGenerator(style: .soft).impactOccurred()
                 }
