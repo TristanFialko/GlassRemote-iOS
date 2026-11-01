@@ -20,14 +20,28 @@ jobs:
           sdkmanager "ndk;27.2.12479018"
 
       - name: Compile ARM32 UHID keyboard helper
+        shell: bash
         run: |
-          NDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}/ndk/27.2.12479018"
-          TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin"
-          if [ ! -d "$TOOLCHAIN" ]; then
-            TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-arm64/bin"
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
+          NDK_ROOT="$SDK_ROOT/ndk/27.2.12479018"
+          if [ ! -d "$NDK_ROOT" ]; then
+            echo "NDK not found at $NDK_ROOT"
+            echo "Installed SDK roots:"
+            find "$HOME/Library/Android" -maxdepth 4 -type d -name '27.2.12479018' -print 2>/dev/null || true
+            exit 1
           fi
-          "$TOOLCHAIN/armv7a-linux-androideabi23-clang" \
-            -O2 -Wall -Wextra -fPIE -pie \
+
+          COMPILER="$(find "$NDK_ROOT/toolchains/llvm/prebuilt" -type f \
+            -name armv7a-linux-androideabi23-clang -print -quit)"
+          if [ -z "$COMPILER" ]; then
+            echo "ARMv7 Android NDK compiler not found. Available prebuilt toolchains:"
+            find "$NDK_ROOT/toolchains/llvm/prebuilt" -maxdepth 2 -type d -print || true
+            exit 1
+          fi
+
+          echo "Using compiler: $COMPILER"
+          "$COMPILER" -O2 -Wall -Wextra -fPIE -pie \
             GlassRemote/glass_uhid_keyboard.c \
             -o GlassRemote/glass_uhid_keyboard
           file GlassRemote/glass_uhid_keyboard
