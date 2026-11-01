@@ -57,29 +57,35 @@ struct RemoteView: View {
         .padding(.horizontal, 2)
     }
 
-    private func appGrid(compact: Bool) -> some View {
-        LazyVGrid(columns: columns, spacing: compact ? 7 : 9) {
-            ForEach(remote.apps) { app in
-                Button { remote.launch(app) } label: {
-                    Image("\(app.asset)_dark")
-                        .resizable().scaledToFit()
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 5).padding(.vertical, 4)
-                        .frame(maxWidth: .infinity)
-                        .aspectRatio(1.24, contentMode: .fit)
-                        .background(LinearGradient(colors: [Color.white.opacity(0.10), Color.white.opacity(0.025)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 15))
-                        .overlay(RoundedRectangle(cornerRadius: 15).stroke(glassLine, lineWidth: 1))
-                        .shadow(color: .black.opacity(0.35), radius: 9, y: 5)
-                }
-                .buttonStyle(PressStyle())
-                .disabled(remote.connected && !remote.installed.contains(app.package))
-                .opacity(remote.connected && !remote.installed.contains(app.package) ? 0.28 : 1)
-                .accessibilityLabel(app.name)
+private func appGrid(compact: Bool) -> some View {
+    LazyVGrid(columns: columns, spacing: compact ? 8 : 10) {
+        ForEach(remote.apps) { app in
+            Button { remote.launch(app) } label: {
+                Image("\(app.asset)_dark")
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 17, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
+                    }
+                    .background {
+                        RoundedRectangle(cornerRadius: 17, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                    }
+                    .shadow(color: .black.opacity(0.34), radius: 8, y: 4)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(1, contentMode: .fit)
             }
+            .buttonStyle(PressStyle())
+            .disabled(remote.connected && !remote.installed.contains(app.package))
+            .opacity(remote.connected && !remote.installed.contains(app.package) ? 0.28 : 1)
+            .accessibilityLabel(app.name)
         }
-        .padding(10)
-        .background(panelBackground)
     }
+    .padding(10)
+    .background(panelBackground)
+}
 
     private var textEntry: some View {
         HStack(spacing: 8) {
