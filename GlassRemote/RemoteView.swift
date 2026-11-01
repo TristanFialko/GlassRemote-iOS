@@ -9,6 +9,7 @@ struct RemoteView: View {
     @State private var text = ""
     @State private var lastPoint: CGPoint?
     @State private var dragging = false
+    @State private var scrollState = TwoFingerScrollState()
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
 
@@ -139,28 +140,28 @@ private func appGrid(compact: Bool) -> some View {
                 .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.white.opacity(0.2)))
                 .shadow(color: .black.opacity(0.55), radius: 14, y: 8)
                 .contentShape(RoundedRectangle(cornerRadius: 23))
+                .background {
+                    TwoFingerScroll(state: scrollState) { wheel, hscroll in
+                        remote.mouse(wheel: wheel, hscroll: hscroll)
+                    }
+                }
                 .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { value in
                         if let previous = lastPoint {
                             let dx = Int((value.location.x - previous.x) * 2)
                             let dy = Int((value.location.y - previous.y) * 2)
-                            if abs(dx) + abs(dy) > 0 { remote.mouse(dx: dx, dy: dy) }
+                            if abs(dx) + abs(dy) > 0 && !scrollState.isActive { remote.mouse(dx: dx, dy: dy) }
                         }
                         lastPoint = value.location
                         if !dragging && value.translation == .zero { }
                     }
                     .onEnded { value in
-                        if abs(value.translation.width) < 8 && abs(value.translation.height) < 8 {
+                        if abs(value.translation.width) < 8 && abs(value.translation.height) < 8 && !scrollState.suppressesClicks {
                             remote.mouse(buttons: 1); UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) { remote.mouse(buttons: 0) }
                         }
                         lastPoint = nil
                     })
-                .onLongPressGesture(minimumDuration: 0.35, pressing: { pressing in
-                    dragging = pressing
-                    if pressing { remote.mouse(buttons: 1); UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
-                    else { remote.mouse(buttons: 0) }
-                }, perform: {})
         }
         .frame(height: geoTrackpadHeight)
     }
