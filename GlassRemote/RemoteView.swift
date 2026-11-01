@@ -473,6 +473,18 @@ private var volumeBar: some View {
                 .tint(.white)
                 .accessibilityLabel("Volume")
                 .accessibilityHint("Drag horizontally to adjust the TV volume")
+                   private var volumeBar: some View {
+        HStack(spacing: 13) {
+            Image(systemName: volumeSliderValue <= 0.02 ? "speaker" : "speaker.wave.2.fill")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.white.opacity(0.92))
+                .frame(width: 30)
+                .accessibilityHidden(true)
+
+            Slider(value: $volumeSliderValue, in: 0...1)
+                .tint(.white)
+                .accessibilityLabel("Volume")
+                .accessibilityHint("Drag horizontally to adjust the TV volume")
                 .onChange(of: volumeSliderValue) { newValue in
                     let oldStep = Int((volumeLastCommandValue * 20).rounded())
                     let newStep = Int((newValue * 20).rounded())
