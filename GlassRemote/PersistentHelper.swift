@@ -59,7 +59,7 @@ enum PersistentHelper {
         $SS nohup sh -c "echo \\$\\$ > \(p.pid); sleep 2147483647 > \(p.fifo) & \(command) < \(p.fifo) > \(p.log) 2>&1" </dev/null >/dev/null 2>&1 &
         i=0
         while [ $i -lt 60 ]; do
-          if grep -q '\(ready)' \(p.log) 2>/dev/null; then echo GLASS_STARTED; exit 0; fi
+          if grep -q -E '\(ready)' \(p.log) 2>/dev/null; then echo GLASS_STARTED; exit 0; fi
           if grep -q 'ERROR' \(p.log) 2>/dev/null; then break; fi
           i=$((i+1)); sleep 0.2
         done

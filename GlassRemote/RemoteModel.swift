@@ -276,17 +276,39 @@ final class RemoteModel: ObservableObject {
                 // Polling starts only after the mouse/keyboard helpers have finished their
                 // startup handshakes, so no extra ADB stream competes with them.
                 startMediaPolling()
+                reconnectAttempt = 0
 
             } catch {
                 guard session == sessionID else { return }
                 connected = false
-                status = "Connection failed: \(error.localizedDescription)"
+                status = "Connection failed: \(error.localizedDescription) · retrying"
+                scheduleAutoReconnect()
             }
+        }
+    }
+
+    private var reconnectAttempt = 0
+    private var reconnectTask: Task<Void, Never>?
+
+    /// Retries a failed connect with a growing delay (3 s ... 20 s) until it works or the user
+    /// disconnects. Never starts a second connect while one is in flight.
+    private func scheduleAutoReconnect() {
+        guard wantsConnection, reconnectTask == nil else { return }
+        reconnectAttempt += 1
+        let delay = min(Double(reconnectAttempt) * 3, 20)
+        GRLog.note("adb", "auto-reconnect attempt \(reconnectAttempt) in \(Int(delay)) s")
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self else { return }
+            self.reconnectTask = nil
+            guard !Task.isCancelled, self.wantsConnection, !self.connected, !self.isBusyConnecting else { return }
+            if self.appActive { self.connect() } else { self.recoveryPending = true }
         }
     }
 
     func disconnect() {
         GRLog.note("adb", "disconnect() requested by user")
+        reconnectTask?.cancel(); reconnectTask = nil
         wantsConnection = false
         sessionID += 1
         let session = sessionID
@@ -898,7 +920,7 @@ final class RemoteModel: ObservableObject {
             if await PersistentHelper.launch(
                 adb: adb, name: "glass_cursor_setter", match: "com.glassremote.cursor",
                 command: "export CLASSPATH=/data/local/tmp/glass_cursor_setter.jar; exec app_process /system/bin com.glassremote.cursor.Main watch /data/local/tmp/glass_cursor_white.png \(hotspot.x) \(hotspot.y)",
-                ready: "GLASS_CURSOR_SET_OK") {
+                ready: "READY|GLASS_CURSOR_SET_OK") {
                 cursorStatus = "Cursor: custom white cursor applied"
                 GRLog.note("cursor", "persistent helper running")
                 return
@@ -925,7 +947,7 @@ final class RemoteModel: ObservableObject {
                 if chunk.isEmpty { break }
                 output.append(chunk)
                 let text = String(decoding: output, as: UTF8.self)
-                if text.contains("GLASS_CURSOR_SET_OK") { applied = true }
+                if text.contains("GLASS_CURSOR_SET_OK") || text.contains("READY") { applied = true }
                 else if text.contains("GLASS_CURSOR_ERROR") { break }
             }
             watchdog.cancel()
@@ -1078,16 +1100,10 @@ final class RemoteModel: ObservableObject {
         }
 
         guard healthy else {
-            // Do not automatically call connect() here. connect() tears down the old
-            // ADB session and closes both UHID streams; Android then removes/re-adds
-            // the virtual input devices. If Stremio is playing, that avoidable device
-            // churn may interrupt playback. Keep the existing handles untouched and
-            // let the user choose when to perform a full reconnect from the status pill.
-            recoveryPending = false
-            requiresUserReconnect = true
-            connected = false
-            GRLog.note("adb", "transport health checks failed; preserving existing streams; waiting for user-initiated reconnect")
-            status = "Connection interrupted · tap to reconnect"
+            // The TV-side helpers now outlive the phone connection (PersistentHelper), so a full
+            // reconnect re-attaches to them instead of recreating the virtual input devices.
+            GRLog.note("adb", "transport health checks failed; reconnecting automatically")
+            connect()
             return
         }
 
@@ -1101,10 +1117,8 @@ final class RemoteModel: ObservableObject {
                 try await startCommandShell(connection)
             } catch {
                 guard session == sessionID, wantsConnection else { return }
-                requiresUserReconnect = true
-                connected = false
-                GRLog.note("adb", "command shell repair failed; preserving existing HID streams; waiting for user reconnect")
-                status = "Command shell unavailable · tap to reconnect"
+                GRLog.note("adb", "command shell repair failed; reconnecting automatically")
+                connect()
                 return
             }
         }
@@ -1115,13 +1129,8 @@ final class RemoteModel: ObservableObject {
         // a new input device. Keep playback-facing recovery non-invasive and let the
         // user choose when to re-enumerate devices via the explicit reconnect action.
         if !mouseReady || !keyboard.isReady {
-            requiresUserReconnect = true
-            connected = false
-            let missing = [!mouseReady ? "mouse" : nil, !keyboard.isReady ? "keyboard" : nil]
-                .compactMap { $0 }
-                .joined(separator: " + ")
-            GRLog.note("adb", "automatic recovery found missing HID helper(s): \(missing); preserving remaining streams and waiting for user reconnect")
-            status = "\(missing.capitalized) interrupted · tap to reconnect"
+            GRLog.note("adb", "HID helper stream missing (mouse=\(mouseReady) keyboard=\(keyboard.isReady)); reconnecting automatically")
+            connect()
             return
         }
         recoveryPending = false
