@@ -1,52 +1,53 @@
 import SwiftUI
 
-/// Black smoked-glass styling.
+/// Satin smoked-graphite styling.
 ///
-/// On iOS 26 and later (when built with Xcode 26+) surfaces use Apple's native Liquid Glass
-/// (`glassEffect`) with a dark smoke tint. On earlier systems, or when built with an older
-/// SDK, they fall back to a dark material with silver edge highlights so the project always
-/// compiles and still looks like glass.
+/// Surfaces are matte, hardware-like graphite: a flat vertical tone ramp, one even hairline edge and
+/// a soft shadow. There are no diagonal specular streaks, no glow and no bright rims. Native Liquid
+/// Glass (`glassEffect`, iOS 26+, Xcode 26+) is used sparingly, only where `accent` is true, with a
+/// heavy graphite tint. Everything is static fill/stroke, so nothing here is costly on the pointer path.
 extension View {
     @ViewBuilder
-    func glassSurface<S: Shape>(_ shape: S, interactive: Bool = false, elevated: Bool = false) -> some View {
+    func glassSurface<S: Shape>(_ shape: S, interactive: Bool = false, elevated: Bool = false, accent: Bool = false) -> some View {
         #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            let smoke = Glass.regular.tint(Color.black.opacity(elevated ? 0.12 : 0.38))
+        if accent, #available(iOS 26.0, *) {
+            let smoke = Glass.regular.tint(Color(white: 0.07).opacity(0.72))
             self.glassEffect(interactive ? smoke.interactive() : smoke, in: shape)
         } else {
-            self.legacyGlass(shape, elevated: elevated)
+            self.satinGraphite(shape, elevated: elevated || accent)
         }
         #else
-        self.legacyGlass(shape, elevated: elevated)
+        self.satinGraphite(shape, elevated: elevated || accent)
         #endif
     }
 
-    fileprivate func legacyGlass<S: Shape>(_ shape: S, elevated: Bool) -> some View {
+    fileprivate func satinGraphite<S: Shape>(_ shape: S, elevated: Bool) -> some View {
         self
             .background {
                 ZStack {
-                    shape.fill(.ultraThinMaterial)
-                    shape.fill(Color.black.opacity(elevated ? 0.18 : 0.46))
+                    // Matte graphite body: slightly lighter at the top, darker at the bottom.
                     shape.fill(
                         LinearGradient(
-                            colors: [Color.white.opacity(elevated ? 0.26 : 0.12), Color.white.opacity(0.015), Color.white.opacity(0.05)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                            colors: [Color(white: elevated ? 0.19 : 0.14), Color(white: elevated ? 0.125 : 0.088)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    // Very soft satin falloff over the upper part only (vertical, not a streak).
+                    shape.fill(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.035), Color.clear],
+                            startPoint: .top,
+                            endPoint: UnitPoint(x: 0.5, y: 0.45)
                         )
                     )
                 }
             }
             .overlay {
-                shape.stroke(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.55), Color.white.opacity(0.06), Color.white.opacity(0.0), Color.white.opacity(0.26)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
+                // One even, low-contrast edge. No gradient rim, no glow.
+                shape.stroke(Color.white.opacity(elevated ? 0.12 : 0.09), lineWidth: 0.75)
             }
-            .shadow(color: .black.opacity(0.5), radius: 14, y: 8)
+            .shadow(color: .black.opacity(0.45), radius: 6, y: 3)
     }
 }
 
@@ -107,7 +108,7 @@ struct ModeSelector: View {
             .background {
                 if selected {
                     Color.clear
-                        .glassSurface(Capsule(), interactive: true, elevated: true)
+                        .glassSurface(Capsule(), interactive: true, elevated: true, accent: true)
                         .matchedGeometryEffect(id: "pill", in: pill)
                 }
             }
@@ -116,5 +117,37 @@ struct ModeSelector: View {
         .buttonStyle(.plain)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+
+/// Near-black canvas with a broad, very soft charcoal glow behind the central content, so the
+/// graphite surfaces separate from the background. Static: it has no inputs and no state, so SwiftUI
+/// never re-evaluates it while the pointer moves, and it is drawn once as plain gradients (no blur,
+/// no material, no animation).
+struct AmbientBackdrop: View {
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            ZStack {
+                Color.black
+                // Broad charcoal body behind the middle of the layout (Now Playing -> control surface).
+                RadialGradient(
+                    colors: [Color(white: 0.095), Color(white: 0.055), Color(white: 0.02), .black],
+                    center: UnitPoint(x: 0.5, y: 0.55),
+                    startRadius: 0,
+                    endRadius: max(w, h) * 0.72
+                )
+                // Slight lift under the trackpad / D-pad area; wide and faint, not a visible spot.
+                RadialGradient(
+                    colors: [Color(white: 0.06), .clear],
+                    center: UnitPoint(x: 0.5, y: 0.78),
+                    startRadius: 0,
+                    endRadius: w * 0.95
+                )
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 }

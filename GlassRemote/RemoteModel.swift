@@ -94,7 +94,16 @@ final class RemoteModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            // Log-only. Leaving the app must never send anything to the TV box.
+            GRLog.note("lifecycle", "willResignActive (no device commands sent)")
             Task { @MainActor in self?.appActive = false }
+        }
+
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            GRLog.note("lifecycle", "didEnterBackground")
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
+            GRLog.note("lifecycle", "willEnterForeground")
         }
 
         // iOS may suspend the app and drop its sockets. Check the session whenever the app
@@ -105,19 +114,26 @@ final class RemoteModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.appActive = true
-                self?.recoverIfNeeded()
-                self?.applyTVSettings()
-                await self?.pollMedia()
+                guard let self else { return }
+                GRLog.note("lifecycle", "didBecomeActive connected=\(self.connected) mouseReady=\(self.mouseReady) recovering=\(self.isBusyConnecting)")
+                self.appActive = true
+                self.recoverIfNeeded()
+                self.applyTVSettings()
+                // Do not race a read-only media poll against a health check / reconnect on a
+                // socket iOS may just have killed. The 3 s polling loop resumes by itself.
             }
         }
     }
+
+    /// True while a connect or recovery is in flight. Used to keep optional traffic off the transport.
+    var isBusyConnecting: Bool { connectingSession != nil || recoveryTask != nil || rebootRecoveryTask != nil }
 
     func connect() {
         wantsConnection = true
         sessionID += 1
         let session = sessionID
         connectingSession = session
+        GRLog.note("adb", "connect() session=\(session)")
 
         Task {
             defer {
@@ -178,11 +194,14 @@ final class RemoteModel: ObservableObject {
                 status = "Connected · low-latency shell ready"
                 await refreshApps()
                 guard session == sessionID else { return }
-                startMediaPolling()
                 applyTVSettings()
                 await startMouse()
                 guard session == sessionID else { return }
                 await startKeyboard()
+                guard session == sessionID else { return }
+                // Polling starts only after the mouse/keyboard helpers have finished their
+                // startup handshakes, so no extra ADB stream competes with them.
+                startMediaPolling()
 
             } catch {
                 guard session == sessionID else { return }
@@ -193,6 +212,7 @@ final class RemoteModel: ObservableObject {
     }
 
     func disconnect() {
+        GRLog.note("adb", "disconnect() requested by user")
         wantsConnection = false
         sessionID += 1
         let session = sessionID
@@ -254,6 +274,8 @@ final class RemoteModel: ObservableObject {
             return
         }
 
+        // Typed text is never logged.
+        GRLog.note("cmd", command.hasPrefix("input text") ? "input text <redacted>" : command)
         commandQueue.enqueue { [weak self] in
             do {
                 try await stream.write(Data((command + "\n").utf8))
@@ -557,6 +579,7 @@ final class RemoteModel: ObservableObject {
             do {
                 try await mouseStream.write(Data(line.utf8))
             } catch {
+                GRLog.note("mouse", "input stream write failed: \(error.localizedDescription)")
                 await MainActor.run {
                     self.mouseReady = false
                     self.status = "Mouse input stream failed: \(error.localizedDescription)"
@@ -584,6 +607,7 @@ final class RemoteModel: ObservableObject {
     /// Detaches every session object first, then closes the old (possibly dead) ones with a
     /// deadline each. Close calls on a broken socket can otherwise block indefinitely.
     private func teardownSession() async {
+        GRLog.note("adb", "teardownSession: closing mouse/keyboard/command streams + ADB connection (UHID devices on the box are destroyed)")
         stopMediaPolling()
         mouseReady = false
         let oldMouse = mouseStream
@@ -630,15 +654,24 @@ final class RemoteModel: ObservableObject {
             return
         }
 
-        let healthy = await withDeadline(4) { () async -> Bool in
-            let output = (try? await self.runShell(connection, ["echo", "GLASSREMOTE_OK"])) ?? ""
-            return output.contains("GLASSREMOTE_OK")
-        } ?? false
+        // Right after iOS resumes the app the socket can be slow rather than dead. A full
+        // rebuild destroys and recreates the UHID mouse/keyboard on the box (which Android can
+        // treat as an input-configuration change), so give the transport two fair chances first.
+        var healthy = false
+        for attempt in 1...2 {
+            healthy = await withDeadline(8) { () async -> Bool in
+                let output = (try? await self.runShell(connection, ["echo", "GLASSREMOTE_OK"])) ?? ""
+                return output.contains("GLASSREMOTE_OK")
+            } ?? false
+            GRLog.note("adb", "recovery health check attempt \(attempt): \(healthy ? "ok" : "failed")")
+            if healthy || session != sessionID || !wantsConnection { break }
+        }
 
         guard session == sessionID, wantsConnection else { return }
 
         guard healthy else {
             // The ADB transport itself is gone: rebuild everything.
+            GRLog.note("adb", "transport unhealthy after 2 checks -> full reconnect")
             status = "Connection lost · reconnecting…"
             connect()
             return
@@ -656,7 +689,7 @@ final class RemoteModel: ObservableObject {
             }
         }
         guard session == sessionID, wantsConnection else { return }
-        if !mouseReady { await startMouse() }
+        if !mouseReady { GRLog.note("mouse", "recovery: restarting mouse helper"); await startMouse() }
         guard session == sessionID, wantsConnection else { return }
         if !keyboard.isReady { await startKeyboard() }
     }

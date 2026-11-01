@@ -56,7 +56,9 @@ extension RemoteModel {
     }
 
     func pollMedia() async {
-        guard connected, appActive, let connection = adb else { return }
+        // Strictly read-only (`dumpsys media_session`), and never while the transport is being
+        // rebuilt or the app is not active.
+        guard connected, appActive, !isBusyConnecting, let connection = adb else { return }
         let output = await withDeadline(6) { () async -> String in
             (try? await self.runShell(connection, ["sh", "-c", "cat /proc/uptime; dumpsys media_session"])) ?? ""
         } ?? ""
@@ -75,6 +77,7 @@ extension RemoteModel {
 
     /// Sends an Android keycode over the persistent ADB command shell.
     func androidKey(_ code: Int) {
+        GRLog.note("media", "user-initiated keyevent \(code)")
         guard connected else { status = "Button failed · not connected"; return }
         sendPersistentCommand("input keyevent \(code)")
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()

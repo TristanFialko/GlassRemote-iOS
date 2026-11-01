@@ -1,11 +1,20 @@
 import SwiftUI
 import UIKit
 
+/// Plain storage for the last drag point. Intentionally not observable.
+final class PointerBox { var last: CGPoint? }
+
 struct RemoteView: View {
     @EnvironmentObject private var remote: RemoteModel
     @ObservedObject private var quick = QuickActionStore.shared
 
-    @State private var lastPoint: CGPoint?
+    // Drag position lives in a reference box so updating it on every touch move does NOT invalidate
+    // RemoteView's body (a plain @State CGPoint? did). Same values, same order, same behaviour.
+    @State private var pointerBox = PointerBox()
+    private var lastPoint: CGPoint? {
+        get { pointerBox.last }
+        nonmutating set { pointerBox.last = newValue }
+    }
     @State private var dragging = false
     @State private var scrollState = TwoFingerScrollState()
     @State private var appsExpanded = false
@@ -13,6 +22,7 @@ struct RemoteView: View {
     @State private var showQuickEditor = false
     @State private var pendingPower: PowerAction?
     @State private var didAutoConnect = false
+    @State private var showPlayer = false
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
 
@@ -43,6 +53,11 @@ struct RemoteView: View {
         .sheet(isPresented: $remote.showConnection) { ConnectionSheet().environmentObject(remote) }
         .sheet(isPresented: $showKeyboard) { KeyboardSheet().environmentObject(remote) }
         .sheet(isPresented: $showQuickEditor) { QuickActionEditor(store: quick) }
+        .sheet(isPresented: $showPlayer) {
+            NowPlayingSheet().environmentObject(remote)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
         .confirmationDialog(
             pendingPower?.title ?? "",
             isPresented: Binding(get: { pendingPower != nil }, set: { if !$0 { pendingPower = nil } }),
@@ -62,14 +77,7 @@ struct RemoteView: View {
 
     // MARK: - Backdrop
 
-    private var backdrop: some View {
-        ZStack {
-            Color.black
-            RadialGradient(colors: [Color.white.opacity(0.07), .clear], center: .top, startRadius: 0, endRadius: 360)
-            RadialGradient(colors: [Color.white.opacity(0.03), .clear], center: .bottomLeading, startRadius: 0, endRadius: 320)
-        }
-        .ignoresSafeArea()
-    }
+    private var backdrop: some View { AmbientBackdrop() }
 
     // MARK: - Header
 
@@ -97,7 +105,7 @@ struct RemoteView: View {
                     Circle()
                         .fill(remote.connected ? Color.green : Color.orange)
                         .frame(width: 8, height: 8)
-                        .shadow(color: (remote.connected ? Color.green : Color.orange).opacity(0.7), radius: 5)
+                        .shadow(color: (remote.connected ? Color.green : Color.orange).opacity(0.35), radius: 2)
                     Text(statusLabel).font(.system(size: 13, weight: .semibold))
                 }
                 .foregroundStyle(Color.white.opacity(0.85))
@@ -210,7 +218,8 @@ struct RemoteView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.black.opacity(0.75))
                 if let app {
-                    Image("\(app.asset)_dark").resizable().scaledToFit().padding(3)
+                    // Stremio uses a transparent, border-free asset so it sits on the card with no second frame.
+                    Image(app.asset == "stremio" ? "stremio_nowplaying" : "\(app.asset)_dark").resizable().scaledToFit().padding(app.asset == "stremio" ? 9 : 3)
                 } else {
                     Image(systemName: media.isActive ? "play.rectangle" : "tv")
                         .font(.system(size: 20)).foregroundStyle(.white.opacity(0.55))
@@ -251,7 +260,15 @@ struct RemoteView: View {
             ) { remote.mediaKey(media.canNext ? 87 : 90) }
         }
         .padding(12)
-        .glassSurface(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        // The whole card opens the expanded player. The tap target sits BEHIND the content, so the
+        // Previous / Play-Pause / Next buttons (drawn on top) receive their own taps and never reach it.
+        .background {
+            Color.clear
+                .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .onTapGesture { if media.isActive { showPlayer = true } }
+        }
+        .glassSurface(RoundedRectangle(cornerRadius: 28, style: .continuous), elevated: true)
+        .accessibilityAction(named: "Open player") { if media.isActive { showPlayer = true } }
     }
 
     @ViewBuilder
@@ -328,7 +345,7 @@ struct RemoteView: View {
     private var mouseSurface: some View {
         let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
         return Color.clear
-            .glassSurface(shape)
+            .glassSurface(shape, elevated: true)
             .overlay(alignment: .bottom) {
                 Text("Tap to click · two fingers to scroll")
                     .font(.system(size: 12)).foregroundStyle(.white.opacity(0.7))
@@ -367,8 +384,10 @@ struct RemoteView: View {
         return GeometryReader { geo in
             let size = max(150, min(250, min(geo.size.width, geo.size.height) - 24))
             ZStack {
-                Color.clear.glassSurface(Circle())
+                Color.clear.glassSurface(Circle(), elevated: true)
                     .frame(width: size, height: size)
+                    .overlay(Circle().stroke(Color.white.opacity(0.20), lineWidth: 1.5))
+                    .overlay(Circle().stroke(Color.black.opacity(0.55), lineWidth: 1).padding(1.5))
                 VStack(spacing: 0) {
                     HStack(spacing: 0) { Color.clear; dpadKey("chevron.up", "UP", "Up"); Color.clear }
                     HStack(spacing: 0) {
@@ -395,7 +414,7 @@ struct RemoteView: View {
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background {
-                    if ok { Color.clear.glassSurface(Circle(), interactive: true, elevated: true).padding(6) }
+                    if ok { Color.clear.glassSurface(Circle(), interactive: true, elevated: true, accent: true).padding(6) }
                 }
                 .contentShape(Rectangle())
         }

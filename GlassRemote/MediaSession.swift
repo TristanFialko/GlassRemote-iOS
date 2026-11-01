@@ -22,6 +22,11 @@ struct MediaState: Equatable {
     var canNext: Bool { actions & 32 != 0 }
     var canRewind: Bool { actions & 8 != 0 }
     var canFastForward: Bool { actions & 64 != 0 }
+    /// ACTION_SEEK_TO is advertised, but Android offers no ADB route to invoke it with an arbitrary position.
+    var advertisesSeekTo: Bool { actions & 256 != 0 }
+    /// Total length. `dumpsys media_session` prints only the description, never METADATA_KEY_DURATION,
+    /// so this stays nil and the player never shows a scrubber. Set only if a real source appears.
+    var durationMs: Int64? { nil }
 
     /// Playback position now, extrapolated from the last sample while playing.
     func position(at date: Date) -> TimeInterval {
