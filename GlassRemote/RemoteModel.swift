@@ -124,10 +124,17 @@ final class RemoteModel: ObservableObject {
             }
 
             do {
-                let output = try await runShell(adb, ["monkey", "-p", app.package, "1"])
-                status = "Launch command sent · \(app.name)"
-                if output.localizedCaseInsensitiveContains("no activities found") {
-                    status = "Launch failed · no activity found for \(app.name)"
+                let output = try await runShell(
+                    adb,
+                    ["sh", "-c", "monkey -p \(app.package) 1 2>&1; rc=$?; echo GLASSREMOTE_LAUNCH_EXIT:$rc"]
+                )
+                if output.localizedCaseInsensitiveContains("no activities found") ||
+                   output.localizedCaseInsensitiveContains("monkey aborted") {
+                    status = "Launch failed · \(app.name) is not launchable on this TV"
+                } else if output.contains("GLASSREMOTE_LAUNCH_EXIT:0") {
+                    status = "Android accepted launch request · \(app.name)"
+                } else {
+                    status = "Launch result · \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
                 }
             } catch {
                 status = "Launch failed: \(error.localizedDescription)"
@@ -158,12 +165,14 @@ final class RemoteModel: ObservableObject {
             do {
                 let output = try await runShell(
                     adb,
-                    ["sh", "-c", "input keyevent \(code); echo GLASSREMOTE_KEYEVENT_DONE"]
+                    ["sh", "-c", "input keyevent \(code); rc=$?; echo GLASSREMOTE_KEYEVENT_EXIT:$rc"]
                 )
-                if output.contains("GLASSREMOTE_KEYEVENT_DONE") {
-                    status = "TV shell completed \(key) · keycode \(code)"
+                if output.contains("GLASSREMOTE_KEYEVENT_EXIT:0") {
+                    status = "Android accepted \(key) · keycode \(code)"
+                } else if let result = output.components(separatedBy: "GLASSREMOTE_KEYEVENT_EXIT:").last {
+                    status = "Android rejected \(key) · exit \(result.trimmingCharacters(in: .whitespacesAndNewlines))"
                 } else {
-                    status = "Key command returned: \(output.isEmpty ? "(empty)" : output)"
+                    status = "Key result · \(output.isEmpty ? "no shell response" : output)"
                 }
             } catch {
                 status = "Button \(key) failed: \(error.localizedDescription)"
@@ -213,31 +222,28 @@ final class RemoteModel: ObservableObject {
     }
 
     private func findMouseHelper() -> URL? {
-        if let url = Bundle.main.url(forResource: "glass_uhid_bridge", withExtension: nil),
-           FileManager.default.isExecutableFile(atPath: url.path) {
-            return url
-        }
+        let bundle = Bundle.main
+        let roots = [bundle.resourceURL, bundle.bundleURL].compactMap { $0 }
 
-        guard let resources = Bundle.main.resourceURL else { return nil }
-
-        if let direct = Bundle.main.url(forResource: "glass_uhid_bridge", withExtension: nil, subdirectory: nil),
+        if let direct = bundle.url(forResource: "glass_uhid_bridge", withExtension: nil),
            FileManager.default.fileExists(atPath: direct.path) {
             return direct
         }
 
-        guard let enumerator = FileManager.default.enumerator(
-            at: resources,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
+        for root in roots {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
 
-        for case let url as URL in enumerator {
-            if url.lastPathComponent == "glass_uhid_bridge",
-               FileManager.default.fileExists(atPath: url.path) {
-                return url
+            for case let url as URL in enumerator {
+                if url.lastPathComponent == "glass_uhid_bridge",
+                   FileManager.default.fileExists(atPath: url.path) {
+                    return url
+                }
             }
         }
-
         return nil
     }
 
