@@ -21,7 +21,17 @@ jobs:
           SDK_ROOT="/opt/homebrew/share/android-commandlinetools"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          # sdkmanager exits successfully after accepting all licences. The
+          # upstream `yes` process then receives SIGPIPE; do not let that
+          # harmless exit code fail this step under pipefail.
+          set +o pipefail
           yes | sdkmanager --sdk_root="$SDK_ROOT" --licenses
+          LICENSE_STATUS=${PIPESTATUS[1]}
+          set -o pipefail
+          if [ "$LICENSE_STATUS" -ne 0 ]; then
+            echo "sdkmanager licence acceptance failed with exit code $LICENSE_STATUS"
+            exit "$LICENSE_STATUS"
+          fi
           sdkmanager --sdk_root="$SDK_ROOT" "ndk;27.2.12479018"
 
       - name: Compile ARM32 UHID keyboard helper
