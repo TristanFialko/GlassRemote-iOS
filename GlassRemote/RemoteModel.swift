@@ -72,7 +72,7 @@ final class RemoteModel: ObservableObject {
                     throw NSError(
                         domain: "GlassRemote",
                         code: 3,
-                        userInfo: [NSLocalizedDescriptionKey: "ADB connected, but the shell test returned unexpected output: \(test)"]
+                        userInfo: [NSLocalizedDescriptionKey: "ADB connected, but shell test returned: \(test)"]
                     )
                 }
 
@@ -103,7 +103,6 @@ final class RemoteModel: ObservableObject {
 
         do {
             let output = try await runShell(adb, ["pm", "list", "packages"])
-
             installed = Set(
                 output.components(separatedBy: .newlines).compactMap { line in
                     line.hasPrefix("package:")
@@ -111,9 +110,7 @@ final class RemoteModel: ObservableObject {
                     : nil
                 }
             )
-
-            status = "Connected · \(installed.count) third-party apps found"
-
+            status = "Connected · \(installed.count) apps found"
         } catch {
             status = "ADB connected · app scan failed: \(error.localizedDescription)"
         }
@@ -129,11 +126,9 @@ final class RemoteModel: ObservableObject {
             do {
                 let output = try await runShell(adb, ["monkey", "-p", app.package, "1"])
                 status = "Launch command sent · \(app.name)"
-
                 if output.localizedCaseInsensitiveContains("no activities found") {
                     status = "Launch failed · no activity found for \(app.name)"
                 }
-
             } catch {
                 status = "Launch failed: \(error.localizedDescription)"
             }
@@ -142,50 +137,41 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-func key(_ key: String) {
-    let codes: [String: String] = [
-        "UP": "19",
-        "DOWN": "20",
-        "LEFT": "21",
-        "RIGHT": "22",
-        "OK": "23",
-        "BACK": "4",
-        "HOME": "3",
-        "MENU": "82",
-        "VOLUME_DOWN": "25",
-        "MUTE": "164",
-        "VOLUME_UP": "24"
-    ]
+    func key(_ key: String) {
+        let codes: [String: String] = [
+            "UP": "19", "DOWN": "20", "LEFT": "21", "RIGHT": "22",
+            "OK": "23", "BACK": "4", "HOME": "3", "MENU": "82",
+            "VOLUME_DOWN": "25", "MUTE": "164", "VOLUME_UP": "24"
+        ]
 
-    guard let code = codes[key] else {
-        status = "Unknown button: \(key)"
-        return
-    }
-
-    Task {
-        guard let adb else {
-            status = "Button failed · not connected"
+        guard let code = codes[key] else {
+            status = "Unknown button: \(key)"
             return
         }
 
-        do {
-            let output = try await runShell(
-                adb,
-                ["sh", "-c", "input keyevent \(code); echo GLASSREMOTE_KEYEVENT_DONE"]
-            )
-
-            if output.contains("GLASSREMOTE_KEYEVENT_DONE") {
-                status = "TV shell completed \(key) · keycode \(code)"
-            } else {
-                status = "Key command returned unexpected output: \(output.isEmpty ? "(empty)" : output)"
+        Task {
+            guard let adb else {
+                status = "Button failed · not connected"
+                return
             }
-        } catch {
-            status = "Button \(key) failed: \(error.localizedDescription)"
-        }
-    }
 
-    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-}
+            do {
+                let output = try await runShell(
+                    adb,
+                    ["sh", "-c", "input keyevent \(code); echo GLASSREMOTE_KEYEVENT_DONE"]
+                )
+                if output.contains("GLASSREMOTE_KEYEVENT_DONE") {
+                    status = "TV shell completed \(key) · keycode \(code)"
+                } else {
+                    status = "Key command returned: \(output.isEmpty ? "(empty)" : output)"
+                }
+            } catch {
+                status = "Button \(key) failed: \(error.localizedDescription)"
+            }
+        }
+
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+    }
 
     func sendText(_ text: String) {
         let safe = text
@@ -208,8 +194,6 @@ func key(_ key: String) {
         }
     }
 
-    // Executes a one-shot ADB shell command and collects its output.
-    // ADB may close the stream normally once the command has finished.
     private func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
         let stream = try await connection.open(service: .shell, args: args)
         var result = Data()
@@ -217,16 +201,10 @@ func key(_ key: String) {
         while !(await stream.getIsClosed()) {
             do {
                 let chunk = try await stream.read()
-                if chunk.isEmpty {
-                    break
-                }
+                if chunk.isEmpty { break }
                 result.append(chunk)
             } catch {
-                // A closed stream after command completion is end-of-output,
-                // not a command failure. Keep genuine errors on open streams.
-                if await stream.getIsClosed() {
-                    break
-                }
+                if await stream.getIsClosed() { break }
                 throw error
             }
         }
@@ -234,40 +212,96 @@ func key(_ key: String) {
         return String(data: result, encoding: .utf8) ?? ""
     }
 
+    private func findMouseHelper() -> URL? {
+        if let url = Bundle.main.url(forResource: "glass_uhid_bridge", withExtension: nil),
+           FileManager.default.isExecutableFile(atPath: url.path) {
+            return url
+        }
+
+        guard let resources = Bundle.main.resourceURL else { return nil }
+
+        if let direct = Bundle.main.url(forResource: "glass_uhid_bridge", withExtension: nil, subdirectory: nil),
+           FileManager.default.fileExists(atPath: direct.path) {
+            return direct
+        }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: resources,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        for case let url as URL in enumerator {
+            if url.lastPathComponent == "glass_uhid_bridge",
+               FileManager.default.isRegularFile(atPath: url.path) {
+                return url
+            }
+        }
+
+        return nil
+    }
+
     private func startMouse() async {
         guard let adb else { return }
+        await stopMouse()
 
-        let helperURL =
-            Bundle.main.url(forResource: "glass_uhid_bridge", withExtension: nil)
-            ?? Bundle.main.resourceURL?.appendingPathComponent("glass_uhid_bridge")
-
-        guard let helperURL,
-              FileManager.default.fileExists(atPath: helperURL.path) else {
+        guard let helperURL = findMouseHelper() else {
             mouseReady = false
-            status = "ADB working · mouse helper missing from app bundle"
+            let root = Bundle.main.resourceURL?.path ?? "unavailable"
+            status = "Mouse helper not found · bundle resources: \(root)"
             return
         }
 
         do {
             let data = try Data(contentsOf: helperURL)
+            guard !data.isEmpty else {
+                throw NSError(domain: "GlassRemote", code: 10,
+                              userInfo: [NSLocalizedDescriptionKey: "Bundled mouse helper is empty"])
+            }
+
+            status = "Mouse helper found · uploading \(data.count) bytes"
 
             let upload = try await adb.open(
                 destination: "exec:sh -c 'cat > /data/local/tmp/glass_uhid_bridge && chmod 700 /data/local/tmp/glass_uhid_bridge'"
             )
-
             try await upload.write(data)
             try await upload.close()
 
+            let verification = try await runShell(
+                adb,
+                ["sh", "-c", "test -s /data/local/tmp/glass_uhid_bridge && chmod 700 /data/local/tmp/glass_uhid_bridge && echo GLASSREMOTE_UPLOAD_OK"]
+            )
+            guard verification.contains("GLASSREMOTE_UPLOAD_OK") else {
+                throw NSError(domain: "GlassRemote", code: 11,
+                              userInfo: [NSLocalizedDescriptionKey: "TV did not confirm helper upload: \(verification)"])
+            }
+
             let stream = try await adb.open(service: .shell, args: [])
-            try await stream.write(Data("/data/local/tmp/glass_uhid_bridge\n".utf8))
+            try await stream.write(Data("exec /data/local/tmp/glass_uhid_bridge\n".utf8))
+
+            // The helper prints READY only after successfully opening and creating /dev/uhid.
+            let startup = try await stream.read()
+            let startupText = String(data: startup, encoding: .utf8) ?? ""
+
+            guard startupText.contains("READY") else {
+                try? await stream.close()
+                throw NSError(
+                    domain: "GlassRemote",
+                    code: 12,
+                    userInfo: [NSLocalizedDescriptionKey: startupText.isEmpty
+                        ? "Mouse helper exited without a READY response"
+                        : "Mouse helper did not start: \(startupText)"]
+                )
+            }
 
             mouseStream = stream
             mouseReady = true
-            status = "ADB working · trackpad helper started"
+            status = "Mouse ready · Android UHID created"
 
         } catch {
             mouseReady = false
-            status = "ADB working · mouse startup failed: \(error.localizedDescription)"
+            mouseStream = nil
+            status = "Mouse startup failed: \(error.localizedDescription)"
         }
     }
 
@@ -283,22 +317,26 @@ func key(_ key: String) {
         let line = "M \(buttons) \(max(-127, min(127, dx))) \(max(-127, min(127, dy))) \(max(-127, min(127, wheel))) \(max(-127, min(127, hscroll)))\n"
 
         reportQueue.enqueue {
-            try? await mouseStream.write(Data(line.utf8))
+            do {
+                try await mouseStream.write(Data(line.utf8))
+            } catch {
+                await MainActor.run {
+                    self.mouseReady = false
+                    self.status = "Mouse input stream failed: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
     private func stopMouse() async {
         mouseReady = false
-
         if let mouseStream {
             try? await mouseStream.close()
         }
-
         mouseStream = nil
     }
 }
 
-/// Serializes HID reports so rapid movement never reorders button transitions.
 final class TaskQueue {
     private var tail: Task<Void, Never> = Task {}
 
