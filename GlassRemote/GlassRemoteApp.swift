@@ -2,8 +2,14 @@ import SwiftUI
 
 @main
 struct GlassRemoteApp: App {
-    @StateObject private var remote = RemoteModel()
+    // One shared model so Shortcuts / Siri intents use the same ADB connection as the UI.
+    @StateObject private var remote = RemoteModel.shared
+
     var body: some Scene {
-        WindowGroup { RemoteView().environmentObject(remote).preferredColorScheme(.dark) }
+        WindowGroup {
+            RemoteView()
+                .environmentObject(remote)
+                .preferredColorScheme(.dark)   // permanent Dark Mode
+        }
     }
 }

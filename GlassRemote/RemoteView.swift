@@ -1,241 +1,466 @@
 import SwiftUI
 import UIKit
 
-private let glass = Color.white.opacity(0.065)
-private let glassLine = Color.white.opacity(0.15)
-
 struct RemoteView: View {
     @EnvironmentObject private var remote: RemoteModel
-    @State private var text = ""
+    @ObservedObject private var quick = QuickActionStore.shared
+
     @State private var lastPoint: CGPoint?
     @State private var dragging = false
     @State private var scrollState = TwoFingerScrollState()
+    @State private var appsExpanded = false
+    @State private var showKeyboard = false
+    @State private var showQuickEditor = false
+    @State private var pendingPower: PowerAction?
+    @State private var didAutoConnect = false
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
 
     var body: some View {
         GeometryReader { proxy in
-            let compact = proxy.size.height < 760
-            let side = max(12, min(17, proxy.size.width * 0.041))
-            VStack(spacing: compact ? 8 : 10) {
-                header
-                    .frame(height: 34)
-                appGrid(compact: compact)
-                textEntry
-                    .frame(height: 48)
-                controlPanel(compact: compact)
-                    .frame(maxHeight: .infinity)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 10) {
+                    header
+                    appsSection
+                    nowPlaying
+                    quickActionsRow
+                    ModeSelector(isMouse: $remote.isTrackpad)
+                    controlSurface
+                        .frame(minHeight: 150, maxHeight: appsExpanded ? 210 : CGFloat.infinity)
+                    navRow
+                    volumeBar
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 6)
+                .padding(.bottom, 8)
+                .frame(height: appsExpanded ? nil : proxy.size.height)
             }
-            .padding(.horizontal, side)
-            .padding(.top, 7)
-            .padding(.bottom, 5)
-            .frame(maxWidth: 560, maxHeight: .infinity)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.black.ignoresSafeArea())
-            .background {
-                RadialGradient(colors: [Color.white.opacity(0.055), .clear], center: .top, startRadius: 0, endRadius: 380).ignoresSafeArea()
-            }
-            .sheet(isPresented: $remote.showConnection) { connectionSheet }
+            // The page only scrolls while the Apps grid pushes content below the fold.
+            .scrollDisabled(!appsExpanded)
         }
+        .background { backdrop }
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $remote.showConnection) { ConnectionSheet().environmentObject(remote) }
+        .sheet(isPresented: $showKeyboard) { KeyboardSheet().environmentObject(remote) }
+        .sheet(isPresented: $showQuickEditor) { QuickActionEditor(store: quick) }
+        .confirmationDialog(
+            pendingPower?.title ?? "",
+            isPresented: Binding(get: { pendingPower != nil }, set: { if !$0 { pendingPower = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingPower
+        ) { action in
+            Button(action.confirmLabel, role: action.isDestructive ? .destructive : nil) { perform(action) }
+        } message: { action in
+            Text(action.message)
+        }
+        .task {
+            guard !didAutoConnect else { return }
+            didAutoConnect = true
+            if !remote.connected { remote.connect() }
+        }
+    }
+
+    // MARK: - Backdrop
+
+    private var backdrop: some View {
+        ZStack {
+            Color.black
+            RadialGradient(colors: [Color.white.opacity(0.07), .clear], center: .top, startRadius: 0, endRadius: 360)
+            RadialGradient(colors: [Color.white.opacity(0.03), .clear], center: .bottomLeading, startRadius: 0, endRadius: 320)
+        }
+        .ignoresSafeArea()
+    }
+
+    // MARK: - Header
+
+    private var statusLabel: String {
+        if remote.connected { return "Connected" }
+        if remote.status.hasPrefix("Connecting") || remote.status.contains("reconnect") { return "Connecting…" }
+        return "Offline"
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 10) {
             Button { remote.showConnection = true } label: {
-                Image(systemName: "slider.horizontal.3").font(.system(size: 17, weight: .medium))
-                    .frame(width: 38, height: 38).background(glass, in: Circle()).overlay(Circle().stroke(glassLine))
-            }
-            Spacer()
-            Circle().fill(remote.connected ? Color.green : Color.orange).frame(width: 7, height: 7)
-                .shadow(color: (remote.connected ? Color.green : Color.orange).opacity(0.5), radius: 5)
-            Button { remote.connect() } label: {
-                Image(systemName: "arrow.clockwise").font(.system(size: 16, weight: .medium))
-                    .frame(width: 38, height: 38).background(glass, in: Circle()).overlay(Circle().stroke(glassLine))
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 2)
-    }
-
-private func appGrid(compact: Bool) -> some View {
-    LazyVGrid(columns: columns, spacing: compact ? 8 : 10) {
-        ForEach(remote.apps) { app in
-            Button { remote.launch(app) } label: {
-                Image("\(app.asset)_dark")
-                    .resizable()
-                    .scaledToFit()
-                    .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 17, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
-                    }
-                    .background {
-                        RoundedRectangle(cornerRadius: 17, style: .continuous)
-                            .fill(.ultraThinMaterial)
-                    }
-                    .shadow(color: .black.opacity(0.34), radius: 8, y: 4)
-                    .frame(maxWidth: .infinity)
-                    .aspectRatio(1, contentMode: .fit)
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 17, weight: .medium))
+                    .frame(width: 44, height: 44)
+                    .glassSurface(Circle(), interactive: true)
             }
             .buttonStyle(PressStyle())
-            .accessibilityLabel(app.name)
-        }
-    }
-    .padding(10)
-    .background(panelBackground)
-}
+            .accessibilityLabel("Connection settings")
 
-    private var textEntry: some View {
-        HStack(spacing: 8) {
-            TextField("", text: $text).textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.send)
-                .onSubmit(sendText).padding(.horizontal, 13).frame(height: 42)
-                .background(Color.black.opacity(0.32), in: RoundedRectangle(cornerRadius: 13))
-                .overlay(RoundedRectangle(cornerRadius: 13).stroke(Color.white.opacity(0.11)))
-            Button(action: sendText) {
-                Image(systemName: "arrow.right").font(.system(size: 17, weight: .semibold)).frame(width: 42, height: 42)
-                    .background(glass, in: RoundedRectangle(cornerRadius: 13)).overlay(RoundedRectangle(cornerRadius: 13).stroke(glassLine))
-            }
-        }
-        .padding(7).background(panelBackground)
-    }
+            Spacer(minLength: 0)
 
-    private func sendText() { guard !text.isEmpty else { return }; remote.sendText(text); text = "" }
-
-    private func controlPanel(compact: Bool) -> some View {
-        VStack(spacing: compact ? 8 : 10) {
-            HStack(spacing: 4) {
-                modeButton("Trackpad", icon: "rectangle.dashed", selected: remote.isTrackpad) { remote.isTrackpad = true }
-                modeButton("D-pad", icon: "arrow.up.left.and.arrow.down.right", selected: !remote.isTrackpad) { remote.isTrackpad = false }
-            }
-            .padding(4).background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 14)).overlay(RoundedRectangle(cornerRadius: 14).stroke(glassLine))
-
-            if remote.isTrackpad {
-                trackpad
-                    .frame(maxWidth: 330).frame(maxWidth: .infinity)
-                    .frame(maxHeight: .infinity)
-            } else {
-                dpad.frame(maxHeight: .infinity)
-            }
-
-            HStack(spacing: 9) {
-                actionButton("arrow.uturn.backward", key: "BACK")
-                actionButton("house", key: "HOME")
-                actionButton("line.3.horizontal", key: "MENU")
-            }
-            HStack(spacing: 9) {
-                actionButton("speaker.minus", key: "VOLUME_DOWN")
-                actionButton("speaker.slash", key: "MUTE")
-                actionButton("speaker.plus", key: "VOLUME_UP")
-            }
-        }
-        .padding(11)
-        .background(panelBackground)
-    }
-
-    private var trackpad: some View {
-        GeometryReader { geo in
-            RoundedRectangle(cornerRadius: 23)
-                .fill(LinearGradient(colors: [Color.white.opacity(0.13), Color.white.opacity(0.035)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.white.opacity(0.2)))
-                .shadow(color: .black.opacity(0.55), radius: 14, y: 8)
-                .contentShape(RoundedRectangle(cornerRadius: 23))
-                .background {
-                    TwoFingerScroll(state: scrollState) { wheel, hscroll in
-                        remote.mouse(wheel: wheel, hscroll: hscroll)
-                    }
+            Button { if !remote.connected { remote.connect() } } label: {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(remote.connected ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                        .shadow(color: (remote.connected ? Color.green : Color.orange).opacity(0.7), radius: 5)
+                    Text(statusLabel).font(.system(size: 13, weight: .semibold))
                 }
-                .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                    .onChanged { value in
-                        if let previous = lastPoint {
-                            let dx = Int((value.location.x - previous.x) * 2)
-                            let dy = Int((value.location.y - previous.y) * 2)
-                            if abs(dx) + abs(dy) > 0 && !scrollState.isActive { remote.mouse(dx: dx, dy: dy) }
-                        }
-                        lastPoint = value.location
-                        if !dragging && value.translation == .zero { }
-                    }
-                    .onEnded { value in
-                        if abs(value.translation.width) < 8 && abs(value.translation.height) < 8 && !scrollState.suppressesClicks {
-                            remote.mouse(buttons: 1); UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) { remote.mouse(buttons: 0) }
-                        }
-                        lastPoint = nil
-                    })
-        }
-        .frame(height: geoTrackpadHeight)
-    }
-
-    private var geoTrackpadHeight: CGFloat { 142 }
-
-    private var dpad: some View {
-        VStack(spacing: 6) {
-            dpadKey("chevron.up", "UP")
-            HStack(spacing: 6) {
-                dpadKey("chevron.left", "LEFT")
-                dpadKey("circle.fill", "OK")
-                dpadKey("chevron.right", "RIGHT")
+                .foregroundStyle(Color.white.opacity(0.85))
+                .padding(.horizontal, 16)
+                .frame(height: 36)
+                .glassSurface(Capsule(), interactive: true)
             }
-            dpadKey("chevron.down", "DOWN")
+            .buttonStyle(PressStyle())
+            .accessibilityLabel(remote.connected ? "Connected" : "Reconnect")
+
+            Spacer(minLength: 0)
+
+            Menu {
+                Button { pendingPower = .standby } label: { Label("Standby", systemImage: "moon.zzz") }
+                Button { remote.wake() } label: { Label("Wake", systemImage: "sun.max") }
+                Button { pendingPower = .restartLauncher } label: { Label("Restart launcher", systemImage: "arrow.clockwise") }
+                Button(role: .destructive) { pendingPower = .restartBox } label: { Label("Restart TV box", systemImage: "power") }
+            } label: {
+                Image(systemName: "power")
+                    .font(.system(size: 17, weight: .medium))
+                    .frame(width: 44, height: 44)
+                    .glassSurface(Circle(), interactive: true)
+            }
+            .accessibilityLabel("Power and device")
         }
-        .frame(maxWidth: 230).frame(maxWidth: .infinity)
+        .foregroundStyle(.white)
     }
 
-    private func dpadKey(_ icon: String, _ key: String) -> some View {
-        Button { remote.key(key) } label: {
-            Image(systemName: icon).font(.system(size: key == "OK" ? 12 : 19, weight: .medium))
-                .frame(maxWidth: .infinity).frame(height: 43).background(glass, in: RoundedRectangle(cornerRadius: 13)).overlay(RoundedRectangle(cornerRadius: 13).stroke(glassLine))
-        }.buttonStyle(PressStyle())
+    private func perform(_ action: PowerAction) {
+        switch action {
+        case .standby: remote.standby()
+        case .restartLauncher: remote.restartLauncher()
+        case .restartBox: remote.restartBox()
+        }
     }
 
-    private func modeButton(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
+    // MARK: - Apps (collapsed by default)
+
+    private var appsSection: some View {
+        VStack(spacing: 10) {
+            Button {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded.toggle() }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "square.grid.2x2").font(.system(size: 19, weight: .medium))
+                    Text("Apps").font(.system(size: 15, weight: .semibold))
+                    Spacer()
+                    if !appsExpanded {
+                        Text("\(remote.apps.count)").font(.system(size: 13)).foregroundStyle(.white.opacity(0.65))
+                    }
+                    Image(systemName: appsExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .frame(height: appsExpanded ? 40 : 54)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(appsExpanded ? "Hide apps" : "Show apps")
+
+            if appsExpanded {
+                appGrid
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+            }
+        }
+        .padding(.horizontal, appsExpanded ? 8 : 0)
+        .padding(.bottom, appsExpanded ? 10 : 0)
+        .frame(maxWidth: .infinity)
+        .glassSurface(RoundedRectangle(cornerRadius: appsExpanded ? 34 : 27, style: .continuous), interactive: !appsExpanded)
+    }
+
+    // Same artwork, order and tile construction as before; only the surrounding panel is new.
+    private var appGrid: some View {
+        LazyVGrid(columns: columns, spacing: 9) {
+            ForEach(remote.apps) { app in
+                Button {
+                    remote.launch(app)
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded = false }
+                } label: {
+                    Image("\(app.asset)_dark")
+                        .resizable()
+                        .scaledToFit()
+                        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
+                        }
+                        .background {
+                            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                                .fill(.ultraThinMaterial)
+                        }
+                        .shadow(color: .black.opacity(0.34), radius: 8, y: 4)
+                        .frame(maxWidth: .infinity)
+                        .aspectRatio(1, contentMode: .fit)
+                }
+                .buttonStyle(PressStyle())
+                .accessibilityLabel(app.name)
+            }
+        }
+    }
+
+    // MARK: - Now playing
+
+    private var nowPlaying: some View {
+        let media = remote.media
+        let app = remote.apps.first(where: { $0.package == media.package })
+
+        return HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.black.opacity(0.75))
+                if let app {
+                    Image("\(app.asset)_dark").resizable().scaledToFit().padding(3)
+                } else {
+                    Image(systemName: media.isActive ? "play.rectangle" : "tv")
+                        .font(.system(size: 20)).foregroundStyle(.white.opacity(0.55))
+                }
+            }
+            .frame(width: 50, height: 50)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.18)))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(media.isActive ? (media.title.isEmpty ? (app?.name ?? "Playing") : media.title) : "Nothing playing")
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                subtitle(media: media, app: app)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Previous/Next are preferred where the session offers them; otherwise Rewind/Fast-forward.
+            // A control the session does not advertise is shown dimmed and disabled.
+            mediaButton(
+                icon: media.canPrevious ? "backward.end.fill" : "backward.fill",
+                label: media.canPrevious ? "Previous" : "Rewind",
+                enabled: media.canPrevious || media.canRewind
+            ) { remote.mediaKey(media.canPrevious ? 88 : 89) }
+
+            mediaButton(
+                icon: media.isPlaying ? "pause.fill" : "play.fill",
+                label: media.isPlaying ? "Pause" : "Play",
+                enabled: media.isActive && media.canPlayPause,
+                prominent: true
+            ) { remote.mediaKey(85) }
+
+            mediaButton(
+                icon: media.canNext ? "forward.end.fill" : "forward.fill",
+                label: media.canNext ? "Next" : "Fast forward",
+                enabled: media.canNext || media.canFastForward
+            ) { remote.mediaKey(media.canNext ? 87 : 90) }
+        }
+        .padding(12)
+        .glassSurface(RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func subtitle(media: MediaState, app: TVApp?) -> some View {
+        let name = app?.name ?? (media.package.split(separator: ".").last.map(String.init) ?? "")
+        if media.isActive {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let position = MediaState.format(media.position(at: context.date))
+                Text(media.positionMs > 0 || media.isPlaying ? "\(name) · \(position)" : name)
+                    .font(.system(size: 12)).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
+            }
+        } else {
+            Text(remote.connected ? "Start something on the TV" : "Not connected")
+                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+        }
+    }
+
+    private func mediaButton(icon: String, label: String, enabled: Bool, prominent: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon).font(.system(size: 17, weight: .medium)).foregroundStyle(selected ? .white : .white.opacity(0.48))
-                .frame(width: 51, height: 35).background(selected ? Color.white.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 10))
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .glassSurface(Circle(), interactive: enabled, elevated: prominent)
         }
-        .buttonStyle(.plain).accessibilityLabel(title)
+        .buttonStyle(PressStyle())
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.4)
+        .accessibilityLabel(label)
     }
 
-    private func actionButton(_ icon: String, key: String) -> some View {
-        Button { remote.key(key) } label: {
-            Image(systemName: icon).font(.system(size: 18, weight: .medium)).frame(maxWidth: .infinity).frame(height: 43)
-                .background(glass, in: RoundedRectangle(cornerRadius: 14)).overlay(RoundedRectangle(cornerRadius: 14).stroke(glassLine))
-        }.buttonStyle(PressStyle()).accessibilityLabel(key)
-    }
+    // MARK: - Quick Actions
 
-    private var panelBackground: some View {
-        RoundedRectangle(cornerRadius: 23).fill(LinearGradient(colors: [Color.white.opacity(0.095), Color.white.opacity(0.025)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.white.opacity(0.14)))
-            .shadow(color: .black.opacity(0.6), radius: 16, y: 8)
-    }
-
-    private var connectionSheet: some View {
-        NavigationStack {
-            Form {
-                Section("Android TV") {
-                    TextField("IP address", text: $remote.host).keyboardType(.numbersAndPunctuation).textInputAutocapitalization(.never)
-                    TextField("ADB port", text: $remote.port).keyboardType(.numberPad)
-                    Button(remote.connected ? "Disconnect" : "Connect directly") {
-                        if remote.connected { remote.disconnect() } else { remote.connect() }
+    private var quickActionsRow: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(quick.actions) { action in
+                        Button { remote.runQuickAction(action) } label: {
+                            Text(action.name)
+                                .font(.system(size: 14, weight: .semibold))
+                                .lineLimit(1)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 16)
+                                .frame(height: 36)
+                                .glassSurface(Capsule(), interactive: true, elevated: remote.runningQuickActionID == action.id)
+                        }
+                        .buttonStyle(PressStyle())
+                        .opacity(remote.connected ? 1 : 0.5)
                     }
                 }
-                Section("Status") {
-                    Text(remote.status).font(.footnote).textSelection(.enabled)
-                    Text(remote.keyboardStatus).font(.footnote).textSelection(.enabled)
-                }
-                Section { Text("The first connection may show an ADB authorization prompt on the TV. Approve the Glass Remote host key. Keep the TV and iPhone on the same trusted Wi-Fi network.").font(.footnote).foregroundStyle(.secondary) }
             }
-            .scrollContentBackground(.hidden).background(Color.black)
-            .navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { remote.showConnection = false } } }
+            Button { showQuickEditor = true } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .glassSurface(Capsule(), interactive: true)
+            }
+            .buttonStyle(PressStyle())
+            .accessibilityLabel("Edit Quick Actions")
         }
-        .presentationDetents([.medium, .large])
-        .preferredColorScheme(.dark)
+        .frame(height: 36)
     }
-}
 
-private struct PressStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.scaleEffect(configuration.isPressed ? 0.95 : 1).opacity(configuration.isPressed ? 0.82 : 1).animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    // MARK: - Mouse / D-pad surface
+
+    @ViewBuilder
+    private var controlSurface: some View {
+        if remote.isTrackpad { mouseSurface } else { dpadSurface }
+    }
+
+    private var mouseSurface: some View {
+        let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
+        return Color.clear
+            .glassSurface(shape)
+            .overlay(alignment: .bottom) {
+                Text("Tap to click · two fingers to scroll")
+                    .font(.system(size: 12)).foregroundStyle(.white.opacity(0.7))
+                    .padding(.bottom, 16)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(shape)
+            .background {
+                TwoFingerScroll(state: scrollState) { wheel, hscroll in
+                    remote.mouse(wheel: wheel, hscroll: hscroll)
+                }
+            }
+            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .onChanged { value in
+                    if let previous = lastPoint {
+                        let dx = Int((value.location.x - previous.x) * 2)
+                        let dy = Int((value.location.y - previous.y) * 2)
+                        if abs(dx) + abs(dy) > 0 && !scrollState.isActive { remote.mouse(dx: dx, dy: dy) }
+                    }
+                    lastPoint = value.location
+                }
+                .onEnded { value in
+                    if abs(value.translation.width) < 8 && abs(value.translation.height) < 8 && !scrollState.suppressesClicks {
+                        remote.mouse(buttons: 1); UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) { remote.mouse(buttons: 0) }
+                    }
+                    lastPoint = nil
+                })
+            // While the Apps grid is open the page scrolls instead of moving the cursor.
+            .allowsHitTesting(!appsExpanded)
+            .opacity(appsExpanded ? 0.6 : 1)
+    }
+
+    private var dpadSurface: some View {
+        let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
+        return GeometryReader { geo in
+            let size = max(150, min(250, min(geo.size.width, geo.size.height) - 24))
+            ZStack {
+                Color.clear.glassSurface(Circle())
+                    .frame(width: size, height: size)
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) { Color.clear; dpadKey("chevron.up", "UP", "Up"); Color.clear }
+                    HStack(spacing: 0) {
+                        dpadKey("chevron.left", "LEFT", "Left")
+                        dpadKey("circle.fill", "OK", "Select", ok: true)
+                        dpadKey("chevron.right", "RIGHT", "Right")
+                    }
+                    HStack(spacing: 0) { Color.clear; dpadKey("chevron.down", "DOWN", "Down"); Color.clear }
+                }
+                .padding(10)
+                .frame(width: size, height: size)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .glassSurface(shape)
+        .allowsHitTesting(!appsExpanded)
+        .opacity(appsExpanded ? 0.6 : 1)
+    }
+
+    private func dpadKey(_ icon: String, _ key: String, _ label: String, ok: Bool = false) -> some View {
+        Button { remote.key(key) } label: {
+            Image(systemName: icon)
+                .font(.system(size: ok ? 12 : 22, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background {
+                    if ok { Color.clear.glassSurface(Circle(), interactive: true, elevated: true).padding(6) }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel(label)
+    }
+
+    // MARK: - Navigation and volume
+
+    private var navRow: some View {
+        HStack(spacing: 10) {
+            navButton("arrow.uturn.backward", "Back") { remote.key("BACK") }
+            navButton("house", "Home") { remote.key("HOME") }
+            navButton("line.3.horizontal", "Menu") { remote.key("MENU") }
+            navButton("keyboard", "Keyboard") { showKeyboard = true }
+        }
+    }
+
+    private func navButton(_ icon: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 19, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 48)
+                .glassSurface(Capsule(), interactive: true)
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel(label)
+    }
+
+    private var volumeBar: some View {
+        HStack(spacing: 0) {
+            volumeButton("speaker.minus", "Volume down") { remote.volume("VOLUME_DOWN") }
+            Button { remote.volume("MUTE") } label: {
+                VStack(spacing: 1) {
+                    Image(systemName: "speaker.slash").font(.system(size: 18, weight: .medium))
+                    // Only claims "Soundbar" while volume is actually routed through the Samsung TV.
+                    Text(remote.tvVolumeEnabled && remote.tvVolumeReady ? "SOUNDBAR" : "MUTE")
+                        .font(.system(size: 10, weight: .semibold)).tracking(0.4)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle())
+            .accessibilityLabel("Mute")
+            volumeButton("speaker.plus", "Volume up") { remote.volume("VOLUME_UP") }
+        }
+        .padding(.horizontal, 6)
+        .frame(height: 56)
+        .glassSurface(Capsule())
+    }
+
+    private func volumeButton(_ icon: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 19, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 64, height: 46)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel(label)
     }
 }

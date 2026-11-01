@@ -12,6 +12,9 @@ struct TVApp: Identifiable {
 
 @MainActor
 final class RemoteModel: ObservableObject {
+    /// Shared so Siri / Shortcuts intents drive the same connection as the UI.
+    static let shared = RemoteModel()
+
     @Published var host = UserDefaults.standard.string(forKey: "tvHost") ?? "192.168.1.70"
     @Published var port = UserDefaults.standard.integer(forKey: "tvPort") == 0
         ? "5555"
@@ -21,6 +24,21 @@ final class RemoteModel: ObservableObject {
     @Published var installed = Set<String>()
     @Published var showConnection = false
     @Published var isTrackpad = true
+
+    // Media, quick actions, volume routing (see RemoteModel+Features.swift)
+    @Published var media = MediaState.idle
+    @Published var runningQuickActionID: UUID?
+    @Published var samsungStatus = "Samsung TV: off"
+    @Published private(set) var tvVolumeReady = false
+    @Published var tvVolumeEnabled = UserDefaults.standard.bool(forKey: "glassRemote.tvVolumeEnabled") {
+        didSet {
+            UserDefaults.standard.set(tvVolumeEnabled, forKey: "glassRemote.tvVolumeEnabled")
+            applyTVSettings()
+        }
+    }
+    @Published var samsungHost = UserDefaults.standard.string(forKey: "glassRemote.samsungHost") ?? "" {
+        didSet { UserDefaults.standard.set(samsungHost, forKey: "glassRemote.samsungHost") }
+    }
 
     let apps: [TVApp] = [
         .init(name: "Netflix", package: "com.netflix.ninja", asset: "netflix"),
@@ -34,7 +52,7 @@ final class RemoteModel: ObservableObject {
         .init(name: "Rhenium", package: "com.nitesh.rhenium", asset: "rhenium")
     ]
 
-    private var adb: AdbConnection?
+    var adb: AdbConnection?
     private var commandStream: AdbStream?
     private var commandReaderTask: Task<Void, Never>?
     private var mouseStream: AdbStream?
@@ -48,10 +66,15 @@ final class RemoteModel: ObservableObject {
 
     // Connection lifecycle. `sessionID` changes on every connect/disconnect so a slow or
     // superseded task can never overwrite the state of a newer session.
-    private var wantsConnection = false
-    private var sessionID = 0
-    private var connectingSession: Int?
+    var wantsConnection = false
+    var sessionID = 0
+    var connectingSession: Int?
     private var recoveryTask: Task<Void, Never>?
+    var mediaTask: Task<Void, Never>?
+    var quickActionTask: Task<Void, Never>?
+    var rebootRecoveryTask: Task<Void, Never>?
+    var appActive = true
+    let tv = SamsungTV()
     private var lastKeyboardRestart = Date.distantPast
 
     init() {
@@ -61,6 +84,19 @@ final class RemoteModel: ObservableObject {
         // A keyboard stream that ended on its own is repaired automatically.
         keyboard.onStopped = { [weak self] in self?.keyboardStopped() }
 
+        tv.onStatus = { [weak self] text in self?.samsungStatus = text }
+        tv.onReadyChanged = { [weak self] ready in self?.tvVolumeReady = ready }
+        // A volume key accepted by the TV connection that then failed is re-sent over ADB.
+        tv.onSendFailed = { [weak self] name in self?.key(name) }
+
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.appActive = false }
+        }
+
         // iOS may suspend the app and drop its sockets. Check the session whenever the app
         // becomes active again and repair only what is actually broken.
         NotificationCenter.default.addObserver(
@@ -68,7 +104,12 @@ final class RemoteModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.recoverIfNeeded() }
+            Task { @MainActor in
+                self?.appActive = true
+                self?.recoverIfNeeded()
+                self?.applyTVSettings()
+                await self?.pollMedia()
+            }
         }
     }
 
@@ -137,6 +178,8 @@ final class RemoteModel: ObservableObject {
                 status = "Connected · low-latency shell ready"
                 await refreshApps()
                 guard session == sessionID else { return }
+                startMediaPolling()
+                applyTVSettings()
                 await startMouse()
                 guard session == sessionID else { return }
                 await startKeyboard()
@@ -161,6 +204,7 @@ final class RemoteModel: ObservableObject {
             await teardownSession()
             guard session == sessionID else { return }
             installed.removeAll()
+            media = .idle
             status = "Disconnected"
             keyboardStatus = "Virtual keyboard: stopped"
         }
@@ -204,7 +248,7 @@ final class RemoteModel: ObservableObject {
         commandStream = nil
     }
 
-    private func sendPersistentCommand(_ command: String) {
+    func sendPersistentCommand(_ command: String) {
         guard let stream = commandStream else {
             status = "Command shell unavailable · reconnect"
             return
@@ -242,33 +286,39 @@ final class RemoteModel: ObservableObject {
 
     func launch(_ app: TVApp) {
         Task {
-            guard let adb else {
-                status = "Cannot launch · not connected"
-                return
-            }
-
-            do {
-                let output = try await runShell(
-                    adb,
-                    ["sh", "-c", "monkey -p \(app.package) 1 2>&1; rc=$?; echo GLASSREMOTE_LAUNCH_EXIT:$rc"]
-                )
-
-                // Trust the actual process exit marker before interpreting Monkey's
-                // human-readable output, which can be misleading on some TV builds.
-                if output.contains("GLASSREMOTE_LAUNCH_EXIT:0") {
-                    status = "Android accepted launch request · \(app.name)"
-                } else if output.localizedCaseInsensitiveContains("no activities found") ||
-                            output.localizedCaseInsensitiveContains("monkey aborted") {
-                    status = "Launch response · \(app.name): \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
-                } else {
-                    status = "Launch result · \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
-                }
-            } catch {
-                status = "Launch failed: \(error.localizedDescription)"
-            }
-
+            await launchApp(app)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
+    }
+
+    @discardableResult
+    func launchApp(_ app: TVApp) async -> Bool {
+        guard let adb else {
+            status = "Cannot launch · not connected"
+            return false
+        }
+
+        do {
+            let output = try await runShell(
+                adb,
+                ["sh", "-c", "monkey -p \(app.package) 1 2>&1; rc=$?; echo GLASSREMOTE_LAUNCH_EXIT:$rc"]
+            )
+
+            // Trust the actual process exit marker before interpreting Monkey's
+            // human-readable output, which can be misleading on some TV builds.
+            if output.contains("GLASSREMOTE_LAUNCH_EXIT:0") {
+                status = "Android accepted launch request · \(app.name)"
+                return true
+            } else if output.localizedCaseInsensitiveContains("no activities found") ||
+                        output.localizedCaseInsensitiveContains("monkey aborted") {
+                status = "Launch response · \(app.name): \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
+            } else {
+                status = "Launch result · \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
+            }
+        } catch {
+            status = "Launch failed: \(error.localizedDescription)"
+        }
+        return false
     }
 
     func key(_ key: String) {
@@ -298,11 +348,13 @@ final class RemoteModel: ObservableObject {
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
     }
 
+    /// Types text on the TV. Handles spaces, newlines, quotes, URLs and a literal "%s"
+    /// (which Android's `input text` would otherwise turn into a space). Android's
+    /// `input text` can only type ASCII.
     func sendText(_ text: String) {
-        let safe = text
-            .replacingOccurrences(of: "%", with: "%25")
-            .replacingOccurrences(of: " ", with: "%s")
-            .replacingOccurrences(of: "'", with: "\\'")
+        guard !text.isEmpty else { return }
+        let lines = text.components(separatedBy: .newlines)
+        let hasNonASCII = !text.allSatisfy { $0.isASCII }
 
         Task {
             guard let adb else {
@@ -311,17 +363,46 @@ final class RemoteModel: ObservableObject {
             }
 
             do {
-                _ = try await runShell(adb, ["input", "text", safe])
-                status = "Text command sent"
+                for (index, line) in lines.enumerated() {
+                    for chunk in Self.textChunks(line, maxLength: 160) {
+                        _ = try await runShell(adb, ["input", "text", Self.escapeInputText(chunk)])
+                    }
+                    if index < lines.count - 1 {
+                        _ = try await runShell(adb, ["input", "keyevent", "66"])
+                    }
+                }
+                status = hasNonASCII
+                    ? "Text sent · characters outside ASCII can't be typed over ADB"
+                    : "Text sent"
             } catch {
                 status = "Text entry failed: \(error.localizedDescription)"
             }
         }
     }
 
+    /// `input text` turns "%s" into a space; spaces must therefore be written as "%s".
+    nonisolated static func escapeInputText(_ chunk: String) -> String {
+        chunk.replacingOccurrences(of: " ", with: "%s")
+    }
+
+    /// Splits a line so no chunk is too long and no chunk contains a literal "%s".
+    nonisolated static func textChunks(_ line: String, maxLength: Int) -> [String] {
+        var chunks: [String] = []
+        var current = ""
+        for character in line {
+            if current.count >= maxLength || (character == "s" && current.last == "%") {
+                chunks.append(current)
+                current = ""
+            }
+            current.append(character)
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
     // SwiftADB's LocalServices.shell concatenates its argument array without
     // spaces. Build the shell destination directly and quote each argument.
-    private func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
+    func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
         func shellQuote(_ value: String) -> String {
             "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
         }
@@ -503,6 +584,7 @@ final class RemoteModel: ObservableObject {
     /// Detaches every session object first, then closes the old (possibly dead) ones with a
     /// deadline each. Close calls on a broken socket can otherwise block indefinitely.
     private func teardownSession() async {
+        stopMediaPolling()
         mouseReady = false
         let oldMouse = mouseStream
         mouseStream = nil
@@ -533,7 +615,7 @@ final class RemoteModel: ObservableObject {
     /// Single-flight health check. Does nothing while the user wants to be disconnected
     /// or while a connect is already in progress.
     private func recoverIfNeeded() {
-        guard wantsConnection, connectingSession == nil, recoveryTask == nil else { return }
+        guard wantsConnection, connectingSession == nil, recoveryTask == nil, rebootRecoveryTask == nil else { return }
         recoveryTask = Task { [weak self] in
             await self?.performRecovery()
             self?.recoveryTask = nil
