@@ -42,6 +42,16 @@ final class RemoteModel: ObservableObject {
     private var commandQueue = TaskQueue()
     private var reportQueue = TaskQueue()
 
+    // Virtual HID keyboard: fully independent subsystem (see VirtualKeyboard.swift).
+    private let keyboard = VirtualKeyboard()
+    @Published var keyboardStatus = "Virtual keyboard: not started"
+
+    init() {
+        keyboard.onStatus = { [weak self] text in self?.keyboardStatus = text }
+        // If a keyboard write fails after being accepted, re-send that press over ADB.
+        keyboard.onFallback = { [weak self] name in self?.key(name) }
+    }
+
     func connect() {
         Task {
             status = "Connecting…"
@@ -85,6 +95,7 @@ final class RemoteModel: ObservableObject {
                 status = "Connected · low-latency shell ready"
                 await refreshApps()
                 await startMouse()
+                await startKeyboard()
 
             } catch {
                 connected = false
@@ -96,6 +107,8 @@ final class RemoteModel: ObservableObject {
     func disconnect() {
         Task {
             await stopMouse()
+            await keyboard.stop()
+            keyboardStatus = "Virtual keyboard: stopped"
             await stopCommandShell()
             await adb?.close()
             adb = nil
@@ -224,6 +237,12 @@ final class RemoteModel: ObservableObject {
 
         guard connected else {
             status = "Button failed · not connected"
+            return
+        }
+
+        // Virtual HID keyboard when ready and verified for this button; otherwise ADB keyevent.
+        if keyboard.send(key) {
+            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
             return
         }
 
@@ -423,6 +442,11 @@ final class RemoteModel: ObservableObject {
             try? await mouseStream.close()
         }
         mouseStream = nil
+    }
+
+    private func startKeyboard() async {
+        guard let adb else { return }
+        await keyboard.start(adb: adb)
     }
 }
 
