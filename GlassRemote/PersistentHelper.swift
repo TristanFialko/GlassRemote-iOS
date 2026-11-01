@@ -16,6 +16,25 @@ enum PersistentHelper {
     private static func logPath(_ name: String) -> String { "/data/local/tmp/\(name).log" }
     private static func quote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
+    /// Bundle enumeration stays synchronous so DirectoryEnumerator.makeIterator
+    /// is never called from an async context under newer Swift concurrency checking.
+    private static func findBundledServer() -> URL? {
+        let bundle = Bundle.main
+        if let direct = bundle.url(forResource: "glass_tcp_input_server", withExtension: nil) {
+            return direct
+        }
+        guard let root = bundle.resourceURL,
+              let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
+        else { return nil }
+
+        while let candidate = enumerator.nextObject() as? URL {
+            if candidate.lastPathComponent == "glass_tcp_input_server" {
+                return candidate
+            }
+        }
+        return nil
+    }
+
     private static func shell(_ adb: AdbConnection, _ script: String) async throws -> String {
         let stream = try await adb.open(destination: "shell:" + ["sh", "-c", script].map(quote).joined(separator: " "))
         var data = Data()
@@ -24,12 +43,7 @@ enum PersistentHelper {
     }
 
     private static func ensureServer(adb: AdbConnection) async throws {
-        let bundle = Bundle.main
-        var url = bundle.url(forResource: "glass_tcp_input_server", withExtension: nil)
-        if url == nil, let root = bundle.resourceURL, let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) {
-            for case let candidate as URL in e where candidate.lastPathComponent == "glass_tcp_input_server" { url = candidate; break }
-        }
-        guard let url else { throw NSError(domain: "GlassRemoteHelper", code: 1, userInfo: [NSLocalizedDescriptionKey: "TCP input server missing from app bundle; rebuild with updated workflow"]) }
+        guard let url = findBundledServer() else { throw NSError(domain: "GlassRemoteHelper", code: 1, userInfo: [NSLocalizedDescriptionKey: "TCP input server missing from app bundle; rebuild with updated workflow"]) }
         let data = try Data(contentsOf: url)
         guard data.count > 100 else { throw NSError(domain: "GlassRemoteHelper", code: 2, userInfo: [NSLocalizedDescriptionKey: "TCP input server binary is invalid"]) }
         let existing = try await shell(adb, "if [ -f \(serverRemote) ]; then wc -c < \(serverRemote); else echo MISSING; fi")
