@@ -14,16 +14,21 @@ jobs:
         run: brew install xcodegen
 
       - name: Install Android NDK
+        shell: bash
         run: |
+          set -euo pipefail
           brew install --cask android-commandlinetools
-          yes | sdkmanager --licenses
-          sdkmanager "ndk;27.2.12479018"
+          SDK_ROOT="/opt/homebrew/share/android-commandlinetools"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          yes | sdkmanager --sdk_root="$SDK_ROOT" --licenses
+          sdkmanager --sdk_root="$SDK_ROOT" "ndk;27.2.12479018"
 
       - name: Compile ARM32 UHID keyboard helper
         shell: bash
         run: |
           set -euo pipefail
-          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/homebrew/share/android-commandlinetools}"
           NDK_ROOT="$SDK_ROOT/ndk/27.2.12479018"
           if [ ! -d "$NDK_ROOT" ]; then
             echo "NDK not found at $NDK_ROOT"
