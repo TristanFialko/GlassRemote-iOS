@@ -102,7 +102,7 @@ final class RemoteModel: ObservableObject {
         guard let adb else { return }
 
         do {
-            let output = try await runShell(adb, ["pm", "list", "packages", "-3"])
+            let output = try await runShell(adb, ["pm", "list", "packages"])
 
             installed = Set(
                 output.components(separatedBy: .newlines).compactMap { line in
