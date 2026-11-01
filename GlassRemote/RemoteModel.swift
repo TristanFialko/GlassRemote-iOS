@@ -142,42 +142,50 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-    func key(_ key: String) {
-        let codes: [String: String] = [
-            "UP": "19",
-            "DOWN": "20",
-            "LEFT": "21",
-            "RIGHT": "22",
-            "OK": "23",
-            "BACK": "4",
-            "HOME": "3",
-            "MENU": "82",
-            "VOLUME_DOWN": "25",
-            "MUTE": "164",
-            "VOLUME_UP": "24"
-        ]
+func key(_ key: String) {
+    let codes: [String: String] = [
+        "UP": "19",
+        "DOWN": "20",
+        "LEFT": "21",
+        "RIGHT": "22",
+        "OK": "23",
+        "BACK": "4",
+        "HOME": "3",
+        "MENU": "82",
+        "VOLUME_DOWN": "25",
+        "MUTE": "164",
+        "VOLUME_UP": "24"
+    ]
 
-        guard let code = codes[key] else {
-            status = "Unknown button: \(key)"
+    guard let code = codes[key] else {
+        status = "Unknown button: \(key)"
+        return
+    }
+
+    Task {
+        guard let adb else {
+            status = "Button failed · not connected"
             return
         }
 
-        Task {
-            guard let adb else {
-                status = "Button failed · not connected"
-                return
-            }
+        do {
+            let output = try await runShell(
+                adb,
+                ["sh", "-c", "input keyevent \(code); echo GLASSREMOTE_KEYEVENT_DONE"]
+            )
 
-            do {
-                _ = try await runShell(adb, ["input", "keyevent", code])
-                status = "ADB sent \(key) · keycode \(code)"
-            } catch {
-                status = "Button \(key) failed: \(error.localizedDescription)"
+            if output.contains("GLASSREMOTE_KEYEVENT_DONE") {
+                status = "TV shell completed \(key) · keycode \(code)"
+            } else {
+                status = "Key command returned unexpected output: \(output.isEmpty ? "(empty)" : output)"
             }
+        } catch {
+            status = "Button \(key) failed: \(error.localizedDescription)"
         }
-
-        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
     }
+
+    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+}
 
     func sendText(_ text: String) {
         let safe = text
