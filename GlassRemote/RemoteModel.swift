@@ -1,4 +1,3 @@
-
 import Foundation
 import SwiftUI
 import SwiftADB
@@ -201,26 +200,27 @@ final class RemoteModel: ObservableObject {
         }
     }
 
+    // Executes a one-shot ADB shell command and collects its output.
+    // ADB may close the stream normally once the command has finished.
     private func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
-    let stream = try await connection.open(service: .shell, args: args)
-    var result = Data()
+        let stream = try await connection.open(service: .shell, args: args)
+        var result = Data()
 
-    while !(await stream.getIsClosed()) {
-        do {
-            let chunk = try await stream.read()
-            if chunk.isEmpty { break }
-            result.append(chunk)
-        } catch {
-            // ADB can close a one-shot shell stream normally after a command exits.
-            if await stream.getIsClosed() {
-                break
+        while !(await stream.getIsClosed()) {
+            do {
+                let chunk = try await stream.read()
+                if chunk.isEmpty {
+                    break
+                }
+                result.append(chunk)
+            } catch {
+                // A closed stream after command completion is end-of-output,
+                // not a command failure. Keep genuine errors on open streams.
+                if await stream.getIsClosed() {
+                    break
+                }
+                throw error
             }
-            throw error
-        }
-    }
-
-    return String(data: result, encoding: .utf8) ?? ""
-}
         }
 
         return String(data: result, encoding: .utf8) ?? ""
@@ -229,7 +229,6 @@ final class RemoteModel: ObservableObject {
     private func startMouse() async {
         guard let adb else { return }
 
-        // Check both the standard bundle lookup and the bundle resource directory.
         let helperURL =
             Bundle.main.url(forResource: "glass_uhid_bridge", withExtension: nil)
             ?? Bundle.main.resourceURL?.appendingPathComponent("glass_uhid_bridge")
