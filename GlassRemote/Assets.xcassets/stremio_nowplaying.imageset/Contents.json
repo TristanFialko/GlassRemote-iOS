@@ -1,0 +1,12 @@
+{
+  "images": [
+    {
+      "filename": "stremio_nowplaying.png",
+      "idiom": "universal"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}
