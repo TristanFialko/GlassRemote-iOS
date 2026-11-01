@@ -114,8 +114,8 @@ final class VirtualKeyboard {
         readerTask?.cancel()
         readerTask = nil
         // Detach first, then close with a deadline: closing a dead stream must never block.
-        // This closes only the phone-side FIFO writer. The TV-side keeper keeps the
-        // helper's FIFO open, so the UHID device remains registered across app suspension.
+        // This closes only the phone-side TCP client. The TV-side listener keeps the
+        // helper stdin pipe open, so the UHID device remains registered across suspension.
         let old = stream
         stream = nil
         if let old {
@@ -298,62 +298,17 @@ final class VirtualKeyboard {
     // MARK: - Launch
 
     private func launch(adb: AdbConnection) async throws -> AdbStream {
-        report("Virtual keyboard: starting helper…")
-
-        if await PersistentHelper.launch(adb: adb, name: "glass_uhid_keyboard", match: "glass_uhid_keyboard",
-                                         command: "exec \(Self.remotePath)", ready: "READY"),
-           let input = await PersistentHelper.openInput(adb: adb, name: "glass_uhid_keyboard") {
-            return input
+        report("Virtual keyboard: starting persistent TCP helper…")
+        guard await PersistentHelper.launch(
+            adb: adb,
+            name: Self.helperName,
+            match: Self.helperName,
+            command: "exec \(Self.remotePath)",
+            ready: "READY"
+        ), let input = await PersistentHelper.openInput(adb: adb, name: Self.helperName) else {
+            throw fail(22, "persistent TCP keyboard helper failed: \(PersistentHelper.fallbackNote(Self.helperName))")
         }
-
-        let stream = try await adb.open(destination: "shell:sh")
-        try await stream.write(Data("stty -echo 2>/dev/null; exec \(Self.remotePath)\n".utf8))
-
-        // If the helper never answers, closing the stream unblocks the read below.
-        let started = Date()
-        let watchdog = Task { [stream] in
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
-            if !Task.isCancelled { try? await stream.close() }
-        }
-
-        var output = Data()
-        var ready = false
-
-        while !ready {
-            let streamClosed = await stream.getIsClosed()
-            if streamClosed { break }
-
-            let chunk: Data
-            do {
-                chunk = try await stream.read()
-            } catch {
-                break
-            }
-            if chunk.isEmpty { break }
-            output.append(chunk)
-
-            let text = String(decoding: output, as: UTF8.self)
-            if text.contains("READY") {
-                ready = true
-            } else if text.contains("ERROR ") {
-                break
-            }
-        }
-
-        watchdog.cancel()
-
-        guard ready else {
-            try? await stream.close()
-            let text = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                throw fail(20, "helper did not start: \(text)")
-            }
-            let timedOut = Date().timeIntervalSince(started) >= 5.8
-            throw fail(21, timedOut ? "helper gave no READY response within 6 s"
-                                    : "helper exited immediately with no output")
-        }
-
-        return stream
+        return input
     }
 
     // MARK: - Small helpers

@@ -101,7 +101,7 @@ final class RemoteModel: ObservableObject {
     // Independent of the mouse: its failure never affects mouse or keyboard startup.
     private var cursorStream: AdbStream?
     private var cursorReaderTask: Task<Void, Never>?
-    /// Writer attached to the persistent cursor helper's FIFO; writes "R" to reapply the icon.
+    /// TCP client attached to the persistent cursor helper; writes "R" to reapply the icon.
     private var cursorInput: AdbStream?
     private var cursorQueue = TaskQueue()
     private var lastCursorNudge = Date.distantPast
@@ -453,30 +453,22 @@ final class RemoteModel: ObservableObject {
             }
             playbackDiagnostics = "Collecting recent TV logs…"
             let command = """
-            echo '=== ANDROID FIFO ENVIRONMENT TEST ==='
+            echo '=== ANDROID TCP HELPER ENVIRONMENT ==='
             echo "id=$(id 2>&1)"
             echo "shell=$SHELL"
+            echo "nc-path=$(command -v nc 2>&1)"
             echo "tmp-dir=$(ls -ld /data/local/tmp 2>&1)"
-            echo "mkfifo-path=$(command -v mkfifo 2>&1)"
-            echo "toybox-path=$(command -v toybox 2>&1)"
-            echo "mknod-path=$(command -v mknod 2>&1)"
-            T=/data/local/tmp/glass_fifo_probe_$$
-            mkfifo "$T" 2>&1; echo "mkfifo-test-rc=$?"
-            if [ -p "$T" ]; then echo 'mkfifo-test=PASS'; rm -f "$T"; else echo 'mkfifo-test=FAIL'; fi
-            toybox mkfifo "$T" 2>&1; echo "toybox-mkfifo-test-rc=$?"
-            if [ -p "$T" ]; then echo 'toybox-mkfifo-test=PASS'; rm -f "$T"; else echo 'toybox-mkfifo-test=FAIL'; fi
-            mknod "$T" p 2>&1; echo "mknod-test-rc=$?"
-            if [ -p "$T" ]; then echo 'mknod-test=PASS'; rm -f "$T"; else echo 'mknod-test=FAIL'; fi
-            echo '=== PERSISTENT HELPERS ==='
-            for n in glass_uhid_bridge glass_uhid_keyboard glass_cursor; do
-              echo "--- $n ---"
+            echo "tcp-server=$(ls -l /data/local/tmp/glass_tcp_input_server 2>&1)"
+            echo '=== PERSISTENT TCP HELPERS ==='
+            for entry in 'glass_uhid_bridge 47631' 'glass_uhid_keyboard 47632' 'glass_cursor 47633'; do
+              set -- $entry; n=$1; port=$2
+              echo "--- $n port=$port ---"
               if [ -s /data/local/tmp/$n.pid ]; then
-                P=$(cat /data/local/tmp/$n.pid)
-                echo "pid=$P"
-                if [ -r /proc/$P/cmdline ]; then tr '\\000' ' ' < /proc/$P/cmdline; echo; else echo 'process=not-running'; fi
+                P=$(cat /data/local/tmp/$n.pid); echo "pid=$P"
+                if [ -r /proc/$P/cmdline ]; then tr '\000' ' ' < /proc/$P/cmdline; echo; else echo 'process=not-running'; fi
               else echo 'pid-file=missing'; fi
-              ls -l /data/local/tmp/$n.fifo 2>&1
-              if [ -f /data/local/tmp/$n.log ]; then tail -n 18 /data/local/tmp/$n.log; else echo 'helper-log=missing'; fi
+              if nc -z -w 1 127.0.0.1 "$port" 2>/dev/null; then echo 'tcp-listener=PASS'; else echo 'tcp-listener=FAIL'; fi
+              if [ -f /data/local/tmp/$n.log ]; then tail -n 22 /data/local/tmp/$n.log; else echo 'helper-log=missing'; fi
             done
             echo '=== RECENT PLAYBACK / INPUT / ACTIVITY LOG ==='
             logcat -d -v threadtime -t 1400 2>&1 | grep -i -E 'stremio|InputReader|InputDispatcher|InputManager|ActivityTaskManager|ActivityManager|WindowManager|MediaSession|am_proc_died|Start proc|Displayed|Configuration' | tail -n 220
@@ -732,77 +724,18 @@ final class RemoteModel: ObservableObject {
                 )
             }
 
-            // Disable shell echo before exec. Read until READY rather than assuming
-            // the first ADB packet contains the helper's startup message. The upload's
-            // `cat` may still hold the file open for a moment after the size matches, which
-            // makes exec fail with "Text file busy", so retry that case briefly.
-            var launched: AdbStream?
-            var lastStartupText = ""
-
-            if await PersistentHelper.launch(adb: adb, name: "glass_uhid_bridge", match: "glass_uhid_bridge",
-                                             command: "exec /data/local/tmp/glass_uhid_bridge", ready: "READY") {
-                launched = await PersistentHelper.openInput(adb: adb, name: "glass_uhid_bridge")
-            }
-
-            for _ in 0..<(launched == nil ? 12 : 0) {
-                let stream = try await adb.open(destination: "shell:sh")
-                try await stream.write(Data("stty -echo 2>/dev/null; exec /data/local/tmp/glass_uhid_bridge\n".utf8))
-
-                // If the helper never answers, closing the stream unblocks the read below.
-                let watchdog = Task { [stream] in
-                    try? await Task.sleep(nanoseconds: 8_000_000_000)
-                    if !Task.isCancelled { try? await stream.close() }
-                }
-
-                var startupData = Data()
-                var ready = false
-
-                while !ready {
-                    let streamClosed = await stream.getIsClosed()
-                    if streamClosed { break }
-
-                    let chunk: Data
-                    do {
-                        chunk = try await stream.read()
-                    } catch {
-                        break
-                    }
-                    if chunk.isEmpty { break }
-                    startupData.append(chunk)
-
-                    let response = String(data: startupData, encoding: .utf8) ?? ""
-                    ready = response.contains("READY")
-
-                    if response.contains("ERROR") || response.contains("Text file busy") {
-                        break
-                    }
-                }
-
-                watchdog.cancel()
-                lastStartupText = String(data: startupData, encoding: .utf8) ?? ""
-
-                if ready {
-                    launched = stream
-                    break
-                }
-
-                try? await stream.close()
-                if lastStartupText.contains("Text file busy") {
-                    GRLog.note("mouse", "helper file still busy; retrying launch")
-                    try await Task.sleep(nanoseconds: 250_000_000)
-                    continue
-                }
-                break
-            }
-
-            guard let stream = launched else {
-                throw NSError(
-                    domain: "GlassRemote",
-                    code: 12,
-                    userInfo: [NSLocalizedDescriptionKey: lastStartupText.isEmpty
-                        ? "Mouse helper exited without a READY response"
-                        : "Mouse helper did not start: \(lastStartupText.trimmingCharacters(in: .whitespacesAndNewlines))"]
-                )
+            // Start the detached TCP bridge and connect a client. Closing this client never
+            // closes the helper's stdin: the TV-side listener accepts the next connection.
+            guard await PersistentHelper.launch(
+                adb: adb,
+                name: "glass_uhid_bridge",
+                match: "glass_uhid_bridge",
+                command: "exec /data/local/tmp/glass_uhid_bridge",
+                ready: "READY"
+            ), let stream = await PersistentHelper.openInput(adb: adb, name: "glass_uhid_bridge") else {
+                let reason = PersistentHelper.fallbackNote("glass_uhid_bridge")
+                throw NSError(domain: "GlassRemote", code: 14,
+                              userInfo: [NSLocalizedDescriptionKey: "Persistent mouse TCP helper failed to start or accept a connection\(reason)"])
             }
 
             mouseStream = stream
@@ -994,7 +927,7 @@ final class RemoteModel: ObservableObject {
         guard let adb else { return }
         await stopCursor()
 
-        // Migrate away from the old helper name, whose FIFO keeper never sent reapply commands.
+        // Migrate away from the old helper name, whose TCP listener never sent reapply commands.
         await PersistentHelper.stop(adb: adb, name: "glass_cursor_setter", match: "com.glassremote.cursor")
 
         if await PersistentHelper.isRunning(adb: adb, name: Self.cursorHelperName, match: Self.cursorMatch) {
@@ -1274,7 +1207,7 @@ final class RemoteModel: ObservableObject {
             }
         }
         // Reopen the phone-side cursor feed on every foreground recovery. This is cheap when
-        // the TV helper is alive and repairs a stale FIFO writer left by iOS suspension.
+        // the TV helper is alive and repairs a stale TCP client left by iOS suspension.
         _ = await withDeadline(15) { await self.startCursor() }
         recoveryPending = false
     }
