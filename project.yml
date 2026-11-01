@@ -6,6 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: 5.0
+    GENERATE_INFOPLIST_FILE: YES
     TARGETED_DEVICE_FAMILY: "1"
     INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Glass Remote connects directly to your Android TV over your local Wi-Fi."
     INFOPLIST_KEY_UIUserInterfaceStyle: Dark
