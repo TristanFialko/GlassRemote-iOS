@@ -90,16 +90,51 @@ extension RemoteModel {
     func volume(_ name: String, haptic: Bool = true) {
         if tvVolumeEnabled, tv.send(name) {
             if haptic { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
+            scheduleVolumeReadback()
             return
         }
         key(name)
+    }
+
+    // MARK: - Real TV volume (UPnP RenderingControl)
+
+    func configureVolumeLink() {
+        volumeLink.isActive = { [weak self] in self?.appActive ?? false }
+        volumeLink.onStatus = { [weak self] text in self?.volumeStatus = text }
+        volumeLink.onAvailabilityChanged = { [weak self] available in
+            guard let self else { return }
+            self.volumeLinkReady = available
+            self.volumeStateReset()
+            if !available { self.tvVolumeFraction = nil }
+        }
+        volumeLink.onVolume = { [weak self] value in
+            guard let self else { return }
+            self.volumeStatus = "TV volume: \(value) / 100 (read from the TV)"
+            self.tvVolumeFraction = Double(min(max(value, 0), 100)) / 100.0
+        }
+        if tvVolumeEnabled { volumeLink.start(host: samsungHost) }
+    }
+
+    /// Re-read the TV volume shortly after a key press so the slider follows it.
+    private func scheduleVolumeReadback() {
+        guard volumeLinkReady else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            self?.volumeLink.refresh()
+        }
+    }
+
+    /// False for a moment after the user touches the slider, so a reading that was already in
+    /// flight cannot yank it back.
+    var volumeSliderAcceptsExternal: Bool {
+        Date().timeIntervalSince(lastUserVolumeInput) > 1.2
     }
 
     // MARK: - Slider -> volume mapping
 
     /// Number of volume-key presses a full slider sweep spans. Through the TV this is the
     /// soundbar's own scale (`tvVolumeMax`); over ADB it stays at the original 20 steps.
-    var volumeLevels: Int { (tvVolumeEnabled && tvVolumeReady) ? tvVolumeMax : 20 }
+    var volumeLevels: Int { volumeLinkReady ? 100 : ((tvVolumeEnabled && tvVolumeReady) ? tvVolumeMax : 20) }
 
     /// Forget what we assumed about the real volume (range or route changed).
     func volumeStateReset() {
@@ -112,6 +147,13 @@ extension RemoteModel {
     /// pressed once: the soundbar clamps at its true limit, after which slider and soundbar
     /// agree exactly at that end and every later move is an exact press count.
     func setVolumeFraction(_ fraction: Double) {
+        lastUserVolumeInput = Date()
+        // Preferred: the TV reports its real level, so set it absolutely (0...100). The slider's
+        // full travel is then exactly the TV's full range and nothing is assumed.
+        if tvVolumeEnabled, volumeLinkReady {
+            volumeLink.setVolume(Int((min(max(fraction, 0), 1) * 100).rounded()))
+            return
+        }
         let levels = volumeLevels
         let clamped = min(max(fraction, 0), 1)
         let target = Int((clamped * Double(levels)).rounded())
@@ -156,9 +198,12 @@ extension RemoteModel {
 
     func applyTVSettings() {
         if tvVolumeEnabled, !samsungHost.trimmingCharacters(in: .whitespaces).isEmpty {
+            volumeLink.start(host: samsungHost)   // idempotent; also re-reads when the app resumes
+            volumeLink.refresh()
             // Never replace an attempt that is already in flight (that created duplicates).
             if !tvVolumeReady, !tv.isAttempting { tv.connect(host: samsungHost) }
         } else {
+            volumeLink.stop()
             tv.stop(report: false)
             samsungStatus = tvVolumeEnabled ? "Samsung TV: enter the TV's IP address" : "Samsung TV: off"
         }

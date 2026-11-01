@@ -26,6 +26,7 @@ struct ConnectionSheet: View {
                             .onSubmit { remote.reconnectTV() }
                         Button("Connect to Samsung TV") { remote.reconnectTV() }
                         Text(remote.samsungStatus).font(.footnote).foregroundStyle(.secondary)
+                        Text(remote.volumeStatus).font(.footnote).textSelection(.enabled)
                         Stepper("Soundbar max volume: \(remote.tvVolumeMax)", value: $remote.tvVolumeMax, in: 5...200)
                         Text("Set this to the highest number your soundbar shows. The slider spans this whole range, so full slider = soundbar maximum.")
                             .font(.footnote).foregroundStyle(.secondary)

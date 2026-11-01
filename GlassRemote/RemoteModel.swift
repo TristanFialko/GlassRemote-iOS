@@ -30,6 +30,13 @@ final class RemoteModel: ObservableObject {
     @Published var runningQuickActionID: UUID?
     @Published var samsungStatus = "Samsung TV: off"
     @Published private(set) var tvVolumeReady = false
+    // Real volume read from the TV over UPnP RenderingControl (see SamsungVolume.swift).
+    @Published private(set) var volumeLinkReady = false
+    @Published private(set) var tvVolumeFraction: Double?
+    @Published var volumeStatus = "TV volume: not read yet"
+    let volumeLink = SamsungVolumeLink()
+    /// Last time the user touched the slider; TV readings are not pushed onto it right after.
+    var lastUserVolumeInput = Date.distantPast
     // On by default: the TV route is what controls the soundbar. Only an explicit "off" is kept.
     @Published var tvVolumeEnabled: Bool = {
         let d = UserDefaults.standard
@@ -98,6 +105,14 @@ final class RemoteModel: ObservableObject {
     private var commandQueue = TaskQueue()
     private var reportQueue = TaskQueue()
 
+    // Pointer motion is coalesced: touch moves only add to these counters, and one queued drain
+    // writes whatever has accumulated. The ADB write queue can therefore never build a backlog
+    // of stale single-pixel reports (the cause of lag, rubber-banding and late jumps).
+    private var pendingMoveDX = 0
+    private var pendingMoveDY = 0
+    private var moveDrainQueued = false
+    private var mouseButtonsHeld = 0
+
     // Virtual HID keyboard: fully independent subsystem (see VirtualKeyboard.swift).
     private let keyboard = VirtualKeyboard()
     @Published var keyboardStatus = "Virtual keyboard: not started"
@@ -136,6 +151,7 @@ final class RemoteModel: ObservableObject {
         }
         // Connect to the Samsung TV on launch and keep it connected, independent of ADB.
         startTVSupervisor()
+        configureVolumeLink()
 
         NotificationCenter.default.addObserver(
             forName: UIApplication.willResignActiveNotification,
@@ -673,6 +689,7 @@ final class RemoteModel: ObservableObject {
             }
 
             mouseStream = stream
+            pendingMoveDX = 0; pendingMoveDY = 0; mouseButtonsHeld = 0
             mouseReady = true
             status = "Mouse ready · Android UHID created"
 
@@ -707,6 +724,64 @@ final class RemoteModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Pointer motion (never changes button state; a held button stays held while dragging).
+    func mouseMove(dx: Int, dy: Int) {
+        guard connected, mouseReady, dx != 0 || dy != 0 else { return }
+        pendingMoveDX += dx
+        pendingMoveDY += dy
+        guard !moveDrainQueued else { return }
+        moveDrainQueued = true
+        reportQueue.enqueue { [weak self] in await self?.drainPointerMotion() }
+    }
+
+    /// Sets the mouse button state (1 = left down, 0 = all up), ordered with respect to motion.
+    func mouseButton(_ buttons: Int) {
+        guard connected, mouseReady else { return }
+        reportQueue.enqueue { [weak self] in await self?.sendButtonReport(buttons) }
+    }
+
+    private func drainPointerMotion() async {
+        moveDrainQueued = false
+        guard mouseReady, let stream = mouseStream else {
+            pendingMoveDX = 0; pendingMoveDY = 0
+            return
+        }
+        while pendingMoveDX != 0 || pendingMoveDY != 0 {
+            // A report carries at most +-127 per axis; send the remainder next, never discard it.
+            let sx = max(-127, min(127, pendingMoveDX))
+            let sy = max(-127, min(127, pendingMoveDY))
+            pendingMoveDX -= sx
+            pendingMoveDY -= sy
+            let line = "M \(mouseButtonsHeld) \(sx) \(sy) 0 0\n"
+            do {
+                try await stream.write(Data(line.utf8))
+            } catch {
+                mouseWriteFailed(error)
+                return
+            }
+        }
+    }
+
+    private func sendButtonReport(_ buttons: Int) async {
+        guard mouseReady, let stream = mouseStream else { return }
+        mouseButtonsHeld = buttons
+        do {
+            try await stream.write(Data("M \(buttons) 0 0 0 0\n".utf8))
+        } catch {
+            mouseWriteFailed(error)
+        }
+    }
+
+    private func mouseWriteFailed(_ error: Error) {
+        GRLog.note("mouse", "input stream write failed: \(error.localizedDescription)")
+        pendingMoveDX = 0; pendingMoveDY = 0
+        mouseButtonsHeld = 0
+        mouseReady = false
+        recoveryPending = true
+        status = "Mouse input stream failed: \(error.localizedDescription)"
+        recoverIfNeeded()
     }
 
     private func stopMouse() async {

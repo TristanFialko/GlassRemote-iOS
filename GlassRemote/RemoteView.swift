@@ -1,8 +1,14 @@
 import SwiftUI
 import UIKit
 
-/// Plain storage for the last drag point. Intentionally not observable.
-final class PointerBox { var last: CGPoint? }
+/// Plain storage for the current touch. Intentionally not observable.
+final class PointerBox {
+    var last: CGPoint?
+    var start: Date?              // first touch time; nil = no touch in progress
+    var residual = CGPoint.zero   // sub-point remainder so slow movement is not truncated away
+    var moving = false            // travel passed the dead zone
+    var cancelled = false         // two-finger scroll took over this touch
+}
 
 struct RemoteView: View {
     @EnvironmentObject private var remote: RemoteModel
@@ -24,6 +30,7 @@ struct RemoteView: View {
     @State private var didAutoConnect = false
     @State private var showPlayer = false
     @State private var volumeSliderValue: Double = 0.5
+    @State private var externalVolumeEcho: Double?
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
 
@@ -344,6 +351,21 @@ struct RemoteView: View {
         if remote.isTrackpad { mouseSurface } else { dpadSurface }
     }
 
+    private static let tapMaxNanos: UInt64 = 450_000_000   // a touch held longer than this is not a tap
+    private static let deadZone: CGFloat = 3                    // points before the cursor starts moving
+
+    private func resetPointer() {
+        let box = pointerBox
+        box.last = nil; box.start = nil; box.moving = false
+        box.cancelled = false; box.residual = .zero
+    }
+
+    /// Drops the touch in progress if it is interrupted (view hidden, Apps grid opened, ...).
+    private func cancelPointer() {
+        let box = pointerBox
+        resetPointer()
+    }
+
     private var mouseSurface: some View {
         let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
         return Color.clear
@@ -362,20 +384,61 @@ struct RemoteView: View {
             }
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
                 .onChanged { value in
-                    if let previous = lastPoint {
-                        let dx = Int((value.location.x - previous.x) * 2)
-                        let dy = Int((value.location.y - previous.y) * 2)
-                        if abs(dx) + abs(dy) > 0 && !scrollState.isActive { remote.mouse(dx: dx, dy: dy) }
+                    let box = pointerBox
+                    if box.start == nil {
+                        // First touch: nothing is sent. A touch alone never clicks.
+                        box.start = Date()
+                        box.residual = .zero
+                        box.moving = false
+                        box.cancelled = false
+                        box.last = value.location
                     }
-                    lastPoint = value.location
+
+                    // Two fingers = scroll. Abandon this touch (and any held button) cleanly.
+                    if scrollState.isActive {
+                        box.cancelled = true
+                        box.last = value.location
+                        return
+                    }
+
+                    let travel = max(abs(value.translation.width), abs(value.translation.height))
+                    if !box.moving {
+                        // Small dead zone so a tap does not nudge the cursor off its target.
+                        guard travel >= Self.deadZone else { return }
+                        box.moving = true
+                        box.last = value.location   // start from here: no jump when it engages
+                        return
+                    }
+
+                    if let previous = box.last {
+                        let fx = (value.location.x - previous.x) * 2 + box.residual.x
+                        let fy = (value.location.y - previous.y) * 2 + box.residual.y
+                        let dx = Int(fx.rounded(.towardZero))
+                        let dy = Int(fy.rounded(.towardZero))
+                        box.residual = CGPoint(x: fx - CGFloat(dx), y: fy - CGFloat(dy))
+                        if dx != 0 || dy != 0 { remote.mouseMove(dx: dx, dy: dy) }
+                    }
+                    box.last = value.location
                 }
                 .onEnded { value in
-                    if abs(value.translation.width) < 8 && abs(value.translation.height) < 8 && !scrollState.suppressesClicks {
-                        remote.mouse(buttons: 1); UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) { remote.mouse(buttons: 0) }
+                    let box = pointerBox
+                    let held = box.start.map { Date().timeIntervalSince($0) } ?? 0
+                    let wasTap = !box.moving && !box.cancelled
+                        && held < Double(Self.tapMaxNanos) / 1_000_000_000
+                        && abs(value.translation.width) < 8 && abs(value.translation.height) < 8
+                        && !scrollState.suppressesClicks
+                    if wasTap {
+                        remote.mouseButton(1)
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 45_000_000)
+                            remote.mouseButton(0)
+                        }
                     }
-                    lastPoint = nil
+                    resetPointer()
                 })
+            .onChange(of: appsExpanded) { _ in cancelPointer() }
+            .onDisappear { cancelPointer() }
             // While the Apps grid is open the page scrolls instead of moving the cursor.
             .allowsHitTesting(!appsExpanded)
             .opacity(appsExpanded ? 0.6 : 1)
@@ -457,7 +520,18 @@ struct RemoteView: View {
     private var volumeBar: some View {
         GlassVolumeSlider(value: $volumeSliderValue)
             .onChange(of: volumeSliderValue) { newValue in
+                // A value we just applied from the TV's own reading must not be sent back to it.
+                if let echo = externalVolumeEcho, abs(newValue - echo) < 0.0001 {
+                    externalVolumeEcho = nil
+                    return
+                }
                 remote.setVolumeFraction(newValue)
+            }
+            .onChange(of: remote.tvVolumeFraction) { reading in
+                guard let reading, remote.volumeSliderAcceptsExternal,
+                      abs(reading - volumeSliderValue) > 0.0001 else { return }
+                externalVolumeEcho = reading
+                volumeSliderValue = reading
             }
     }
 }
