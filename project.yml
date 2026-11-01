@@ -24,6 +24,8 @@ targets:
       - path: GlassRemote
         excludes:
           - "glass_uhid_bridge"
+          - "glass_uhid_keyboard"
+          - "glass_uhid_keyboard.c"
           - "glass_cursor_setter.jar"
           - "glass_cursor_white.png"
     resources:
