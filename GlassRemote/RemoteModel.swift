@@ -1000,7 +1000,7 @@ final class RemoteModel: ObservableObject {
                 do { try await current.write(Data("R\n".utf8)) }
                 catch {
                     await MainActor.run {
-                        guard let self, self.cursorInput === current else { return }
+                        guard self.cursorInput === current else { return }
                         self.cursorInput = nil
                         self.cursorStatus = "Cursor: reapply feed disconnected · will retry on resume"
                         GRLog.note("cursor", "trailing reapply failed: \(error.localizedDescription)")
