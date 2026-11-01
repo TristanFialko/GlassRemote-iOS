@@ -461,22 +461,35 @@ private var volumeBar: some View {
             .tint(.white)
             .accessibilityLabel("Volume")
             .accessibilityHint("Drag horizontally to adjust the TV volume")
-            .onChange(of: volumeSliderValue) { newValue in
-                let oldStep = Int((volumeLastCommandValue * 20).rounded())
-                let newStep = Int((newValue * 20).rounded())
+             private var volumeBar: some View {
+        HStack(spacing: 13) {
+            Image(systemName: volumeSliderValue <= 0.02 ? "speaker" : "speaker.wave.2.fill")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.white.opacity(0.92))
+                .frame(width: 30)
+                .accessibilityHidden(true)
 
-                volumeLastCommandValue = newValue
+            Slider(value: $volumeSliderValue, in: 0...1)
+                .tint(.white)
+                .accessibilityLabel("Volume")
+                .accessibilityHint("Drag horizontally to adjust the TV volume")
+                .onChange(of: volumeSliderValue) { newValue in
+                    let oldStep = Int((volumeLastCommandValue * 20).rounded())
+                    let newStep = Int((newValue * 20).rounded())
 
-                let difference = newStep - oldStep
-                guard difference != 0 else { return }
+                    volumeLastCommandValue = newValue
 
-                let key = difference > 0 ? "VOLUME_UP" : "VOLUME_DOWN"
+                    let difference = newStep - oldStep
+                    guard difference != 0 else { return }
 
-                for _ in 0..<min(abs(difference), 4) {
-                    remote.volume(key)
+                    let key = difference > 0 ? "VOLUME_UP" : "VOLUME_DOWN"
+
+                    for _ in 0..<min(abs(difference), 4) {
+                        remote.volume(key)
+                    }
                 }
-            }
-          .padding(.horizontal, 18)
+        }
+        .padding(.horizontal, 18)
         .frame(height: 58)
         .glassSurface(Capsule(), interactive: true, elevated: true)
     }
