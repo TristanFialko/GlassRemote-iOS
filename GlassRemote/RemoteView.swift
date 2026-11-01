@@ -476,8 +476,8 @@ private var volumeBar: some View {
                     remote.volume(key)
                 }
             }
+          .padding(.horizontal, 18)
+        .frame(height: 58)
+        .glassSurface(Capsule(), interactive: true, elevated: true)
     }
-    .padding(.horizontal, 18)
-    .frame(height: 58)
-    .glassSurface(Capsule(), interactive: true, elevated: true)
 }
