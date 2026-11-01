@@ -24,6 +24,7 @@ struct RemoteView: View {
     @State private var didAutoConnect = false
     @State private var showPlayer = false
     @State private var volumeSliderValue: Double = 0.5
+    @State private var volumeLastCommandValue: Double = 0.5
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
 
@@ -448,32 +449,35 @@ struct RemoteView: View {
         .accessibilityLabel(label)
     }
 
-    private var volumeBar: some View {
-        HStack(spacing: 13) {
-            Image(systemName: volumeSliderValue <= 0.02 ? "speaker" : "speaker.wave.2.fill")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(.white.opacity(0.92))
-                .frame(width: 30)
-                .accessibilityHidden(true)
+private var volumeBar: some View {
+    HStack(spacing: 13) {
+        Image(systemName: volumeSliderValue <= 0.02 ? "speaker" : "speaker.wave.2.fill")
+            .font(.system(size: 20, weight: .medium))
+            .foregroundStyle(.white.opacity(0.92))
+            .frame(width: 30)
+            .accessibilityHidden(true)
 
-            Slider(value: $volumeSliderValue, in: 0...1)
-                .tint(.white)
-                .accessibilityLabel("Volume")
-                .accessibilityHint("Drag horizontally to adjust the TV volume")
-                .onChange(of: volumeSliderValue) { oldValue, newValue in
-                    let oldStep = Int((oldValue * 20).rounded())
-                    let newStep = Int((newValue * 20).rounded())
-                    let difference = newStep - oldStep
-                    guard difference != 0 else { return }
-                    let key = difference > 0 ? "VOLUME_UP" : "VOLUME_DOWN"
-                    for _ in 0..<min(abs(difference), 4) {
-                        remote.volume(key)
-                    }
+        Slider(value: $volumeSliderValue, in: 0...1)
+            .tint(.white)
+            .accessibilityLabel("Volume")
+            .accessibilityHint("Drag horizontally to adjust the TV volume")
+            .onChange(of: volumeSliderValue) { newValue in
+                let oldStep = Int((volumeLastCommandValue * 20).rounded())
+                let newStep = Int((newValue * 20).rounded())
+
+                volumeLastCommandValue = newValue
+
+                let difference = newStep - oldStep
+                guard difference != 0 else { return }
+
+                let key = difference > 0 ? "VOLUME_UP" : "VOLUME_DOWN"
+
+                for _ in 0..<min(abs(difference), 4) {
+                    remote.volume(key)
                 }
-        }
-        .padding(.horizontal, 18)
-        .frame(height: 58)
-        .glassSurface(Capsule(), interactive: true, elevated: true)
+            }
     }
-
+    .padding(.horizontal, 18)
+    .frame(height: 58)
+    .glassSurface(Capsule(), interactive: true, elevated: true)
 }
