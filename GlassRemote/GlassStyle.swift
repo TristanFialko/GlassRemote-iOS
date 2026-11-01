@@ -106,8 +106,10 @@ struct ModeSelector: View {
     var body: some View {
         GlassGroup(spacing: 6) {
             HStack(spacing: 0) {
-                segment("Mouse", icon: "computermouse", selected: isMouse) { isMouse = true }
-                segment("D-pad", icon: "circle.grid.cross", selected: !isMouse) { isMouse = false }
+                segment("Mouse", selected: isMouse, action: { isMouse = true }) { MouseGlyph(color: isMouse ? .white : Color.white.opacity(0.72)) }
+                segment("D-pad", selected: !isMouse, action: { isMouse = false }) {
+                    Image(systemName: "circle.grid.cross").font(.system(size: 15, weight: .semibold))
+                }
             }
             .padding(4)
             .frame(maxWidth: .infinity)
@@ -116,13 +118,13 @@ struct ModeSelector: View {
         }
     }
 
-    private func segment(_ title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
+    private func segment<Icon: View>(_ title: String, selected: Bool, action: @escaping () -> Void, @ViewBuilder icon: () -> Icon) -> some View {
         Button {
             UIImpactFeedbackGenerator(style: .soft).impactOccurred()
             action()
         } label: {
             HStack(spacing: 7) {
-                Image(systemName: icon).font(.system(size: 15, weight: .semibold))
+                icon()
                 Text(title).font(.system(size: 14, weight: .semibold))
             }
             .foregroundStyle(selected ? Color.white : Color.white.opacity(0.72))

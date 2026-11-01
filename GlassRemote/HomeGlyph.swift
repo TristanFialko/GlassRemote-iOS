@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Minimal house: one solid silhouette, a square body under a triangular roof with small eaves.
-/// No dividing line, no door, no chimney. Corners are softened by the stroke in `HomeGlyph`.
+/// Minimal house: one outlined silhouette, a square body under a triangular roof with small eaves.
+/// No dividing line, no door, no chimney. Corners are softened by the round-joined stroke in `HomeGlyph`.
 struct HouseShape: Shape {
     /// Pulls the drawing in from the frame so a round-joined stroke stays inside it.
     var inset: CGFloat = 0
@@ -26,15 +26,11 @@ struct HouseShape: Shape {
 
 struct HomeGlyph: View {
     var color: Color = .white
-    private let inset: CGFloat = 1.5
+    private let lineWidth: CGFloat = 1.9
 
     var body: some View {
-        HouseShape(inset: inset)
-            .fill(color)
-            .overlay {
-                HouseShape(inset: inset)
-                    .stroke(color, style: StrokeStyle(lineWidth: inset * 2, lineCap: .round, lineJoin: .round))
-            }
+        HouseShape(inset: lineWidth / 2)
+            .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
             .frame(width: 21, height: 20)
     }
 }
