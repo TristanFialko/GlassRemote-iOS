@@ -202,13 +202,25 @@ final class RemoteModel: ObservableObject {
     }
 
     private func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
-        let stream = try await connection.open(service: .shell, args: args)
-        var result = Data()
+    let stream = try await connection.open(service: .shell, args: args)
+    var result = Data()
 
-        while !(await stream.getIsClosed()) {
+    while !(await stream.getIsClosed()) {
+        do {
             let chunk = try await stream.read()
             if chunk.isEmpty { break }
             result.append(chunk)
+        } catch {
+            // ADB can close a one-shot shell stream normally after a command exits.
+            if await stream.getIsClosed() {
+                break
+            }
+            throw error
+        }
+    }
+
+    return String(data: result, encoding: .utf8) ?? ""
+}
         }
 
         return String(data: result, encoding: .utf8) ?? ""
