@@ -7,6 +7,8 @@ private let glassLine = Color.white.opacity(0.15)
 struct RemoteView: View {
     @EnvironmentObject private var remote: RemoteModel
     @State private var text = ""
+    @State private var lastPoint: CGPoint?
+    @State private var dragging = false
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
 
@@ -15,10 +17,13 @@ struct RemoteView: View {
             let compact = proxy.size.height < 760
             let side = max(12, min(17, proxy.size.width * 0.041))
             VStack(spacing: compact ? 8 : 10) {
-                header.frame(height: 34)
+                header
+                    .frame(height: 34)
                 appGrid(compact: compact)
-                textEntry.frame(height: 48)
-                controlPanel(compact: compact).frame(maxHeight: .infinity)
+                textEntry
+                    .frame(height: 48)
+                controlPanel(compact: compact)
+                    .frame(maxHeight: .infinity)
             }
             .padding(.horizontal, side)
             .padding(.top, 7)
@@ -52,33 +57,33 @@ struct RemoteView: View {
         .padding(.horizontal, 2)
     }
 
-    private func appGrid(compact: Bool) -> some View {
-        LazyVGrid(columns: columns, spacing: compact ? 8 : 10) {
-            ForEach(remote.apps) { app in
-                Button { remote.launch(app) } label: {
-                    Image("\(app.asset)_dark")
-                        .resizable()
-                        .scaledToFit()
-                        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
-                        }
-                        .background {
-                            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .fill(.ultraThinMaterial)
-                        }
-                        .shadow(color: .black.opacity(0.34), radius: 8, y: 4)
-                        .frame(maxWidth: .infinity)
-                        .aspectRatio(1, contentMode: .fit)
-                }
-                .buttonStyle(PressStyle())
-                .accessibilityLabel(app.name)
+private func appGrid(compact: Bool) -> some View {
+    LazyVGrid(columns: columns, spacing: compact ? 8 : 10) {
+        ForEach(remote.apps) { app in
+            Button { remote.launch(app) } label: {
+                Image("\(app.asset)_dark")
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 17, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
+                    }
+                    .background {
+                        RoundedRectangle(cornerRadius: 17, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                    }
+                    .shadow(color: .black.opacity(0.34), radius: 8, y: 4)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(1, contentMode: .fit)
             }
+            .buttonStyle(PressStyle())
+            .accessibilityLabel(app.name)
         }
-        .padding(10)
-        .background(panelBackground)
     }
+    .padding(10)
+    .background(panelBackground)
+}
 
     private var textEntry: some View {
         HStack(spacing: 8) {
@@ -94,11 +99,7 @@ struct RemoteView: View {
         .padding(7).background(panelBackground)
     }
 
-    private func sendText() {
-        guard !text.isEmpty else { return }
-        remote.sendText(text)
-        text = ""
-    }
+    private func sendText() { guard !text.isEmpty else { return }; remote.sendText(text); text = "" }
 
     private func controlPanel(compact: Bool) -> some View {
         VStack(spacing: compact ? 8 : 10) {
@@ -132,33 +133,39 @@ struct RemoteView: View {
     }
 
     private var trackpad: some View {
-        ZStack {
+        GeometryReader { geo in
             RoundedRectangle(cornerRadius: 23)
                 .fill(LinearGradient(colors: [Color.white.opacity(0.13), Color.white.opacity(0.035)], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.white.opacity(0.2)))
                 .shadow(color: .black.opacity(0.55), radius: 14, y: 8)
-
-            TrackpadTouchSurface(
-                onMove: { dx, dy in remote.mouse(dx: dx, dy: dy) },
-                onScroll: { vertical, horizontal in remote.mouse(wheel: vertical, hscroll: horizontal) },
-                onClick: {
-                    remote.mouse(buttons: 1)
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
-                        remote.mouse(buttons: 0)
+                .contentShape(RoundedRectangle(cornerRadius: 23))
+                .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in
+                        if let previous = lastPoint {
+                            let dx = Int((value.location.x - previous.x) * 2)
+                            let dy = Int((value.location.y - previous.y) * 2)
+                            if abs(dx) + abs(dy) > 0 { remote.mouse(dx: dx, dy: dy) }
+                        }
+                        lastPoint = value.location
+                        if !dragging && value.translation == .zero { }
                     }
-                },
-                onDragState: { isDragging in
-                    remote.mouse(buttons: isDragging ? 1 : 0)
-                    if isDragging {
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    }
-                }
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 23))
+                    .onEnded { value in
+                        if abs(value.translation.width) < 8 && abs(value.translation.height) < 8 {
+                            remote.mouse(buttons: 1); UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) { remote.mouse(buttons: 0) }
+                        }
+                        lastPoint = nil
+                    })
+                .onLongPressGesture(minimumDuration: 0.35, pressing: { pressing in
+                    dragging = pressing
+                    if pressing { remote.mouse(buttons: 1); UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+                    else { remote.mouse(buttons: 0) }
+                }, perform: {})
         }
-        .frame(height: 142)
+        .frame(height: geoTrackpadHeight)
     }
+
+    private var geoTrackpadHeight: CGFloat { 142 }
 
     private var dpad: some View {
         VStack(spacing: 6) {
@@ -220,170 +227,6 @@ struct RemoteView: View {
         }
         .presentationDetents([.medium, .large])
         .preferredColorScheme(.dark)
-    }
-}
-
-private struct TrackpadTouchSurface: UIViewRepresentable {
-    let onMove: (Int, Int) -> Void
-    let onScroll: (Int, Int) -> Void
-    let onClick: () -> Void
-    let onDragState: (Bool) -> Void
-
-    func makeUIView(context: Context) -> TouchView {
-        let view = TouchView()
-        view.backgroundColor = .clear
-        view.isMultipleTouchEnabled = true
-        view.onMove = onMove
-        view.onScroll = onScroll
-        view.onClick = onClick
-        view.onDragState = onDragState
-        return view
-    }
-
-    func updateUIView(_ uiView: TouchView, context: Context) {
-        uiView.onMove = onMove
-        uiView.onScroll = onScroll
-        uiView.onClick = onClick
-        uiView.onDragState = onDragState
-    }
-
-    final class TouchView: UIView {
-        var onMove: ((Int, Int) -> Void)?
-        var onScroll: ((Int, Int) -> Void)?
-        var onClick: (() -> Void)?
-        var onDragState: ((Bool) -> Void)?
-
-        private var previousCenter: CGPoint?
-        private var startCenter: CGPoint?
-        private var previousTouchCount = 0
-        private var movedDistance: CGFloat = 0
-        private var dragging = false
-        private var touchToken = 0
-        private var scrollRemainderX: CGFloat = 0
-        private var scrollRemainderY: CGFloat = 0
-
-        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-            super.touchesBegan(touches, with: event)
-            let active = activeTouches(event)
-            previousTouchCount = active.count
-            let center = centroid(active)
-            previousCenter = center
-            startCenter = center
-            movedDistance = 0
-            scrollRemainderX = 0
-            scrollRemainderY = 0
-            touchToken += 1
-
-            if active.count == 1 {
-                let token = touchToken
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.38) { [weak self] in
-                    guard let self,
-                          self.touchToken == token,
-                          self.previousTouchCount == 1,
-                          self.movedDistance < 7,
-                          !self.dragging else { return }
-                    self.dragging = true
-                    self.onDragState?(true)
-                }
-            }
-        }
-
-        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-            super.touchesMoved(touches, with: event)
-            let active = activeTouches(event)
-            guard !active.isEmpty else { return }
-            let center = centroid(active)
-
-            guard let previousCenter else {
-                self.previousCenter = center
-                return
-            }
-
-            if active.count != previousTouchCount {
-                previousTouchCount = active.count
-                self.previousCenter = center
-                startCenter = center
-                movedDistance = 0
-                return
-            }
-
-            let dx = center.x - previousCenter.x
-            let dy = center.y - previousCenter.y
-            movedDistance += abs(dx) + abs(dy)
-
-            if active.count == 1 {
-                if abs(dx) + abs(dy) >= 0.5 {
-                    onMove?(Int(dx * 2.0), Int(dy * 2.0))
-                }
-            } else {
-                // Two-finger pan: vertical and horizontal wheel channels.
-                scrollRemainderY += -dy * 1.4
-                scrollRemainderX += dx * 1.4
-                let vertical = Int(scrollRemainderY)
-                let horizontal = Int(scrollRemainderX)
-                if vertical != 0 || horizontal != 0 {
-                    onScroll?(vertical, horizontal)
-                    scrollRemainderY -= CGFloat(vertical)
-                    scrollRemainderX -= CGFloat(horizontal)
-                }
-            }
-
-            self.previousCenter = center
-        }
-
-        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-            finishTouches(event)
-            super.touchesEnded(touches, with: event)
-        }
-
-        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-            if dragging {
-                dragging = false
-                onDragState?(false)
-            }
-            resetTouchState()
-            super.touchesCancelled(touches, with: event)
-        }
-
-        private func finishTouches(_ event: UIEvent?) {
-            let remaining = activeTouches(event)
-            if remaining.isEmpty {
-                if dragging {
-                    dragging = false
-                    onDragState?(false)
-                } else if previousTouchCount == 1, movedDistance < 7 {
-                    onClick?()
-                }
-                resetTouchState()
-            } else {
-                previousTouchCount = remaining.count
-                previousCenter = centroid(remaining)
-                startCenter = previousCenter
-            }
-        }
-
-        private func resetTouchState() {
-            touchToken += 1
-            previousCenter = nil
-            startCenter = nil
-            previousTouchCount = 0
-            movedDistance = 0
-            scrollRemainderX = 0
-            scrollRemainderY = 0
-        }
-
-        private func activeTouches(_ event: UIEvent?) -> [UITouch] {
-            (event?.allTouches ?? [])
-                .filter { $0.view === self && $0.phase != .ended && $0.phase != .cancelled }
-        }
-
-        private func centroid(_ touches: [UITouch]) -> CGPoint {
-            guard !touches.isEmpty else { return .zero }
-            let points = touches.map { $0.location(in: self) }
-            let x = points.reduce(CGFloat.zero) { $0 + $1.x } / CGFloat(points.count)
-            let y = points.reduce(CGFloat.zero) { $0 + $1.y } / CGFloat(points.count)
-            return CGPoint(x: x, y: y)
-        }
     }
 }
 
