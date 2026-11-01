@@ -35,6 +35,9 @@ final class SamsungTV {
     var onSendFailed: ((String) -> Void)?
 
     private(set) var isReady = false
+    /// True from connect() until the attempt succeeds, fails, times out or is stopped.
+    /// Lets the auto-connect supervisor avoid creating a duplicate connection.
+    private(set) var isAttempting = false
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
     private var receiveTask: Task<Void, Never>?
@@ -66,6 +69,7 @@ final class SamsungTV {
         let socket = urlSession.webSocketTask(with: url)
         session = urlSession
         task = socket
+        isAttempting = true
         socket.resume()
         report("Samsung TV: connecting… approve Glass Remote on the TV if it asks")
 
@@ -77,8 +81,9 @@ final class SamsungTV {
                     self.handle(message)
                 } catch {
                     guard let self, self.generation == gen else { return }
+                    self.isAttempting = false
                     self.setReady(false)
-                    self.report("Samsung TV: not connected · using ADB volume")
+                    self.report("Samsung TV: not connected · using ADB volume (retrying)")
                     return
                 }
             }
@@ -87,7 +92,7 @@ final class SamsungTV {
         timeoutTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 45_000_000_000)
             guard let self, self.generation == gen, !self.isReady else { return }
-            self.report("Samsung TV: no response · using ADB volume")
+            self.report("Samsung TV: no response · using ADB volume (retrying)")
             self.stop(report: false)
         }
     }
@@ -98,6 +103,7 @@ final class SamsungTV {
         timeoutTask?.cancel(); timeoutTask = nil
         task?.cancel(with: .goingAway, reason: nil); task = nil
         session?.invalidateAndCancel(); session = nil
+        isAttempting = false
         setReady(false)
         if shouldReport { report("Samsung TV: off") }
     }
@@ -138,8 +144,9 @@ final class SamsungTV {
                 if !value.isEmpty { UserDefaults.standard.set(value, forKey: tokenKey) }
             }
             timeoutTask?.cancel()
+            isAttempting = false
             setReady(true)
-            report("Samsung TV: connected · volume routed to TV (untested path to soundbar)")
+            report("Samsung TV: connected · volume routed through the TV to the soundbar")
         case "ms.channel.unauthorized":
             report("Samsung TV: not allowed · accept Glass Remote on the TV")
         case "ms.channel.timeout":

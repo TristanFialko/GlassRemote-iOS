@@ -87,20 +87,108 @@ extension RemoteModel {
 
     /// Volume and mute go to the Samsung TV when that connection is ready, otherwise
     /// through the existing ADB path.
-    func volume(_ name: String) {
+    func volume(_ name: String, haptic: Bool = true) {
         if tvVolumeEnabled, tv.send(name) {
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+            if haptic { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
             return
         }
         key(name)
     }
 
+    // MARK: - Slider -> volume mapping
+
+    /// Number of volume-key presses a full slider sweep spans. Through the TV this is the
+    /// soundbar's own scale (`tvVolumeMax`); over ADB it stays at the original 20 steps.
+    var volumeLevels: Int { (tvVolumeEnabled && tvVolumeReady) ? tvVolumeMax : 20 }
+
+    /// Forget what we assumed about the real volume (range or route changed).
+    func volumeStateReset() {
+        volumeLevelKnown = false
+        volumeLevelsInUse = 0
+    }
+
+    /// Maps the 0...1 slider to key presses. The slider is relative (the app cannot read the
+    /// soundbar's real level), so the first time it reaches either end the full range is
+    /// pressed once: the soundbar clamps at its true limit, after which slider and soundbar
+    /// agree exactly at that end and every later move is an exact press count.
+    func setVolumeFraction(_ fraction: Double) {
+        let levels = volumeLevels
+        let clamped = min(max(fraction, 0), 1)
+        let target = Int((clamped * Double(levels)).rounded())
+
+        if volumeLevelsInUse != levels {
+            // Range changed: rescale the assumed position, and stop trusting it.
+            if volumeLevelsInUse > 0 {
+                volumeAssumedLevel = Int((Double(volumeAssumedLevel) / Double(volumeLevelsInUse) * Double(levels)).rounded())
+            } else {
+                volumeAssumedLevel = levels / 2   // slider starts at 50 %
+            }
+            volumeLevelsInUse = levels
+            volumeLevelKnown = false
+        }
+
+        var delta = target - volumeAssumedLevel
+        if !volumeLevelKnown {
+            if target >= levels { delta = levels; volumeLevelKnown = true }
+            else if target <= 0 { delta = -levels; volumeLevelKnown = true }
+        }
+        guard delta != 0 else { return }
+        volumeAssumedLevel = target
+        volumePendingSteps += delta
+        drainVolumeSteps()
+    }
+
+    private func drainVolumeSteps() {
+        guard volumeDrainTask == nil else { return }
+        volumeDrainTask = Task { [weak self] in
+            while let self, self.volumePendingSteps != 0, !Task.isCancelled {
+                let up = self.volumePendingSteps > 0
+                self.volumePendingSteps += up ? -1 : 1
+                // Feel each step for small moves; stay quiet during long sweeps.
+                self.volume(up ? "VOLUME_UP" : "VOLUME_DOWN", haptic: abs(self.volumePendingSteps) < 3)
+                try? await Task.sleep(nanoseconds: 40_000_000)
+            }
+            self?.volumeDrainTask = nil
+        }
+    }
+
+    // MARK: - Samsung TV connection
+
     func applyTVSettings() {
         if tvVolumeEnabled, !samsungHost.trimmingCharacters(in: .whitespaces).isEmpty {
-            if !tvVolumeReady { tv.connect(host: samsungHost) }
+            // Never replace an attempt that is already in flight (that created duplicates).
+            if !tvVolumeReady, !tv.isAttempting { tv.connect(host: samsungHost) }
         } else {
             tv.stop(report: false)
             samsungStatus = tvVolumeEnabled ? "Samsung TV: enter the TV's IP address" : "Samsung TV: off"
+        }
+    }
+
+    /// Connects on launch and keeps retrying with a growing delay (2 s up to 30 s) whenever the
+    /// TV is unreachable or the connection drops. Exactly one supervisor runs; it never starts
+    /// a second connection while one is connecting or ready.
+    func startTVSupervisor() {
+        guard tvSupervisorTask == nil else { return }
+        tvSupervisorTask = Task { [weak self] in
+            var delay: Double = 2
+            while !Task.isCancelled {
+                guard let self else { return }
+                let wanted = self.tvVolumeEnabled
+                    && !self.samsungHost.trimmingCharacters(in: .whitespaces).isEmpty
+                    && self.appActive
+
+                if !wanted || self.tv.isReady {
+                    if self.tv.isReady { delay = 2 }
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                } else if self.tv.isAttempting {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                } else {
+                    GRLog.note("samsung", "auto-connect to \(self.samsungHost) (next retry in \(Int(delay)) s if it fails)")
+                    self.tv.connect(host: self.samsungHost)
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    delay = min(delay * 2, 30)
+                }
+            }
         }
     }
 

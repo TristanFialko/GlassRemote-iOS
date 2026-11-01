@@ -30,15 +30,47 @@ final class RemoteModel: ObservableObject {
     @Published var runningQuickActionID: UUID?
     @Published var samsungStatus = "Samsung TV: off"
     @Published private(set) var tvVolumeReady = false
-    @Published var tvVolumeEnabled = UserDefaults.standard.bool(forKey: "glassRemote.tvVolumeEnabled") {
+    // On by default: the TV route is what controls the soundbar. Only an explicit "off" is kept.
+    @Published var tvVolumeEnabled: Bool = {
+        let d = UserDefaults.standard
+        return d.object(forKey: "glassRemote.tvVolumeEnabled") == nil ? true : d.bool(forKey: "glassRemote.tvVolumeEnabled")
+    }() {
         didSet {
             UserDefaults.standard.set(tvVolumeEnabled, forKey: "glassRemote.tvVolumeEnabled")
             applyTVSettings()
         }
     }
-    @Published var samsungHost = UserDefaults.standard.string(forKey: "glassRemote.samsungHost") ?? "" {
+    static let defaultSamsungHost = "192.168.1.166"
+    @Published var samsungHost: String = {
+        let saved = (UserDefaults.standard.string(forKey: "glassRemote.samsungHost") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return saved.isEmpty ? RemoteModel.defaultSamsungHost : saved
+    }() {
         didSet { UserDefaults.standard.set(samsungHost, forKey: "glassRemote.samsungHost") }
     }
+
+    /// Highest level of the soundbar's own volume scale (what one full slider sweep covers).
+    /// Each VOLUP/VOLDOWN press moves the soundbar one level, so the slider must span this
+    /// many presses to reach the soundbar's real maximum. Match it to your soundbar's display.
+    @Published var tvVolumeMax: Int = {
+        let saved = UserDefaults.standard.integer(forKey: "glassRemote.tvVolumeMax")
+        return saved > 0 ? saved : 100
+    }() {
+        didSet {
+            let clamped = min(max(tvVolumeMax, 5), 200)
+            if clamped != tvVolumeMax { tvVolumeMax = clamped; return }
+            UserDefaults.standard.set(tvVolumeMax, forKey: "glassRemote.tvVolumeMax")
+            volumeStateReset()
+        }
+    }
+
+    // Slider -> volume key mapping state (logic in RemoteModel+Features.swift).
+    var volumeLevelsInUse = 0
+    var volumeAssumedLevel = 0
+    var volumeLevelKnown = false
+    var volumePendingSteps = 0
+    var volumeDrainTask: Task<Void, Never>?
+    var tvSupervisorTask: Task<Void, Never>?
 
     let apps: [TVApp] = [
         .init(name: "Netflix", package: "com.netflix.ninja", asset: "netflix"),
@@ -57,6 +89,12 @@ final class RemoteModel: ObservableObject {
     private var commandReaderTask: Task<Void, Never>?
     private var mouseStream: AdbStream?
     private var mouseReady = false
+
+    // Custom white pointer on the TV (glass_cursor_setter.jar + glass_cursor_white.png).
+    // Independent of the mouse: its failure never affects mouse or keyboard startup.
+    private var cursorStream: AdbStream?
+    private var cursorReaderTask: Task<Void, Never>?
+    @Published var cursorStatus = "Cursor: not started"
     private var commandQueue = TaskQueue()
     private var reportQueue = TaskQueue()
 
@@ -90,9 +128,14 @@ final class RemoteModel: ObservableObject {
         keyboard.onStopped = { [weak self] in self?.keyboardStopped() }
 
         tv.onStatus = { [weak self] text in self?.samsungStatus = text }
-        tv.onReadyChanged = { [weak self] ready in self?.tvVolumeReady = ready }
         // A volume key accepted by the TV connection that then failed is re-sent over ADB.
         tv.onSendFailed = { [weak self] name in self?.key(name) }
+        tv.onReadyChanged = { [weak self] ready in
+            self?.tvVolumeReady = ready
+            self?.volumeStateReset()
+        }
+        // Connect to the Samsung TV on launch and keep it connected, independent of ADB.
+        startTVSupervisor()
 
         NotificationCenter.default.addObserver(
             forName: UIApplication.willResignActiveNotification,
@@ -210,6 +253,9 @@ final class RemoteModel: ObservableObject {
                 _ = await withDeadline(30) { await self.startMouse() }
                 guard session == sessionID else { return }
                 await startKeyboard()
+                guard session == sessionID else { return }
+                // Cursor appearance only: bounded and non-fatal, runs after mouse + keyboard.
+                _ = await withDeadline(40) { await self.startCursor() }
                 guard session == sessionID else { return }
                 // Polling starts only after the mouse/keyboard helpers have finished their
                 // startup handshakes, so no extra ADB stream competes with them.
@@ -677,6 +723,157 @@ final class RemoteModel: ObservableObject {
         _ = await withDeadline(30) { await self.keyboard.start(adb: adb) }
     }
 
+    // MARK: - Custom white cursor
+
+    /// Tip of the arrow inside the 128x128 `glass_cursor_white.png` (pixels).
+    private static let cursorHotspot = (x: 18, y: 8)
+
+    private func findBundledFile(_ name: String) -> URL? {
+        let bundle = Bundle.main
+        if let direct = bundle.url(forResource: name, withExtension: nil),
+           FileManager.default.fileExists(atPath: direct.path) {
+            return direct
+        }
+        for root in [bundle.resourceURL, bundle.bundleURL].compactMap({ $0 }) {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for case let url as URL in enumerator where url.lastPathComponent == name {
+                return url
+            }
+        }
+        return nil
+    }
+
+    /// Uploads to `<remote>.upload`, waits until the TV reports the full size (close() returns
+    /// before the TV has finished writing), then moves it into place.
+    private func uploadToTV(_ connection: AdbConnection, data: Data, remote: String, mode: String) async throws {
+        let temp = remote + ".upload"
+        let upload = try await connection.open(destination: "exec:sh -c 'cat > \(temp)'")
+        try await upload.write(data)
+        try await upload.close()
+
+        var remoteBytes: Int?
+        for _ in 0..<50 {
+            let out = try await runShell(
+                connection,
+                ["sh", "-c", "if [ -f \(temp) ]; then wc -c < \(temp); else echo MISSING; fi"]
+            )
+            remoteBytes = out.split(whereSeparator: { $0.isWhitespace }).compactMap { Int($0) }.first
+            if remoteBytes == data.count { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard remoteBytes == data.count else {
+            throw NSError(
+                domain: "GlassRemote", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: "\((remote as NSString).lastPathComponent) upload incomplete: local \(data.count) bytes, TV has \(remoteBytes.map(String.init) ?? "none")"]
+            )
+        }
+        let done = try await runShell(
+            connection,
+            ["sh", "-c", "chmod \(mode) \(temp) && mv -f \(temp) \(remote) && echo GLASSREMOTE_FILE_OK"]
+        )
+        guard done.contains("GLASSREMOTE_FILE_OK") else {
+            throw NSError(
+                domain: "GlassRemote", code: 31,
+                userInfo: [NSLocalizedDescriptionKey: "could not install \((remote as NSString).lastPathComponent): \(done.trimmingCharacters(in: .whitespacesAndNewlines))"]
+            )
+        }
+    }
+
+    private func startCursor() async {
+        guard let adb else { return }
+        await stopCursor()
+
+        guard let jarURL = findBundledFile("glass_cursor_setter.jar"),
+              let pngURL = findBundledFile("glass_cursor_white.png") else {
+            cursorStatus = "Cursor: helper files are not inside the app bundle"
+            return
+        }
+
+        do {
+            cursorStatus = "Cursor: uploading…"
+            let jar = try Data(contentsOf: jarURL)
+            let png = try Data(contentsOf: pngURL)
+            try await uploadToTV(adb, data: jar, remote: "/data/local/tmp/glass_cursor_setter.jar", mode: "644")
+            try await uploadToTV(adb, data: png, remote: "/data/local/tmp/glass_cursor_white.png", mode: "644")
+
+            // `watch` keeps re-applying the icon so it stays white and is not reset by the
+            // system while the pointer moves, hovers, clicks or drags.
+            let stream = try await adb.open(destination: "shell:sh")
+            let hot = Self.cursorHotspot
+            let command = "stty -echo 2>/dev/null; CLASSPATH=/data/local/tmp/glass_cursor_setter.jar exec app_process /system/bin com.glassremote.cursor.Main watch /data/local/tmp/glass_cursor_white.png \(hot.x) \(hot.y)\n"
+            try await stream.write(Data(command.utf8))
+
+            let watchdog = Task { [stream] in
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                if !Task.isCancelled { try? await stream.close() }
+            }
+
+            var output = Data()
+            var applied = false
+            while !applied {
+                if await stream.getIsClosed() { break }
+                let chunk: Data
+                do { chunk = try await stream.read() } catch { break }
+                if chunk.isEmpty { break }
+                output.append(chunk)
+                let text = String(decoding: output, as: UTF8.self)
+                if text.contains("GLASS_CURSOR_SET_OK") { applied = true }
+                else if text.contains("GLASS_CURSOR_ERROR") { break }
+            }
+            watchdog.cancel()
+
+            guard applied else {
+                try? await stream.close()
+                let text = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                throw NSError(
+                    domain: "GlassRemote", code: 32,
+                    userInfo: [NSLocalizedDescriptionKey: text.isEmpty ? "cursor helper gave no response" : text]
+                )
+            }
+
+            cursorStream = stream
+            cursorStatus = "Cursor: custom white cursor applied"
+            GRLog.note("cursor", "custom white cursor applied")
+
+            // Keep draining the helper's output so its pipe never fills; note when it ends.
+            cursorReaderTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do {
+                        let chunk = try await stream.read()
+                        if chunk.isEmpty { break }
+                    } catch { break }
+                }
+                await MainActor.run {
+                    guard let self, self.cursorStream === stream else { return }
+                    self.cursorStream = nil
+                    self.cursorStatus = "Cursor: helper stopped"
+                    GRLog.note("cursor", "helper stream ended")
+                }
+            }
+        } catch {
+            cursorStream = nil
+            cursorStatus = "Cursor failed: \(error.localizedDescription)"
+            GRLog.note("cursor", "start failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func stopCursor() async {
+        cursorReaderTask?.cancel()
+        cursorReaderTask = nil
+        let old = cursorStream
+        cursorStream = nil
+        if let old {
+            _ = await withDeadline(2) { () async -> Void in
+                try? await old.write(Data("STOP\n".utf8))
+                _ = try? await old.close()
+            }
+        }
+    }
+
     // MARK: - Lifecycle: teardown and recovery
 
     /// Detaches every session object first, then closes the old (possibly dead) ones with a
@@ -697,6 +894,7 @@ final class RemoteModel: ObservableObject {
         adb = nil
 
         await keyboard.stop()
+        await stopCursor()
 
         _ = await withDeadline(2) { () async -> Void in _ = try? await oldMouse?.close() }
         _ = await withDeadline(2) { () async -> Void in _ = try? await oldCommand?.close() }

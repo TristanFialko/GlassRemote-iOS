@@ -26,14 +26,18 @@ struct ConnectionSheet: View {
                             .onSubmit { remote.reconnectTV() }
                         Button("Connect to Samsung TV") { remote.reconnectTV() }
                         Text(remote.samsungStatus).font(.footnote).foregroundStyle(.secondary)
+                        Stepper("Soundbar max volume: \(remote.tvVolumeMax)", value: $remote.tvVolumeMax, in: 5...200)
+                        Text("Set this to the highest number your soundbar shows. The slider spans this whole range, so full slider = soundbar maximum.")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
-                    Text("When this is off, or the TV cannot be reached, the volume buttons use ADB as before. Whether the TV passes volume on to the soundbar still has to be tested on your hardware.")
+                    Text("When this is off, or the TV cannot be reached, the volume buttons use ADB as before. The app connects to the Samsung TV automatically and retries if it is unreachable.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
                 Section("Status") {
                     Text(remote.status).font(.footnote).textSelection(.enabled)
                     Text(remote.keyboardStatus).font(.footnote).textSelection(.enabled)
+                    Text(remote.cursorStatus).font(.footnote).textSelection(.enabled)
                 }
 
                 Section {
