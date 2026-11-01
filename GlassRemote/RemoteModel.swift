@@ -453,6 +453,20 @@ final class RemoteModel: ObservableObject {
             }
             playbackDiagnostics = "Collecting recent TV logs…"
             let command = """
+            echo '=== ANDROID FIFO ENVIRONMENT TEST ==='
+            echo "id=$(id 2>&1)"
+            echo "shell=$SHELL"
+            echo "tmp-dir=$(ls -ld /data/local/tmp 2>&1)"
+            echo "mkfifo-path=$(command -v mkfifo 2>&1)"
+            echo "toybox-path=$(command -v toybox 2>&1)"
+            echo "mknod-path=$(command -v mknod 2>&1)"
+            T=/data/local/tmp/glass_fifo_probe_$$
+            mkfifo "$T" 2>&1; echo "mkfifo-test-rc=$?"
+            if [ -p "$T" ]; then echo 'mkfifo-test=PASS'; rm -f "$T"; else echo 'mkfifo-test=FAIL'; fi
+            toybox mkfifo "$T" 2>&1; echo "toybox-mkfifo-test-rc=$?"
+            if [ -p "$T" ]; then echo 'toybox-mkfifo-test=PASS'; rm -f "$T"; else echo 'toybox-mkfifo-test=FAIL'; fi
+            mknod "$T" p 2>&1; echo "mknod-test-rc=$?"
+            if [ -p "$T" ]; then echo 'mknod-test=PASS'; rm -f "$T"; else echo 'mknod-test=FAIL'; fi
             echo '=== PERSISTENT HELPERS ==='
             for n in glass_uhid_bridge glass_uhid_keyboard glass_cursor; do
               echo "--- $n ---"

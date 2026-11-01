@@ -82,7 +82,17 @@ enum PersistentHelper {
         if \(aliveTest(name: name, match: match)); then echo GLASS_ALREADY; exit 0; fi
         \(killScript(name: name, match: match))
         rm -f \(p.log)
-        mkfifo \(p.fifo) 2>/dev/null || mknod \(p.fifo) p 2>/dev/null || { echo GLASS_FIFO_FAIL; exit 0; }
+        FIFO_ERR=$(mkfifo \(p.fifo) 2>&1); FIFO_RC=$?
+        if [ ! -p \(p.fifo) ]; then
+          TOYBOX_ERR=$(toybox mkfifo \(p.fifo) 2>&1); TOYBOX_RC=$?
+        else TOYBOX_RC=0; fi
+        if [ ! -p \(p.fifo) ]; then
+          MKNOD_ERR=$(mknod \(p.fifo) p 2>&1); MKNOD_RC=$?
+        else MKNOD_RC=0; fi
+        if [ ! -p \(p.fifo) ]; then
+          echo "GLASS_FIFO_FAIL mkfifo_rc=$FIFO_RC mkfifo_err=$FIFO_ERR toybox_rc=$TOYBOX_RC toybox_err=$TOYBOX_ERR mknod_rc=$MKNOD_RC mknod_err=$MKNOD_ERR"
+          exit 0
+        fi
         command -v setsid >/dev/null 2>&1 || { echo GLASS_NO_SETSID; exit 0; }
         command -v nohup >/dev/null 2>&1 || { echo GLASS_NO_NOHUP; exit 0; }
         setsid nohup sh -c "echo \\$\\$ > \(p.pid); \(writer) > \(p.fifo) & \(command) < \(p.fifo) > \(p.log) 2>&1" </dev/null >/dev/null 2>&1 &
