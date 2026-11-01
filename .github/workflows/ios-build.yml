@@ -65,6 +65,21 @@ jobs:
           file GlassRemote/glass_uhid_keyboard
           test -s GlassRemote/glass_uhid_keyboard
 
+      - name: Compile ARM32 persistent TCP input server
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/homebrew/share/android-commandlinetools}"
+          NDK_ROOT="$SDK_ROOT/ndk/27.2.12479018"
+          COMPILER="$(find "$NDK_ROOT/toolchains/llvm/prebuilt" -type f \
+            -name armv7a-linux-androideabi23-clang -print -quit)"
+          test -n "$COMPILER"
+          "$COMPILER" -O2 -Wall -Wextra -fPIE -pie \
+            GlassRemote/glass_tcp_input_server.c \
+            -o GlassRemote/glass_tcp_input_server
+          file GlassRemote/glass_tcp_input_server
+          test -s GlassRemote/glass_tcp_input_server
+
       - name: Generate Xcode project
         run: xcodegen generate
 
@@ -143,6 +158,8 @@ jobs:
           chmod 755 "$APP_PATH/glass_uhid_bridge"
           cp GlassRemote/glass_uhid_keyboard "$APP_PATH/glass_uhid_keyboard"
           chmod 755 "$APP_PATH/glass_uhid_keyboard"
+          cp GlassRemote/glass_tcp_input_server "$APP_PATH/glass_tcp_input_server"
+          chmod 755 "$APP_PATH/glass_tcp_input_server"
           cp GlassRemote/glass_cursor_setter.jar "$APP_PATH/glass_cursor_setter.jar"
           cp GlassRemote/glass_cursor_white.png "$APP_PATH/glass_cursor_white.png"
           test -s "$APP_PATH/glass_cursor_setter.jar"
@@ -151,6 +168,7 @@ jobs:
           file "$APP_PATH/glass_uhid_keyboard"
           test -s "$APP_PATH/glass_uhid_bridge"
           test -s "$APP_PATH/glass_uhid_keyboard"
+          test -s "$APP_PATH/glass_tcp_input_server"
 
       - name: Package unsigned IPA
         run: |
