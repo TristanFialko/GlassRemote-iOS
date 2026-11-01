@@ -233,7 +233,7 @@ final class RemoteModel: ObservableObject {
 
         for case let url as URL in enumerator {
             if url.lastPathComponent == "glass_uhid_bridge",
-               FileManager.default.isRegularFile(atPath: url.path) {
+               FileManager.default.fileExists(atPath: url.path) {
                 return url
             }
         }
