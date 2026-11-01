@@ -213,3 +213,10 @@ tile and backdrop appearance unseen on a real display.
    dimmed state too; drag/chevron closes. Stremio artwork centred, uncropped. Elapsed time ticks; no scrubber.
 6. Keyboard sheet, D-pad/OK, Back/Home/Menu, volume (ADB and Samsung path if enabled), Quick Actions, power menu, haptics.
 7. Look at the backdrop/panels on the OLED in a dark room; nothing grey, outer edges black.
+
+---
+# Update — mouse + Samsung volume stabilisation
+Baseline: assembled project + the five newer Swift files from files.zip (RemoteModel, RemoteModel+Features, SamsungTV, ConnectionSheet, RemoteView), then:
+* Mouse: coalesced pointer motion (`mouseMove`/`mouseButton` in RemoteModel.swift), sub-point carry, 3 pt dead zone, tap = release within 0.45 s and <8 pt, no drag (removed) (RemoteView.swift).
+* Cursor: white PNG started via files.zip `startCursor()` (the assembled project bundled the files but never launched them).
+* Volume: new `SamsungVolume.swift` (UPnP RenderingControl, port 9197, raw NWConnection HTTP): real GetVolume polling (1 s, single in-flight, backoff), absolute SetVolume with latest-wins, slider follows TV readings, falls back to existing key paths. NOT compiled, NOT tested on hardware.
