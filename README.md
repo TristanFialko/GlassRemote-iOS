@@ -1,25 +1,40 @@
-# Glass Remote iOS — first native prototype
+# Glass Remote (iOS)
 
-Separate native iPhone app. The Safari/Windows remote is not modified.
+Native iPhone remote for the ARRIS VIP7802 Android TV box running Glass Launcher.
+Black smoked-glass look using native Liquid Glass on iOS 26+ (your iOS 27 phone), always in Dark Mode.
 
-## Current prototype scope
-- Native SwiftUI layout for iPhone, designed to fit the iPhone 13 Pro portrait safe area without a vertical ScrollView.
-- App grid order: Netflix, YouTube, Stremio / RetroArch, Prime Video, Disney+ / Sunshine, Spotify, Rhenium.
-- Reuses the supplied light/dark 800×480 app artwork.
-- Direct ADB TCP connection to the VIP7802, RSA host identity persisted in iOS Keychain, package discovery and app launch.
-- ADB shell starts the bundled ARM32 `glass_uhid_bridge` under Android's shell UID; single-finger pointer movement and click reports are sent through one persistent shell stream.
-- Native UIKit haptic feedback.
-- The first trackpad prototype does not yet implement the Safari version's complete two-finger scroll/right-click/drag gesture parity or persistent custom cursor override.
+## What is in this version
+- **Mouse / D-pad** are still the two core modes. The selector now spans the full width (50% / 50%, capsule, selected glass pill that slides between segments).
+- **Mouse**: unchanged engine (UHID bridge, ×2 movement, 8 pt tap threshold, 45 ms click, drag, two-finger scroll, white cursor).
+- **Apps**: collapsed row by default; opens to the original 3×3 grid (same nine apps, order, artwork); collapses after a launch. While open, the mouse/D-pad surface is dimmed and the page scrolls.
+- **Now Playing**: title, app, playback position. Controls appear only if the active media session advertises them (see "Media" below).
+- **Power menu**: Standby, Wake, Restart launcher, Restart TV box (confirmation dialogs for the disruptive ones).
+- **Quick Actions**: create/edit/reorder macros (open app, whitelisted key, wait, volume steps). Stored locally in UserDefaults. The three starter actions are examples you can change.
+- **Keyboard sheet**: type + Send, system Paste button (clipboard is never read silently), Backspace, Enter, recent text history (Clear button).
+- **Volume**: optional Samsung TV route (port 8002). Off by default. ADB volume remains the fallback.
+- **Siri / Shortcuts**: "Open TV App" and "Run Quick Action" intents.
 
-## Important test status
-This is a first source prototype, not a tested IPA. It must be built by GitHub Actions on macOS and tested on the actual VIP7802. SwiftADB is an external dependency; its API and the device's existing ADB authorization path must be validated by the cloud build and hardware test. The app cannot bypass Android's ADB authorization prompt.
+## Build (unchanged workflow, from Windows)
+1. Upload the **contents** of this folder to your private GitHub repo `GlassRemote-iOS` (include `.github`).
+2. Actions → `iOS build` → Run workflow. It now uses the `macos-26` runner (Xcode 26 SDK) because native `glassEffect` needs it.
+3. Download `glassremote-unsigned-ipa` and sideload as before. If the build fails, download `glassremote-build-logs` and send the error.
 
-The helper binary is the existing ARM32 executable from the supplied Glass Remote project. It requires `/dev/uhid` access for the ADB shell identity, which was previously confirmed on this VIP7802.
+The deployment target is still iOS 16. Liquid Glass is guarded with `#available(iOS 26, *)` and `#if compiler(>=6.2)`, so older SDKs/OS versions use a material fallback and still compile.
 
-## Build from Windows
-1. Create a **private** GitHub repository named `GlassRemote-iOS`.
-2. Upload the contents of this folder to the repository root (not the enclosing folder).
-3. Open Actions and run `iOS build` (or push to `main`).
-4. Download the `glassremote-build-logs` artifact if the build fails. The first run may reveal SwiftADB/Xcode API issues that need adjustment.
+## Not touched
+UHID report protocol and helpers, ADB identity/keys, Android packages (nothing is disabled or changed), TwoFingerScroll, VirtualKeyboard, connection recovery logic.
 
-This workflow currently builds an iOS Simulator target for compile validation. Device IPA signing/sideloading is a later step and needs signing credentials/profile or a sideload workflow. The Swift files have only been syntax-parsed in this environment; a real Xcode build and VIP7802 connection test are still required.
+## Behaviour changes to know about
+- Connects automatically on launch (the old top-right refresh button is replaced by the Power menu; tap the status pill to reconnect).
+- `input text` escaping: spaces become `%s`; literal `%` is no longer rewritten to `%25` (Android's `input text` does not decode `%25`, so that would have typed "%25"); a literal "%s" is split so it is not turned into a space; newlines send Enter; long text is chunked. Non-ASCII characters cannot be typed over ADB.
+- The old inline text field is now in the Keyboard sheet.
+
+## Media details (from your `dumpsys media_session`)
+Stremio advertises pause / play-pause / seek-to only, so Rewind and Fast-forward are shown dimmed and disabled. Spotify advertises previous/next/rewind/fast-forward, so those enable when it is the active session. No duration is reported, so there is no seek slider; a slider would need Android-side support.
+Play/pause uses `KEYCODE_MEDIA_PLAY_PAUSE` (85), previous/next 88/87, rewind/FF 89/90.
+
+## Samsung TV volume
+Enable in Connection → Volume, enter the TV's IP. First connect shows an approval prompt on the TV; the token is stored on the phone. The TV's self-signed certificate is trusted only for that one IP. Your HDMI dump shows CEC is enabled and a CEC audio system answered "System Audio Mode: on", which is encouraging, but **nobody has verified that TV volume keys reach the soundbar**. The Mute label reads "SOUNDBAR" only while the TV route is connected; otherwise "MUTE" (ADB).
+
+## Siri / Shortcuts
+Intents set `openAppWhenRun`, so they bring the app to the foreground and reuse its ADB connection. A true background intent cannot hold the ADB socket, so full hands-free operation is not promised.
