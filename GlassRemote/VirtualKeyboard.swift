@@ -41,6 +41,8 @@ final class VirtualKeyboard {
     var onStatus: ((String) -> Void)?
     /// Called when a write fails after being accepted, so the press can be re-sent via ADB.
     var onFallback: ((String) -> Void)?
+    /// Called when a running keyboard stream ends or fails on its own (not on stop()).
+    var onStopped: (() -> Void)?
 
     private(set) var isReady = false
     private var stream: AdbStream?
@@ -68,7 +70,7 @@ final class VirtualKeyboard {
 
             stream = newStream
             isReady = true
-            report("Virtual keyboard ready · \(helper.data.count) byte helper verified")
+            report("Virtual keyboard: running · helper verified (\(helper.data.count) bytes)")
             startReader(newStream, generation: gen)
         } catch {
             isReady = false
@@ -82,11 +84,13 @@ final class VirtualKeyboard {
         isReady = false
         readerTask?.cancel()
         readerTask = nil
+        // Detach first, then close with a deadline: closing a dead stream must never block.
         // Closing stdin makes the helper see EOF, destroy its UHID device and exit.
-        if let stream {
-            try? await stream.close()
-        }
+        let old = stream
         stream = nil
+        if let old {
+            _ = await withDeadline(2) { () async -> Void in _ = try? await old.close() }
+        }
     }
 
     // MARK: - Sending
@@ -126,7 +130,10 @@ final class VirtualKeyboard {
         let wasReady = isReady
         isReady = false
         report("Virtual keyboard stream failed · ADB fallback active: \(error.localizedDescription)")
-        if wasReady { onFallback?(name) }
+        if wasReady {
+            onFallback?(name)
+            onStopped?()
+        }
     }
 
     private func startReader(_ stream: AdbStream, generation gen: Int) {
@@ -151,7 +158,8 @@ final class VirtualKeyboard {
         isReady = false
         stream = nil
         let text = lastOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        report("Virtual keyboard stopped · ADB fallback active" + (text.isEmpty ? "" : ": \(text)"))
+        report("Virtual keyboard: stopped · ADB fallback active" + (text.isEmpty ? "" : ": \(text)"))
+        onStopped?()
     }
 
     // MARK: - Helper discovery

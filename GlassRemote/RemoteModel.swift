@@ -46,17 +46,53 @@ final class RemoteModel: ObservableObject {
     private let keyboard = VirtualKeyboard()
     @Published var keyboardStatus = "Virtual keyboard: not started"
 
+    // Connection lifecycle. `sessionID` changes on every connect/disconnect so a slow or
+    // superseded task can never overwrite the state of a newer session.
+    private var wantsConnection = false
+    private var sessionID = 0
+    private var connectingSession: Int?
+    private var recoveryTask: Task<Void, Never>?
+    private var lastKeyboardRestart = Date.distantPast
+
     init() {
         keyboard.onStatus = { [weak self] text in self?.keyboardStatus = text }
         // If a keyboard write fails after being accepted, re-send that press over ADB.
         keyboard.onFallback = { [weak self] name in self?.key(name) }
+        // A keyboard stream that ended on its own is repaired automatically.
+        keyboard.onStopped = { [weak self] in self?.keyboardStopped() }
+
+        // iOS may suspend the app and drop its sockets. Check the session whenever the app
+        // becomes active again and repair only what is actually broken.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.recoverIfNeeded() }
+        }
     }
 
     func connect() {
+        wantsConnection = true
+        sessionID += 1
+        let session = sessionID
+        connectingSession = session
+
         Task {
+            defer {
+                if connectingSession == session { connectingSession = nil }
+            }
+
             status = "Connecting…"
+            keyboardStatus = "Virtual keyboard: waiting for connection"
+            connected = false
             UserDefaults.standard.set(host, forKey: "tvHost")
             UserDefaults.standard.set(Int(port) ?? 5555, forKey: "tvPort")
+
+            // Detach and close any previous (possibly dead) session first, with deadlines,
+            // so a broken socket cannot stall the new connection.
+            await teardownSession()
+            guard session == sessionID else { return }
 
             do {
                 let identity = try ADBIdentity.loadOrCreate()
@@ -69,6 +105,12 @@ final class RemoteModel: ObservableObject {
 
                 let connection = try builder.build()
                 let ok = try await connection.connect(timeout: 35, throwOnUnauthorised: false)
+
+                guard session == sessionID else {
+                    // Superseded by a newer connect/disconnect while connecting.
+                    _ = await withDeadline(3) { await connection.close() }
+                    return
+                }
 
                 guard ok else {
                     throw NSError(
@@ -94,10 +136,13 @@ final class RemoteModel: ObservableObject {
                 try await startCommandShell(connection)
                 status = "Connected · low-latency shell ready"
                 await refreshApps()
+                guard session == sessionID else { return }
                 await startMouse()
+                guard session == sessionID else { return }
                 await startKeyboard()
 
             } catch {
+                guard session == sessionID else { return }
                 connected = false
                 status = "Connection failed: \(error.localizedDescription)"
             }
@@ -105,16 +150,19 @@ final class RemoteModel: ObservableObject {
     }
 
     func disconnect() {
+        wantsConnection = false
+        sessionID += 1
+        let session = sessionID
+        connectingSession = nil
+        connected = false
+        status = "Disconnecting…"
+
         Task {
-            await stopMouse()
-            await keyboard.stop()
-            keyboardStatus = "Virtual keyboard: stopped"
-            await stopCommandShell()
-            await adb?.close()
-            adb = nil
-            connected = false
+            await teardownSession()
+            guard session == sessionID else { return }
             installed.removeAll()
             status = "Disconnected"
+            keyboardStatus = "Virtual keyboard: stopped"
         }
     }
 
@@ -446,7 +494,123 @@ final class RemoteModel: ObservableObject {
 
     private func startKeyboard() async {
         guard let adb else { return }
-        await keyboard.start(adb: adb)
+        // Bounded so a dead transport can never stall connect() or recovery forever.
+        _ = await withDeadline(30) { await self.keyboard.start(adb: adb) }
+    }
+
+    // MARK: - Lifecycle: teardown and recovery
+
+    /// Detaches every session object first, then closes the old (possibly dead) ones with a
+    /// deadline each. Close calls on a broken socket can otherwise block indefinitely.
+    private func teardownSession() async {
+        mouseReady = false
+        let oldMouse = mouseStream
+        mouseStream = nil
+
+        commandReaderTask?.cancel()
+        commandReaderTask = nil
+        let oldCommand = commandStream
+        commandStream = nil
+
+        let oldConnection = adb
+        adb = nil
+
+        await keyboard.stop()
+
+        _ = await withDeadline(2) { () async -> Void in _ = try? await oldMouse?.close() }
+        _ = await withDeadline(2) { () async -> Void in _ = try? await oldCommand?.close() }
+        _ = await withDeadline(3) { () async -> Void in _ = await oldConnection?.close() }
+    }
+
+    private func keyboardStopped() {
+        guard wantsConnection else { return }
+        // Back off so a helper that dies immediately cannot cause a restart loop.
+        guard Date().timeIntervalSince(lastKeyboardRestart) > 5 else { return }
+        lastKeyboardRestart = Date()
+        recoverIfNeeded()
+    }
+
+    /// Single-flight health check. Does nothing while the user wants to be disconnected
+    /// or while a connect is already in progress.
+    private func recoverIfNeeded() {
+        guard wantsConnection, connectingSession == nil, recoveryTask == nil else { return }
+        recoveryTask = Task { [weak self] in
+            await self?.performRecovery()
+            self?.recoveryTask = nil
+        }
+    }
+
+    private func performRecovery() async {
+        let session = sessionID
+
+        guard let connection = adb, connected else {
+            connect()
+            return
+        }
+
+        let healthy = await withDeadline(4) { () async -> Bool in
+            let output = (try? await self.runShell(connection, ["echo", "GLASSREMOTE_OK"])) ?? ""
+            return output.contains("GLASSREMOTE_OK")
+        } ?? false
+
+        guard session == sessionID, wantsConnection else { return }
+
+        guard healthy else {
+            // The ADB transport itself is gone: rebuild everything.
+            status = "Connection lost · reconnecting…"
+            connect()
+            return
+        }
+
+        // Transport is fine. Repair only what is actually broken, each part independently.
+        if commandStream == nil {
+            do {
+                try await startCommandShell(connection)
+            } catch {
+                guard session == sessionID, wantsConnection else { return }
+                status = "Command shell lost · reconnecting…"
+                connect()
+                return
+            }
+        }
+        guard session == sessionID, wantsConnection else { return }
+        if !mouseReady { await startMouse() }
+        guard session == sessionID, wantsConnection else { return }
+        if !keyboard.isReady { await startKeyboard() }
+    }
+}
+
+/// Runs `operation` but stops waiting after `seconds`. A hung operation is abandoned rather
+/// than awaited, so one dead socket cannot freeze connect, disconnect or recovery.
+func withDeadline<T>(_ seconds: Double, _ operation: @escaping @Sendable () async -> T) async -> T? {
+    await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+        let gate = DeadlineGate<T>(continuation)
+        let timer = Task {
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            gate.finish(nil)
+        }
+        Task {
+            let value = await operation()
+            timer.cancel()
+            gate.finish(value)
+        }
+    }
+}
+
+private final class DeadlineGate<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T?, Never>?
+
+    init(_ continuation: CheckedContinuation<T?, Never>) {
+        self.continuation = continuation
+    }
+
+    func finish(_ value: T?) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(returning: value)
     }
 }
 
