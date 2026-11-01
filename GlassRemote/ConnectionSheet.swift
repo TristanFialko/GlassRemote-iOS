@@ -42,7 +42,7 @@ struct ConnectionSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(Color.black)
+            .background { AmbientBackdrop() }
             .navigationTitle("Connection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

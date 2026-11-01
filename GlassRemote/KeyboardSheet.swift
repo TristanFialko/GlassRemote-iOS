@@ -75,7 +75,7 @@ struct KeyboardSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(Color.black)
+            .background { AmbientBackdrop() }
             .navigationTitle("Keyboard")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

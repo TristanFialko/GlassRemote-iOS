@@ -1,57 +1,71 @@
 import SwiftUI
 
-/// Satin smoked-graphite styling.
+/// Smoked native Liquid Glass styling shared by the app's interactive surfaces.
 ///
-/// Surfaces are matte, hardware-like graphite: a flat vertical tone ramp, one even hairline edge and
-/// a soft shadow. There are no diagonal specular streaks, no glow and no bright rims. Native Liquid
-/// Glass (`glassEffect`, iOS 26+, Xcode 26+) is used sparingly, only where `accent` is true, with a
-/// heavy graphite tint. Everything is static fill/stroke, so nothing here is costly on the pointer path.
+/// iOS 26+ uses Apple's real glass material, with a restrained smoke tint so refraction,
+/// highlights and depth remain visible. Earlier systems get a material-based fallback.
 extension View {
     @ViewBuilder
-    func glassSurface<S: Shape>(_ shape: S, interactive: Bool = false, elevated: Bool = false, accent: Bool = false) -> some View {
+    func glassSurface<S: Shape>(
+        _ shape: S,
+        interactive: Bool = false,
+        elevated: Bool = false,
+        accent: Bool = false
+    ) -> some View {
         #if compiler(>=6.2)
-        if accent, #available(iOS 26.0, *) {
-            let smoke = Glass.regular.tint(Color(white: 0.07).opacity(0.72))
+        if #available(iOS 26.0, *) {
+            let smoke = Glass.regular.tint(
+                Color(white: elevated ? 0.10 : 0.075)
+                    .opacity(elevated ? 0.22 : 0.32)
+            )
             self.glassEffect(interactive ? smoke.interactive() : smoke, in: shape)
         } else {
-            self.satinGraphite(shape, elevated: elevated || accent)
+            self.legacyGlass(shape, elevated: elevated || accent)
         }
         #else
-        self.satinGraphite(shape, elevated: elevated || accent)
+        self.legacyGlass(shape, elevated: elevated || accent)
         #endif
     }
 
-    fileprivate func satinGraphite<S: Shape>(_ shape: S, elevated: Bool) -> some View {
+    fileprivate func legacyGlass<S: Shape>(_ shape: S, elevated: Bool) -> some View {
         self
             .background {
                 ZStack {
-                    // Matte graphite body: slightly lighter at the top, darker at the bottom.
+                    shape.fill(.ultraThinMaterial)
+                    shape.fill(Color.black.opacity(elevated ? 0.13 : 0.26))
                     shape.fill(
                         LinearGradient(
-                            colors: [Color(white: elevated ? 0.19 : 0.14), Color(white: elevated ? 0.125 : 0.088)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    // Very soft satin falloff over the upper part only (vertical, not a streak).
-                    shape.fill(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.035), Color.clear],
-                            startPoint: .top,
-                            endPoint: UnitPoint(x: 0.5, y: 0.45)
+                            colors: [
+                                Color.white.opacity(elevated ? 0.24 : 0.16),
+                                Color.white.opacity(0.025),
+                                Color.white.opacity(0.075)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
                         )
                     )
                 }
             }
             .overlay {
-                // One even, low-contrast edge. No gradient rim, no glow.
-                shape.stroke(Color.white.opacity(elevated ? 0.12 : 0.09), lineWidth: 0.75)
+                shape.stroke(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.46),
+                            Color.white.opacity(0.11),
+                            Color.white.opacity(0.025),
+                            Color.white.opacity(0.24)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.9
+                )
             }
-            .shadow(color: .black.opacity(0.45), radius: 6, y: 3)
+            .shadow(color: .black.opacity(0.40), radius: elevated ? 12 : 8, y: elevated ? 7 : 4)
     }
 }
 
-/// Groups nearby glass shapes so native Liquid Glass can blend them (iOS 26+).
+/// Groups nearby glass elements so native Liquid Glass can blend their silhouettes.
 struct GlassGroup<Content: View>: View {
     let spacing: CGFloat
     @ViewBuilder let content: () -> Content
@@ -78,7 +92,7 @@ struct PressStyle: ButtonStyle {
     }
 }
 
-/// Full-width Mouse / D-pad selector. Each segment is exactly 50% of the container width.
+/// Full-width Mouse / D-pad selector. The shell and selected segment are both glass.
 struct ModeSelector: View {
     @Binding var isMouse: Bool
     @Namespace private var pill
@@ -91,7 +105,7 @@ struct ModeSelector: View {
             }
             .padding(4)
             .frame(maxWidth: .infinity)
-            .glassSurface(Capsule())
+            .glassSurface(Capsule(), interactive: true)
             .animation(.spring(response: 0.38, dampingFraction: 0.82), value: isMouse)
         }
     }
@@ -102,13 +116,14 @@ struct ModeSelector: View {
                 Image(systemName: icon).font(.system(size: 15, weight: .semibold))
                 Text(title).font(.system(size: 14, weight: .semibold))
             }
-            .foregroundStyle(selected ? Color.white : Color.white.opacity(0.6))
+            .foregroundStyle(selected ? Color.white : Color.white.opacity(0.72))
             .frame(maxWidth: .infinity)
             .frame(height: 38)
             .background {
                 if selected {
-                    Color.clear
-                        .glassSurface(Capsule(), interactive: true, elevated: true, accent: true)
+                    Capsule()
+                        .fill(Color.clear)
+                        .glassSurface(Capsule(), interactive: true, elevated: true)
                         .matchedGeometryEffect(id: "pill", in: pill)
                 }
             }
@@ -120,30 +135,35 @@ struct ModeSelector: View {
     }
 }
 
-
-/// Near-black canvas with a broad, very soft charcoal glow behind the central content, so the
-/// graphite surfaces separate from the background. Static: it has no inputs and no state, so SwiftUI
-/// never re-evaluates it while the pointer moves, and it is drawn once as plain gradients (no blur,
-/// no material, no animation).
+/// Softly lifted charcoal canvas: brighter behind the controls, still near-black at the edges.
 struct AmbientBackdrop: View {
     var body: some View {
         GeometryReader { geo in
-            let w = geo.size.width, h = geo.size.height
+            let w = geo.size.width
+            let h = geo.size.height
             ZStack {
                 Color.black
-                // Broad charcoal body behind the middle of the layout (Now Playing -> control surface).
                 RadialGradient(
-                    colors: [Color(white: 0.095), Color(white: 0.055), Color(white: 0.02), .black],
-                    center: UnitPoint(x: 0.5, y: 0.55),
+                    colors: [
+                        Color(white: 0.15),
+                        Color(white: 0.095),
+                        Color(white: 0.045),
+                        .black
+                    ],
+                    center: UnitPoint(x: 0.5, y: 0.48),
                     startRadius: 0,
-                    endRadius: max(w, h) * 0.72
+                    endRadius: max(w, h) * 0.78
                 )
-                // Slight lift under the trackpad / D-pad area; wide and faint, not a visible spot.
+                LinearGradient(
+                    colors: [Color(white: 0.035), .clear, Color.black.opacity(0.34)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
                 RadialGradient(
-                    colors: [Color(white: 0.06), .clear],
-                    center: UnitPoint(x: 0.5, y: 0.78),
+                    colors: [Color(white: 0.075).opacity(0.72), .clear],
+                    center: UnitPoint(x: 0.5, y: 0.80),
                     startRadius: 0,
-                    endRadius: w * 0.95
+                    endRadius: w * 0.90
                 )
             }
         }

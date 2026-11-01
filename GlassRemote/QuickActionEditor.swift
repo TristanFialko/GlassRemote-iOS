@@ -29,7 +29,7 @@ struct QuickActionEditor: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(Color.black)
+            .background { AmbientBackdrop() }
             .navigationTitle("Quick Actions")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: UUID.self) { id in
@@ -80,7 +80,7 @@ private struct ActionDetail: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .background(Color.black)
+        .background { AmbientBackdrop() }
         .navigationTitle(action.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .navigationBarTrailing) { EditButton() } }

@@ -12,9 +12,7 @@ struct NowPlayingSheet: View {
         let app = remote.apps.first(where: { $0.package == media.package })
 
         ZStack {
-            Color.black.ignoresSafeArea()
-            RadialGradient(colors: [Color(white: 0.5).opacity(0.05), .clear], center: .top, startRadius: 20, endRadius: 420)
-                .ignoresSafeArea()
+            AmbientBackdrop()
 
             VStack(spacing: 22) {
                 HStack {

@@ -76,6 +76,11 @@ final class RemoteModel: ObservableObject {
     var appActive = true
     let tv = SamsungTV()
     private var lastKeyboardRestart = Date.distantPast
+    /// Recovery requests raised while iOS is inactive are held until foreground.
+    private var recoveryPending = false
+    /// Set after an automatic recovery cannot validate the transport; only an explicit
+    /// user reconnect may then close/recreate the UHID streams.
+    private(set) var requiresUserReconnect = false
 
     init() {
         keyboard.onStatus = { [weak self] text in self?.keyboardStatus = text }
@@ -96,7 +101,10 @@ final class RemoteModel: ObservableObject {
         ) { [weak self] _ in
             // Log-only. Leaving the app must never send anything to the TV box.
             GRLog.note("lifecycle", "willResignActive (no device commands sent)")
-            Task { @MainActor in self?.appActive = false }
+            Task { @MainActor in
+                self?.appActive = false
+                self?.recoveryPending = true
+            }
         }
 
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
@@ -117,6 +125,7 @@ final class RemoteModel: ObservableObject {
                 guard let self else { return }
                 GRLog.note("lifecycle", "didBecomeActive connected=\(self.connected) mouseReady=\(self.mouseReady) recovering=\(self.isBusyConnecting)")
                 self.appActive = true
+                GRLog.note("lifecycle", "foreground recovery check pending=\(self.recoveryPending)")
                 self.recoverIfNeeded()
                 self.applyTVSettings()
                 // Do not race a read-only media poll against a health check / reconnect on a
@@ -130,6 +139,7 @@ final class RemoteModel: ObservableObject {
 
     func connect() {
         wantsConnection = true
+        requiresUserReconnect = false
         sessionID += 1
         let session = sessionID
         connectingSession = session
@@ -571,7 +581,7 @@ final class RemoteModel: ObservableObject {
         wheel: Int = 0,
         hscroll: Int = 0
     ) {
-        guard mouseReady, let mouseStream else { return }
+        guard connected, mouseReady, let mouseStream else { return }
 
         let line = "M \(buttons) \(max(-127, min(127, dx))) \(max(-127, min(127, dy))) \(max(-127, min(127, wheel))) \(max(-127, min(127, hscroll)))\n"
 
@@ -582,7 +592,9 @@ final class RemoteModel: ObservableObject {
                 GRLog.note("mouse", "input stream write failed: \(error.localizedDescription)")
                 await MainActor.run {
                     self.mouseReady = false
+                    self.recoveryPending = true
                     self.status = "Mouse input stream failed: \(error.localizedDescription)"
+                    self.recoverIfNeeded()
                 }
             }
         }
@@ -630,6 +642,14 @@ final class RemoteModel: ObservableObject {
 
     private func keyboardStopped() {
         guard wantsConnection else { return }
+        // iOS may suspend or invalidate ADB streams while backgrounded. Do not start a
+        // reconnect from that callback: connect() tears down both UHID streams, which
+        // removes the Android input devices. Defer all repair until didBecomeActive.
+        guard appActive else {
+            recoveryPending = true
+            GRLog.note("keyboard", "stream ended while app inactive; recovery deferred (no HID teardown)")
+            return
+        }
         // Back off so a helper that dies immediately cannot cause a restart loop.
         guard Date().timeIntervalSince(lastKeyboardRestart) > 5 else { return }
         lastKeyboardRestart = Date()
@@ -639,7 +659,14 @@ final class RemoteModel: ObservableObject {
     /// Single-flight health check. Does nothing while the user wants to be disconnected
     /// or while a connect is already in progress.
     private func recoverIfNeeded() {
-        guard wantsConnection, connectingSession == nil, recoveryTask == nil, rebootRecoveryTask == nil else { return }
+        guard wantsConnection, !requiresUserReconnect else { return }
+        guard appActive else {
+            recoveryPending = true
+            GRLog.note("adb", "recovery deferred while app inactive; keeping existing HID streams untouched")
+            return
+        }
+        guard connectingSession == nil, recoveryTask == nil, rebootRecoveryTask == nil else { return }
+        recoveryPending = false
         recoveryTask = Task { [weak self] in
             await self?.performRecovery()
             self?.recoveryTask = nil
@@ -648,6 +675,12 @@ final class RemoteModel: ObservableObject {
 
     private func performRecovery() async {
         let session = sessionID
+
+        guard appActive else {
+            recoveryPending = true
+            GRLog.note("adb", "recovery task entered while inactive; deferred")
+            return
+        }
 
         guard let connection = adb, connected else {
             connect()
@@ -664,34 +697,69 @@ final class RemoteModel: ObservableObject {
                 return output.contains("GLASSREMOTE_OK")
             } ?? false
             GRLog.note("adb", "recovery health check attempt \(attempt): \(healthy ? "ok" : "failed")")
+            if !appActive {
+                recoveryPending = true
+                GRLog.note("adb", "app became inactive during health check; aborting before any teardown")
+                return
+            }
             if healthy || session != sessionID || !wantsConnection { break }
         }
 
         guard session == sessionID, wantsConnection else { return }
-
-        guard healthy else {
-            // The ADB transport itself is gone: rebuild everything.
-            GRLog.note("adb", "transport unhealthy after 2 checks -> full reconnect")
-            status = "Connection lost · reconnecting…"
-            connect()
+        guard appActive else {
+            recoveryPending = true
+            GRLog.note("adb", "app inactive before recovery action; no teardown performed")
             return
         }
 
-        // Transport is fine. Repair only what is actually broken, each part independently.
+        guard healthy else {
+            // Do not automatically call connect() here. connect() tears down the old
+            // ADB session and closes both UHID streams; Android then removes/re-adds
+            // the virtual input devices. If Stremio is playing, that avoidable device
+            // churn may interrupt playback. Keep the existing handles untouched and
+            // let the user choose when to perform a full reconnect from the status pill.
+            recoveryPending = false
+            requiresUserReconnect = true
+            connected = false
+            GRLog.note("adb", "transport health checks failed; preserving existing streams; waiting for user-initiated reconnect")
+            status = "Connection interrupted · tap to reconnect"
+            return
+        }
+
+        connected = true
+        status = "Connected · low-latency shell ready"
+
+        // The transport is healthy. Restore the shell if needed, but never recreate
+        // either UHID device during automatic recovery (see guard below).
         if commandStream == nil {
             do {
                 try await startCommandShell(connection)
             } catch {
                 guard session == sessionID, wantsConnection else { return }
-                status = "Command shell lost · reconnecting…"
-                connect()
+                requiresUserReconnect = true
+                connected = false
+                GRLog.note("adb", "command shell repair failed; preserving existing HID streams; waiting for user reconnect")
+                status = "Command shell unavailable · tap to reconnect"
                 return
             }
         }
         guard session == sessionID, wantsConnection else { return }
-        if !mouseReady { GRLog.note("mouse", "recovery: restarting mouse helper"); await startMouse() }
-        guard session == sessionID, wantsConnection else { return }
-        if !keyboard.isReady { await startKeyboard() }
+
+        // Never recreate a UHID device as part of automatic resume recovery. Even if
+        // ADB itself is healthy, starting a missing helper causes Android to enumerate
+        // a new input device. Keep playback-facing recovery non-invasive and let the
+        // user choose when to re-enumerate devices via the explicit reconnect action.
+        if !mouseReady || !keyboard.isReady {
+            requiresUserReconnect = true
+            connected = false
+            let missing = [!mouseReady ? "mouse" : nil, !keyboard.isReady ? "keyboard" : nil]
+                .compactMap { $0 }
+                .joined(separator: " + ")
+            GRLog.note("adb", "automatic recovery found missing HID helper(s): \(missing); preserving remaining streams and waiting for user reconnect")
+            status = "\(missing.capitalized) interrupted · tap to reconnect"
+            return
+        }
+        recoveryPending = false
     }
 }
 

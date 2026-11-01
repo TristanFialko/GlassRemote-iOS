@@ -71,7 +71,7 @@ struct RemoteView: View {
         .task {
             guard !didAutoConnect else { return }
             didAutoConnect = true
-            if !remote.connected { remote.connect() }
+            if !remote.connected && !remote.requiresUserReconnect { remote.connect() }
         }
     }
 
