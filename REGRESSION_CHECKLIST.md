@@ -29,3 +29,10 @@
 - [ ] Keyboard: text, spaces, quotes, URLs, `%s`, newline, Backspace, Paste button
 - [ ] Samsung TV: pairing prompt, token reuse, VOLUP/VOLDOWN/MUTE, does the soundbar respond? ADB fallback when TV is off
 - [ ] Siri/Shortcuts intents launch the app and perform the action
+
+## Added in this pass
+- Whole Now Playing card opens the player; media buttons never open it.
+- Background/surface separation looks right on OLED; pointer stays smooth.
+- AppIcon and the nine app tiles unchanged.
+- Nine tiles use the supplied transparent PNGs, centred and balanced; launch targets unchanged.
+- Cursor feel unchanged after PointerBox change.
