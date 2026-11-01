@@ -354,7 +354,10 @@ final class RemoteModel: ObservableObject {
             var startupData = Data()
             var ready = false
 
-            while !ready && !(await stream.getIsClosed()) {
+            while !ready {
+                let streamClosed = await stream.getIsClosed()
+                if streamClosed { break }
+
                 let chunk = try await stream.read()
                 if chunk.isEmpty { break }
                 startupData.append(chunk)
