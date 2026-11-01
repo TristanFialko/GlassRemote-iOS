@@ -205,7 +205,9 @@ final class RemoteModel: ObservableObject {
                 await refreshApps()
                 guard session == sessionID else { return }
                 applyTVSettings()
-                await startMouse()
+                // Independent startups: a failed or stuck mouse helper must never keep the
+                // keyboard from starting (startMouse also handles its own errors).
+                _ = await withDeadline(30) { await self.startMouse() }
                 guard session == sessionID else { return }
                 await startKeyboard()
                 guard session == sessionID else { return }
@@ -513,16 +515,46 @@ final class RemoteModel: ObservableObject {
             try await upload.write(data)
             try await upload.close()
 
-            let verification = try await runShell(
-                adb,
-                ["sh", "-c", "test -s /data/local/tmp/glass_uhid_bridge && chmod 700 /data/local/tmp/glass_uhid_bridge && echo GLASSREMOTE_UPLOAD_OK"]
-            )
+            // close() returns before the TV has necessarily finished writing the file, so a
+            // single `test -s` can run too early, fail silently (the && chain prints nothing)
+            // and look like "TV did not confirm helper upload:". Poll the real remote size
+            // instead, exactly as the keyboard uploader does.
+            let expected = data.count
+            var remoteBytes: Int?
+            var lastOutput = ""
+            for attempt in 0..<50 {
+                lastOutput = try await runShell(
+                    adb,
+                    ["sh", "-c", "if [ -f /data/local/tmp/glass_uhid_bridge ]; then wc -c < /data/local/tmp/glass_uhid_bridge; else echo MISSING; fi"]
+                )
+                remoteBytes = lastOutput
+                    .split(whereSeparator: { $0.isWhitespace })
+                    .compactMap { Int($0) }
+                    .first
+                if remoteBytes == expected {
+                    GRLog.note("mouse", "helper upload verified after \(attempt + 1) check(s)")
+                    break
+                }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
 
-            guard verification.contains("GLASSREMOTE_UPLOAD_OK") else {
+            guard remoteBytes == expected else {
                 throw NSError(
                     domain: "GlassRemote",
                     code: 11,
-                    userInfo: [NSLocalizedDescriptionKey: "TV did not confirm helper upload: \(verification)"]
+                    userInfo: [NSLocalizedDescriptionKey: "helper upload incomplete: local \(expected) bytes, TV has \(remoteBytes.map(String.init) ?? "none") (last reply: \(lastOutput.trimmingCharacters(in: .whitespacesAndNewlines)))"]
+                )
+            }
+
+            let chmodOutput = try await runShell(
+                adb,
+                ["sh", "-c", "chmod 700 /data/local/tmp/glass_uhid_bridge && echo GLASSREMOTE_CHMOD_OK"]
+            )
+            guard chmodOutput.contains("GLASSREMOTE_CHMOD_OK") else {
+                throw NSError(
+                    domain: "GlassRemote",
+                    code: 13,
+                    userInfo: [NSLocalizedDescriptionKey: "could not make helper executable: \(chmodOutput.trimmingCharacters(in: .whitespacesAndNewlines))"]
                 )
             }
 
@@ -531,6 +563,12 @@ final class RemoteModel: ObservableObject {
             let stream = try await adb.open(destination: "shell:sh")
             try await stream.write(Data("stty -echo 2>/dev/null; exec /data/local/tmp/glass_uhid_bridge\n".utf8))
 
+            // If the helper never answers, closing the stream unblocks the read below.
+            let watchdog = Task { [stream] in
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                if !Task.isCancelled { try? await stream.close() }
+            }
+
             var startupData = Data()
             var ready = false
 
@@ -538,7 +576,12 @@ final class RemoteModel: ObservableObject {
                 let streamClosed = await stream.getIsClosed()
                 if streamClosed { break }
 
-                let chunk = try await stream.read()
+                let chunk: Data
+                do {
+                    chunk = try await stream.read()
+                } catch {
+                    break
+                }
                 if chunk.isEmpty { break }
                 startupData.append(chunk)
 
@@ -550,6 +593,7 @@ final class RemoteModel: ObservableObject {
                 }
             }
 
+            watchdog.cancel()
             let startupText = String(data: startupData, encoding: .utf8) ?? ""
 
             guard ready else {
