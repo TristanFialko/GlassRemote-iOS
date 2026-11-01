@@ -1,13 +1,15 @@
 /*
  * Glass Remote Virtual Keyboard
  *
- * Android ARM helper exposing a keyboard and consumer-control device through
- * /dev/uhid. Input protocol on stdin:
+ * Android ARM helper exposing a keyboard and Consumer Control through /dev/uhid.
+ * Persistent stdin protocol:
  *   K <USB HID keyboard usage>
  *   C <USB HID consumer usage>
  *
- * A single process and ADB shell stream stay open for low-latency key reports.
+ * The helper creates one UHID device, prints READY, then stays alive and
+ * processes remote-control reports until its stdin stream closes.
  */
+
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -48,46 +50,87 @@ struct uhid_event {
     } u;
 } __attribute__((packed));
 
-/* Report 1: keyboard; Report 2: Consumer Control. */
+/*
+ * Report ID 1: standard 8-byte boot-style keyboard report.
+ * Report ID 2: 16-bit Consumer Control usage.
+ */
 static const uint8_t report_descriptor[] = {
-    0x05,0x01, 0x09,0x06, 0xA1,0x01, 0x85,0x01,
-    0x05,0x07, 0x19,0xE0, 0x29,0xE7, 0x15,0x00,
-    0x25,0x01, 0x75,0x01, 0x95,0x08, 0x81,0x02,
-    0x95,0x01, 0x75,0x08, 0x81,0x01,
-    0x95,0x06, 0x75,0x08, 0x15,0x00, 0x25,0x65,
-    0x05,0x07, 0x19,0x00, 0x29,0x65, 0x81,0x00, 0xC0,
-    0x05,0x0C, 0x09,0x01, 0xA1,0x01, 0x85,0x02,
-    0x15,0x00, 0x26,0xFF,0x03, 0x19,0x00, 0x2A,0xFF,0x03,
-    0x75,0x10, 0x95,0x01, 0x81,0x00, 0xC0
+    0x05, 0x01,       /* Usage Page (Generic Desktop) */
+    0x09, 0x06,       /* Usage (Keyboard) */
+    0xA1, 0x01,       /* Collection (Application) */
+    0x85, 0x01,       /*   Report ID (1) */
+    0x05, 0x07,       /*   Usage Page (Keyboard) */
+    0x19, 0xE0,       /*   Usage Minimum (Left Control) */
+    0x29, 0xE7,       /*   Usage Maximum (Right GUI) */
+    0x15, 0x00,       /*   Logical Minimum (0) */
+    0x25, 0x01,       /*   Logical Maximum (1) */
+    0x75, 0x01,       /*   Report Size (1) */
+    0x95, 0x08,       /*   Report Count (8) */
+    0x81, 0x02,       /*   Input (Data, Variable, Absolute) */
+    0x95, 0x01,       /*   Report Count (1) */
+    0x75, 0x08,       /*   Report Size (8) */
+    0x81, 0x01,       /*   Input (Constant) */
+    0x95, 0x06,       /*   Report Count (6) */
+    0x75, 0x08,       /*   Report Size (8) */
+    0x15, 0x00,       /*   Logical Minimum (0) */
+    0x25, 0x65,       /*   Logical Maximum (101) */
+    0x05, 0x07,       /*   Usage Page (Keyboard) */
+    0x19, 0x00,       /*   Usage Minimum (0) */
+    0x29, 0x65,       /*   Usage Maximum (101) */
+    0x81, 0x00,       /*   Input (Data, Array) */
+    0xC0,             /* End Collection */
+
+    0x05, 0x0C,       /* Usage Page (Consumer) */
+    0x09, 0x01,       /* Usage (Consumer Control) */
+    0xA1, 0x01,       /* Collection (Application) */
+    0x85, 0x02,       /*   Report ID (2) */
+    0x15, 0x00,       /*   Logical Minimum (0) */
+    0x26, 0xFF, 0x03, /*   Logical Maximum (1023) */
+    0x19, 0x00,       /*   Usage Minimum (0) */
+    0x2A, 0xFF, 0x03, /*   Usage Maximum (1023) */
+    0x75, 0x10,       /*   Report Size (16) */
+    0x95, 0x01,       /*   Report Count (1) */
+    0x81, 0x00,       /*   Input (Data, Array) */
+    0xC0              /* End Collection */
 };
 
 static int write_event(int fd, const struct uhid_event *event) {
     ssize_t n;
-    do { n = write(fd, event, sizeof(*event)); } while (n < 0 && errno == EINTR);
+    do {
+        n = write(fd, event, sizeof(*event));
+    } while (n < 0 && errno == EINTR);
+
     return n == (ssize_t)sizeof(*event) ? 0 : -1;
 }
 
-static int keyboard_report(int fd, uint8_t usage, int down) {
-    struct uhid_event e;
-    memset(&e, 0, sizeof(e));
-    e.type = UHID_INPUT2;
-    e.u.input2.size = 9;
-    e.u.input2.data[0] = 1;
-    if (down) e.u.input2.data[3] = usage;
-    return write_event(fd, &e);
+static int keyboard_report(int fd, uint8_t usage, int pressed) {
+    struct uhid_event event;
+    memset(&event, 0, sizeof(event));
+
+    event.type = UHID_INPUT2;
+    event.u.input2.size = 9;
+    event.u.input2.data[0] = 1; /* Report ID */
+    if (pressed) {
+        event.u.input2.data[3] = usage; /* First key slot */
+    }
+
+    return write_event(fd, &event);
 }
 
-static int consumer_report(int fd, uint16_t usage, int down) {
-    struct uhid_event e;
-    memset(&e, 0, sizeof(e));
-    e.type = UHID_INPUT2;
-    e.u.input2.size = 3;
-    e.u.input2.data[0] = 2;
-    if (down) {
-        e.u.input2.data[1] = (uint8_t)(usage & 0xff);
-        e.u.input2.data[2] = (uint8_t)(usage >> 8);
+static int consumer_report(int fd, uint16_t usage, int pressed) {
+    struct uhid_event event;
+    memset(&event, 0, sizeof(event));
+
+    event.type = UHID_INPUT2;
+    event.u.input2.size = 3;
+    event.u.input2.data[0] = 2; /* Report ID */
+
+    if (pressed) {
+        event.u.input2.data[1] = (uint8_t)(usage & 0xff);
+        event.u.input2.data[2] = (uint8_t)(usage >> 8);
     }
-    return write_event(fd, &e);
+
+    return write_event(fd, &event);
 }
 
 int main(void) {
@@ -101,16 +144,22 @@ int main(void) {
     struct uhid_event create;
     memset(&create, 0, sizeof(create));
     create.type = UHID_CREATE2;
-    strncpy((char *)create.u.create2.name, "Glass Remote Virtual Keyboard",
+
+    strncpy((char *)create.u.create2.name,
+            "Glass Remote Virtual Keyboard",
             sizeof(create.u.create2.name) - 1);
-    strncpy((char *)create.u.create2.phys, "glassremote/uhid-keyboard",
+    strncpy((char *)create.u.create2.phys,
+            "glassremote/uhid-keyboard",
             sizeof(create.u.create2.phys) - 1);
+
     create.u.create2.rd_size = (uint16_t)sizeof(report_descriptor);
     create.u.create2.bus = BUS_USB;
     create.u.create2.vendor = 0x18D1;
     create.u.create2.product = 0x4EE7;
     create.u.create2.version = 1;
-    memcpy(create.u.create2.rd_data, report_descriptor, sizeof(report_descriptor));
+
+    memcpy(create.u.create2.rd_data, report_descriptor,
+           sizeof(report_descriptor));
 
     if (write_event(fd, &create) < 0) {
         printf("ERROR UHID_CREATE2 write: %s\n", strerror(errno));
@@ -123,23 +172,32 @@ int main(void) {
     fflush(stdout);
 
     char line[64];
-    while (fgets(line, sizeof(line), stdin)) {
-        char kind = 0;
-        unsigned int value = 0;
-        if (sscanf(line, " %c %u", &kind, &value) != 2) continue;
 
-        int rc = 0;
+    while (fgets(line, sizeof(line), stdin) != NULL) {
+        char kind = '\0';
+        unsigned int value = 0;
+
+        if (sscanf(line, " %c %u", &kind, &value) != 2) {
+            continue;
+        }
+
+        int result = 0;
+
         if (kind == 'K' && value > 0 && value <= 0x65) {
-            rc = keyboard_report(fd, (uint8_t)value, 1);
-            if (rc == 0) rc = keyboard_report(fd, (uint8_t)value, 0);
+            result = keyboard_report(fd, (uint8_t)value, 1);
+            if (result == 0) {
+                result = keyboard_report(fd, (uint8_t)value, 0);
+            }
         } else if (kind == 'C' && value > 0 && value <= 0x03ff) {
-            rc = consumer_report(fd, (uint16_t)value, 1);
-            if (rc == 0) rc = consumer_report(fd, (uint16_t)value, 0);
+            result = consumer_report(fd, (uint16_t)value, 1);
+            if (result == 0) {
+                result = consumer_report(fd, (uint16_t)value, 0);
+            }
         } else {
             continue;
         }
 
-        if (rc < 0) {
+        if (result < 0) {
             printf("ERROR UHID_INPUT2 write: %s\n", strerror(errno));
             fflush(stdout);
             break;
@@ -150,6 +208,7 @@ int main(void) {
     memset(&destroy, 0, sizeof(destroy));
     destroy.type = UHID_DESTROY;
     (void)write_event(fd, &destroy);
+
     close(fd);
     return 0;
 }
