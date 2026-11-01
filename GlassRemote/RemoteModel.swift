@@ -39,8 +39,12 @@ final class RemoteModel: ObservableObject {
     private var commandReaderTask: Task<Void, Never>?
     private var mouseStream: AdbStream?
     private var mouseReady = false
+    private var keyboardStream: AdbStream?
+    private var keyboardReaderTask: Task<Void, Never>?
+    private var keyboardReady = false
     private var commandQueue = TaskQueue()
     private var reportQueue = TaskQueue()
+    private var keyboardQueue = TaskQueue()
 
     func connect() {
         Task {
@@ -85,6 +89,7 @@ final class RemoteModel: ObservableObject {
                 status = "Connected · low-latency shell ready"
                 await refreshApps()
                 await startMouse()
+                await startKeyboard()
 
             } catch {
                 connected = false
@@ -95,6 +100,7 @@ final class RemoteModel: ObservableObject {
 
     func disconnect() {
         Task {
+            await stopKeyboard()
             await stopMouse()
             await stopCommandShell()
             await adb?.close()
@@ -105,8 +111,7 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-    // One persistent shell is used for frequent remote key presses. This avoids
-    // opening and closing an ADB shell stream for every button tap.
+    // One persistent shell is used for frequent fallback commands.
     private func startCommandShell(_ connection: AdbConnection) async throws {
         await stopCommandShell()
 
@@ -160,8 +165,6 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-    // Package discovery is informational only. It never controls whether app tiles
-    // are displayed, dimmed, enabled, or clickable.
     func refreshApps() async {
         guard let adb else { return }
 
@@ -192,8 +195,6 @@ final class RemoteModel: ObservableObject {
                     ["sh", "-c", "monkey -p \(app.package) 1 2>&1; rc=$?; echo GLASSREMOTE_LAUNCH_EXIT:$rc"]
                 )
 
-                // Trust the actual process exit marker before interpreting Monkey's
-                // human-readable output, which can be misleading on some TV builds.
                 if output.contains("GLASSREMOTE_LAUNCH_EXIT:0") {
                     status = "Android accepted launch request · \(app.name)"
                 } else if output.localizedCaseInsensitiveContains("no activities found") ||
@@ -211,24 +212,53 @@ final class RemoteModel: ObservableObject {
     }
 
     func key(_ key: String) {
-        let codes: [String: String] = [
-            "UP": "19", "DOWN": "20", "LEFT": "21", "RIGHT": "22",
-            "OK": "23", "BACK": "4", "HOME": "3", "MENU": "82",
-            "VOLUME_DOWN": "25", "MUTE": "164", "VOLUME_UP": "24"
-        ]
-
-        guard let code = codes[key] else {
-            status = "Unknown button: \(key)"
-            return
-        }
-
         guard connected else {
             status = "Button failed · not connected"
             return
         }
 
-        sendPersistentCommand("input keyevent \(code)")
+        // USB HID keyboard usages: arrows and Enter. These are sent through
+        // the persistent UHID device when available; ADB remains the fallback.
+        let hidUsages: [String: UInt8] = [
+            "UP": 0x52,
+            "DOWN": 0x51,
+            "LEFT": 0x50,
+            "RIGHT": 0x4F,
+            "OK": 0x28
+        ]
+
+        if let usage = hidUsages[key], keyboardReady, let keyboardStream {
+            sendKeyboardLine("K \(usage)", on: keyboardStream)
+        } else {
+            let codes: [String: String] = [
+                "UP": "19", "DOWN": "20", "LEFT": "21", "RIGHT": "22",
+                "OK": "23", "BACK": "4", "HOME": "3", "MENU": "82",
+                "VOLUME_DOWN": "25", "MUTE": "164", "VOLUME_UP": "24"
+            ]
+
+            guard let code = codes[key] else {
+                status = "Unknown button: \(key)"
+                return
+            }
+
+            sendPersistentCommand("input keyevent \(code)")
+        }
+
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+    }
+
+    private func sendKeyboardLine(_ line: String, on stream: AdbStream) {
+        keyboardQueue.enqueue { [weak self] in
+            do {
+                try await stream.write(Data((line + "\n").utf8))
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.keyboardReady = false
+                    self.status = "Virtual keyboard stream failed · using ADB fallback"
+                }
+            }
+        }
     }
 
     func sendText(_ text: String) {
@@ -252,8 +282,6 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-    // SwiftADB's LocalServices.shell concatenates its argument array without
-    // spaces. Build the shell destination directly and quote each argument.
     private func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
         func shellQuote(_ value: String) -> String {
             "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
@@ -277,12 +305,12 @@ final class RemoteModel: ObservableObject {
         return String(data: result, encoding: .utf8) ?? ""
     }
 
-    private func findMouseHelper() -> URL? {
+    private func findBundledHelper(named name: String) -> URL? {
         let bundle = Bundle.main
         let roots = [bundle.resourceURL, bundle.bundleURL].compactMap { $0 }
 
-        if let direct = bundle.url(forResource: "glass_uhid_bridge", withExtension: nil),
-            FileManager.default.fileExists(atPath: direct.path) {
+        if let direct = bundle.url(forResource: name, withExtension: nil),
+           FileManager.default.fileExists(atPath: direct.path) {
             return direct
         }
 
@@ -294,8 +322,8 @@ final class RemoteModel: ObservableObject {
             ) else { continue }
 
             for case let url as URL in enumerator {
-                if url.lastPathComponent == "glass_uhid_bridge",
-                    FileManager.default.fileExists(atPath: url.path) {
+                if url.lastPathComponent == name,
+                   FileManager.default.fileExists(atPath: url.path) {
                     return url
                 }
             }
@@ -304,11 +332,46 @@ final class RemoteModel: ObservableObject {
         return nil
     }
 
-    private func startMouse() async {
-        guard let adb else { return }
-        await stopMouse()
+    private func uploadHelper(_ helperURL: URL, to remotePath: String) async throws {
+        guard let adb else {
+            throw NSError(
+                domain: "GlassRemote",
+                code: 20,
+                userInfo: [NSLocalizedDescriptionKey: "ADB connection unavailable"]
+            )
+        }
 
-        guard let helperURL = findMouseHelper() else {
+        let data = try Data(contentsOf: helperURL)
+        guard !data.isEmpty else {
+            throw NSError(
+                domain: "GlassRemote",
+                code: 21,
+                userInfo: [NSLocalizedDescriptionKey: "Bundled helper is empty"]
+            )
+        }
+
+        let upload = try await adb.open(
+            destination: "exec:sh -c 'cat > \(remotePath) && chmod 700 \(remotePath)'"
+        )
+        try await upload.write(data)
+        try await upload.close()
+
+        let verification = try await runShell(
+            adb,
+            ["sh", "-c", "test -s \(remotePath) && chmod 700 \(remotePath) && echo GLASSREMOTE_UPLOAD_OK"]
+        )
+
+        guard verification.contains("GLASSREMOTE_UPLOAD_OK") else {
+            throw NSError(
+                domain: "GlassRemote",
+                code: 22,
+                userInfo: [NSLocalizedDescriptionKey: "TV did not confirm helper upload: \(verification)"]
+            )
+        }
+    }
+
+    private func startMouse() async {
+        guard let helperURL = findBundledHelper(named: "glass_uhid_bridge") else {
             mouseReady = false
             let root = Bundle.main.resourceURL?.path ?? "unavailable"
             status = "Mouse helper not found · bundle resources: \(root)"
@@ -326,28 +389,9 @@ final class RemoteModel: ObservableObject {
             }
 
             status = "Mouse helper found · uploading \(data.count) bytes"
+            try await uploadHelper(helperURL, to: "/data/local/tmp/glass_uhid_bridge")
 
-            let upload = try await adb.open(
-                destination: "exec:sh -c 'cat > /data/local/tmp/glass_uhid_bridge && chmod 700 /data/local/tmp/glass_uhid_bridge'"
-            )
-            try await upload.write(data)
-            try await upload.close()
-
-            let verification = try await runShell(
-                adb,
-                ["sh", "-c", "test -s /data/local/tmp/glass_uhid_bridge && chmod 700 /data/local/tmp/glass_uhid_bridge && echo GLASSREMOTE_UPLOAD_OK"]
-            )
-
-            guard verification.contains("GLASSREMOTE_UPLOAD_OK") else {
-                throw NSError(
-                    domain: "GlassRemote",
-                    code: 11,
-                    userInfo: [NSLocalizedDescriptionKey: "TV did not confirm helper upload: \(verification)"]
-                )
-            }
-
-            // Disable shell echo before exec. Read until READY rather than assuming
-            // the first ADB packet contains the helper's startup message.
+            guard let adb else { return }
             let stream = try await adb.open(destination: "shell:sh")
             try await stream.write(Data("stty -echo 2>/dev/null; exec /data/local/tmp/glass_uhid_bridge\n".utf8))
 
@@ -357,21 +401,15 @@ final class RemoteModel: ObservableObject {
             while !ready {
                 let streamClosed = await stream.getIsClosed()
                 if streamClosed { break }
-
                 let chunk = try await stream.read()
                 if chunk.isEmpty { break }
                 startupData.append(chunk)
-
                 let response = String(data: startupData, encoding: .utf8) ?? ""
                 ready = response.contains("READY")
-
-                if response.contains("ERROR") {
-                    break
-                }
+                if response.contains("ERROR") { break }
             }
 
             let startupText = String(data: startupData, encoding: .utf8) ?? ""
-
             guard ready else {
                 try? await stream.close()
                 throw NSError(
@@ -386,12 +424,100 @@ final class RemoteModel: ObservableObject {
             mouseStream = stream
             mouseReady = true
             status = "Mouse ready · Android UHID created"
-
         } catch {
             mouseReady = false
             mouseStream = nil
             status = "Mouse startup failed: \(error.localizedDescription)"
         }
+    }
+
+    private func startKeyboard() async {
+        await stopKeyboard()
+
+        guard let helperURL = findBundledHelper(named: "glass_uhid_keyboard") else {
+            keyboardReady = false
+            status = "Mouse ready · keyboard helper missing (ADB controls retained)"
+            return
+        }
+
+        do {
+            try await uploadHelper(helperURL, to: "/data/local/tmp/glass_uhid_keyboard")
+            guard let adb else { return }
+
+            let stream = try await adb.open(destination: "shell:sh")
+            try await stream.write(
+                Data("stty -echo 2>/dev/null; exec /data/local/tmp/glass_uhid_keyboard\n".utf8)
+            )
+
+            var startupData = Data()
+            var ready = false
+
+            while !ready {
+                let streamClosed = await stream.getIsClosed()
+                if streamClosed { break }
+
+                let chunk = try await stream.read()
+                if chunk.isEmpty { break }
+                startupData.append(chunk)
+
+                let response = String(data: startupData, encoding: .utf8) ?? ""
+                ready = response.contains("READY")
+                if response.contains("ERROR") { break }
+            }
+
+            let startupText = String(data: startupData, encoding: .utf8) ?? ""
+            guard ready else {
+                try? await stream.close()
+                throw NSError(
+                    domain: "GlassRemote",
+                    code: 30,
+                    userInfo: [NSLocalizedDescriptionKey: startupText.isEmpty
+                        ? "Keyboard helper exited without a READY response"
+                        : "Keyboard helper did not start: \(startupText.trimmingCharacters(in: .whitespacesAndNewlines))"]
+                )
+            }
+
+            keyboardStream = stream
+            keyboardReady = true
+
+            // Drain any later diagnostic output without consuming input writes.
+            keyboardReaderTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do {
+                        let data = try await stream.read()
+                        if data.isEmpty { break }
+                    } catch {
+                        break
+                    }
+                }
+
+                guard let self else { return }
+                if self.keyboardStream === stream {
+                    self.keyboardStream = nil
+                    self.keyboardReady = false
+                    if self.connected {
+                        self.status = "Virtual keyboard stopped · using ADB fallback"
+                    }
+                }
+            }
+
+            status = "Mouse + virtual keyboard ready"
+        } catch {
+            keyboardReady = false
+            keyboardStream = nil
+            status = "Mouse ready · virtual keyboard unavailable, using ADB fallback: \(error.localizedDescription)"
+        }
+    }
+
+    private func stopKeyboard() async {
+        keyboardReady = false
+        keyboardReaderTask?.cancel()
+        keyboardReaderTask = nil
+
+        if let keyboardStream {
+            try? await keyboardStream.close()
+        }
+        keyboardStream = nil
     }
 
     func mouse(
