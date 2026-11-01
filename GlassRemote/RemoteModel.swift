@@ -102,6 +102,13 @@ final class RemoteModel: ObservableObject {
     private var cursorStream: AdbStream?
     private var cursorReaderTask: Task<Void, Never>?
     @Published var cursorStatus = "Cursor: not started"
+    /// Feeds "R" (re-apply) lines to the cursor helper. Its `watch` mode sets the custom icon once
+    /// and then re-applies it ONLY when it reads "R"; without these, the first app that requests
+    /// its own pointer (hand, text beam, hover…) replaces the white cursor for good.
+    private var cursorInput: AdbStream?
+    private let cursorQueue = TaskQueue()
+    private var lastCursorNudge = Date.distantPast
+    private var cursorTrailTask: Task<Void, Never>?
     private var commandQueue = TaskQueue()
     private var reportQueue = TaskQueue()
 
@@ -261,7 +268,9 @@ final class RemoteModel: ObservableObject {
 
                 try await startCommandShell(connection)
                 status = "Connected · low-latency shell ready"
-                await refreshApps()
+                // The package list only labels tiles. Re-reading it on every automatic reconnect
+                // (each phone lock/unlock) runs `pm` on the box mid-playback for nothing.
+                if installed.isEmpty { await refreshApps() }
                 guard session == sessionID else { return }
                 applyTVSettings()
                 // Independent startups: a failed or stuck mouse helper must never keep the
@@ -270,13 +279,17 @@ final class RemoteModel: ObservableObject {
                 guard session == sessionID else { return }
                 await startKeyboard()
                 guard session == sessionID else { return }
+                // Polling starts only after the mouse/keyboard helpers have finished their
+                // startup handshakes, so no extra ADB stream competes with them. It no longer
+                // waits for the cursor (up to 40 s), so Now Playing comes back right away.
+                startMediaPolling()
+                reconnectAttempt = 0
+                // Controls are usable now; the optional cursor step must not hold the session in
+                // the "connecting" state (that also pauses media polling).
+                if connectingSession == session { connectingSession = nil }
                 // Cursor appearance only: bounded and non-fatal, runs after mouse + keyboard.
                 _ = await withDeadline(40) { await self.startCursor() }
                 guard session == sessionID else { return }
-                // Polling starts only after the mouse/keyboard helpers have finished their
-                // startup handshakes, so no extra ADB stream competes with them.
-                startMediaPolling()
-                reconnectAttempt = 0
 
             } catch {
                 guard session == sessionID else { return }
@@ -726,7 +739,7 @@ final class RemoteModel: ObservableObject {
             mouseStream = stream
             pendingMoveDX = 0; pendingMoveDY = 0; mouseButtonsHeld = 0
             mouseReady = true
-            status = "Mouse ready · Android UHID created"
+            status = "Mouse ready · Android UHID created" + PersistentHelper.fallbackNote("glass_uhid_bridge")
 
         } catch {
             mouseReady = false
@@ -743,6 +756,7 @@ final class RemoteModel: ObservableObject {
         hscroll: Int = 0
     ) {
         guard connected, mouseReady, let mouseStream else { return }
+        nudgeCursor()
 
         let line = "M \(buttons) \(max(-127, min(127, dx))) \(max(-127, min(127, dy))) \(max(-127, min(127, wheel))) \(max(-127, min(127, hscroll)))\n"
 
@@ -764,6 +778,7 @@ final class RemoteModel: ObservableObject {
     /// Pointer motion (never changes button state; a held button stays held while dragging).
     func mouseMove(dx: Int, dy: Int) {
         guard connected, mouseReady, dx != 0 || dy != 0 else { return }
+        nudgeCursor()
         pendingMoveDX += dx
         pendingMoveDY += dy
         guard !moveDrainQueued else { return }
@@ -774,7 +789,42 @@ final class RemoteModel: ObservableObject {
     /// Sets the mouse button state (1 = left down, 0 = all up), ordered with respect to motion.
     func mouseButton(_ buttons: Int) {
         guard connected, mouseReady else { return }
+        nudgeCursor()
         reportQueue.enqueue { [weak self] in await self?.sendButtonReport(buttons) }
+    }
+
+    /// Asks the TV cursor helper to re-apply the white icon. Throttled while the pointer moves,
+    /// plus a trailing request after it stops, because Android switches the icon when the
+    /// hovered view changes (which happens just after motion, scrolling or a click).
+    private func nudgeCursor() {
+        guard cursorInput != nil else { return }
+        let now = Date()
+        if now.timeIntervalSince(lastCursorNudge) >= 0.08 {
+            lastCursorNudge = now
+            sendCursorReapply()
+        }
+        cursorTrailTask?.cancel()
+        cursorTrailTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.lastCursorNudge = Date()
+            self.sendCursorReapply()
+        }
+    }
+
+    private func sendCursorReapply() {
+        guard let stream = cursorInput else { return }
+        cursorQueue.enqueue { [weak self] in
+            do {
+                try await stream.write(Data("R\n".utf8))
+            } catch {
+                await MainActor.run {
+                    guard let self, self.cursorInput === stream else { return }
+                    self.cursorInput = nil
+                    GRLog.note("cursor", "re-apply stream failed: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     private func drainPointerMotion() async {
@@ -893,12 +943,20 @@ final class RemoteModel: ObservableObject {
         }
     }
 
+    /// Persistent cursor helper. Renamed from "glass_cursor_setter" because that older instance
+    /// was started with a keeper that never asks for a re-apply; it is stopped once (below).
+    private static let cursorHelperName = "glass_cursor"
+    /// Matches the helper's command line (its image argument is glass_cursor_white.png).
+    private static let cursorMatch = "glass_cursor"
+
     private func startCursor() async {
         guard let adb else { return }
         await stopCursor()
 
         // Already running from an earlier connection: nothing to upload or restart.
-        if await PersistentHelper.isRunning(adb: adb, name: "glass_cursor_setter", match: "com.glassremote.cursor") {
+        if await PersistentHelper.isRunning(adb: adb, name: Self.cursorHelperName, match: Self.cursorMatch) {
+            cursorInput = await PersistentHelper.openInput(adb: adb, name: Self.cursorHelperName)
+            sendCursorReapply()
             cursorStatus = "Cursor: custom white cursor active (helper already running)"
             return
         }
@@ -916,18 +974,25 @@ final class RemoteModel: ObservableObject {
             try await uploadToTV(adb, data: jar, remote: "/data/local/tmp/glass_cursor_setter.jar", mode: "644")
             try await uploadToTV(adb, data: png, remote: "/data/local/tmp/glass_cursor_white.png", mode: "644")
 
+            // Stop the instance left by the previous build (one-time; no-op when absent).
+            _ = try? await runShell(adb, ["sh", "-c", PersistentHelper.killScript(name: "glass_cursor_setter", match: "com.glassremote.cursor")])
+
             let hotspot = Self.cursorHotspot
+            // The keeper writes "R" once a second, so the box re-applies the white cursor even
+            // while the phone is away (e.g. an app swapped the icon under a still pointer). While
+            // the trackpad is used the phone sends extra "R" lines (nudgeCursor).
             if await PersistentHelper.launch(
-                adb: adb, name: "glass_cursor_setter", match: "com.glassremote.cursor",
+                adb: adb, name: Self.cursorHelperName, match: Self.cursorMatch,
                 command: "export CLASSPATH=/data/local/tmp/glass_cursor_setter.jar; exec app_process /system/bin com.glassremote.cursor.Main watch /data/local/tmp/glass_cursor_white.png \(hotspot.x) \(hotspot.y)",
-                ready: "READY|GLASS_CURSOR_SET_OK") {
+                ready: "READY|GLASS_CURSOR_SET_OK",
+                keeper: "while :; do echo R; sleep 1; done") {
+                cursorInput = await PersistentHelper.openInput(adb: adb, name: Self.cursorHelperName)
                 cursorStatus = "Cursor: custom white cursor applied"
                 GRLog.note("cursor", "persistent helper running")
                 return
             }
 
-            // `watch` keeps re-applying the icon so it stays white and is not reset by the
-            // system while the pointer moves, hovers, clicks or drags.
+            // `watch` re-applies the icon each time it reads "R" on stdin (sent by nudgeCursor).
             let stream = try await adb.open(destination: "shell:sh")
             let hot = Self.cursorHotspot
             let command = "stty -echo 2>/dev/null; CLASSPATH=/data/local/tmp/glass_cursor_setter.jar exec app_process /system/bin com.glassremote.cursor.Main watch /data/local/tmp/glass_cursor_white.png \(hot.x) \(hot.y)\n"
@@ -962,7 +1027,8 @@ final class RemoteModel: ObservableObject {
             }
 
             cursorStream = stream
-            cursorStatus = "Cursor: custom white cursor applied"
+            cursorInput = stream
+            cursorStatus = "Cursor: custom white cursor applied" + PersistentHelper.fallbackNote(Self.cursorHelperName)
             GRLog.note("cursor", "custom white cursor applied")
 
             // Keep draining the helper's output so its pipe never fills; note when it ends.
@@ -976,6 +1042,7 @@ final class RemoteModel: ObservableObject {
                 await MainActor.run {
                     guard let self, self.cursorStream === stream else { return }
                     self.cursorStream = nil
+                    if self.cursorInput === stream { self.cursorInput = nil }
                     self.cursorStatus = "Cursor: helper stopped"
                     GRLog.note("cursor", "helper stream ended")
                 }
@@ -990,8 +1057,16 @@ final class RemoteModel: ObservableObject {
     private func stopCursor() async {
         cursorReaderTask?.cancel()
         cursorReaderTask = nil
+        cursorTrailTask?.cancel()
+        cursorTrailTask = nil
+        // Closing the persistent pipe feed only ends the phone's `cat`; the helper keeps running.
+        let oldInput = cursorInput
+        cursorInput = nil
         let old = cursorStream
         cursorStream = nil
+        if let oldInput, oldInput !== old {
+            _ = await withDeadline(2) { () async -> Void in _ = try? await oldInput.close() }
+        }
         if let old {
             _ = await withDeadline(2) { () async -> Void in
                 try? await old.write(Data("STOP\n".utf8))
@@ -1134,6 +1209,10 @@ final class RemoteModel: ObservableObject {
             return
         }
         recoveryPending = false
+        // Re-attach the cursor's re-apply feed if iOS dropped it (reuses the running helper).
+        if cursorInput == nil {
+            _ = await withDeadline(40) { await self.startCursor() }
+        }
     }
 }
 

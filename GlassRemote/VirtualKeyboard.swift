@@ -79,7 +79,7 @@ final class VirtualKeyboard {
 
             stream = newStream
             isReady = true
-            report("Virtual keyboard: running · helper verified (\(helper.data.count) bytes)")
+            report("Virtual keyboard: running · helper verified (\(helper.data.count) bytes)" + PersistentHelper.fallbackNote(Self.helperName))
             startReader(newStream, generation: gen)
         } catch {
             isReady = false
