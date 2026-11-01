@@ -13,7 +13,9 @@ struct TVApp: Identifiable {
 @MainActor
 final class RemoteModel: ObservableObject {
     @Published var host = UserDefaults.standard.string(forKey: "tvHost") ?? "192.168.1.70"
-    @Published var port = UserDefaults.standard.integer(forKey: "tvPort") == 0 ? "5555" : String(UserDefaults.standard.integer(forKey: "tvPort"))
+    @Published var port = UserDefaults.standard.integer(forKey: "tvPort") == 0
+        ? "5555"
+        : String(UserDefaults.standard.integer(forKey: "tvPort"))
     @Published var status = "Not connected"
     @Published var connected = false
     @Published var installed = Set<String>()
@@ -98,6 +100,8 @@ final class RemoteModel: ObservableObject {
         }
     }
 
+    // Package discovery is informational only. It never controls whether app tiles
+    // are displayed, dimmed, enabled, or clickable.
     func refreshApps() async {
         guard let adb else { return }
 
@@ -105,9 +109,8 @@ final class RemoteModel: ObservableObject {
             let output = try await runShell(adb, ["pm", "list", "packages"])
             installed = Set(
                 output.components(separatedBy: .newlines).compactMap { line in
-                    line.hasPrefix("package:")
-                    ? String(line.dropFirst(8)).trimmingCharacters(in: .whitespaces)
-                    : nil
+                    guard line.hasPrefix("package:") else { return nil }
+                    return String(line.dropFirst(8)).trimmingCharacters(in: .whitespaces)
                 }
             )
             status = "Connected · \(installed.count) apps found"
@@ -128,8 +131,9 @@ final class RemoteModel: ObservableObject {
                     adb,
                     ["sh", "-c", "monkey -p \(app.package) 1 2>&1; rc=$?; echo GLASSREMOTE_LAUNCH_EXIT:$rc"]
                 )
+
                 if output.localizedCaseInsensitiveContains("no activities found") ||
-                   output.localizedCaseInsensitiveContains("monkey aborted") {
+                    output.localizedCaseInsensitiveContains("monkey aborted") {
                     status = "Launch failed · \(app.name) is not launchable on this TV"
                 } else if output.contains("GLASSREMOTE_LAUNCH_EXIT:0") {
                     status = "Android accepted launch request · \(app.name)"
@@ -167,6 +171,7 @@ final class RemoteModel: ObservableObject {
                     adb,
                     ["sh", "-c", "input keyevent \(code); rc=$?; echo GLASSREMOTE_KEYEVENT_EXIT:$rc"]
                 )
+
                 if output.contains("GLASSREMOTE_KEYEVENT_EXIT:0") {
                     status = "Android accepted \(key) · keycode \(code)"
                 } else if let result = output.components(separatedBy: "GLASSREMOTE_KEYEVENT_EXIT:").last {
@@ -203,30 +208,27 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-
-private func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
-    func quote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    let command = args.map { quote($0) }.joined(separator: " ")
-    let stream = try await connection.open(destination: "shell:\(command)")
-
-    var result = Data()
-
-    while !(await stream.getIsClosed()) {
-        do {
-            let chunk = try await stream.read()
-            if chunk.isEmpty { break }
-            result.append(chunk)
-        } catch {
-            if await stream.getIsClosed() { break }
-            throw error
+    // SwiftADB's LocalServices.shell concatenates its argument array without
+    // spaces. Build the shell destination directly and quote each argument.
+    private func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
+        func shellQuote(_ value: String) -> String {
+            "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
         }
-    }
 
-    return String(data: result, encoding: .utf8) ?? ""
-}
+        let command = args.map(shellQuote).joined(separator: " ")
+        let stream = try await connection.open(destination: "shell:\(command)")
+        var result = Data()
+
+        while !(await stream.getIsClosed()) {
+            do {
+                let chunk = try await stream.read()
+                if chunk.isEmpty { break }
+                result.append(chunk)
+            } catch {
+                if await stream.getIsClosed() { break }
+                throw error
+            }
+        }
 
         return String(data: result, encoding: .utf8) ?? ""
     }
@@ -236,7 +238,7 @@ private func runShell(_ connection: AdbConnection, _ args: [String]) async throw
         let roots = [bundle.resourceURL, bundle.bundleURL].compactMap { $0 }
 
         if let direct = bundle.url(forResource: "glass_uhid_bridge", withExtension: nil),
-           FileManager.default.fileExists(atPath: direct.path) {
+            FileManager.default.fileExists(atPath: direct.path) {
             return direct
         }
 
@@ -249,11 +251,12 @@ private func runShell(_ connection: AdbConnection, _ args: [String]) async throw
 
             for case let url as URL in enumerator {
                 if url.lastPathComponent == "glass_uhid_bridge",
-                   FileManager.default.fileExists(atPath: url.path) {
+                    FileManager.default.fileExists(atPath: url.path) {
                     return url
                 }
             }
         }
+
         return nil
     }
 
@@ -271,8 +274,11 @@ private func runShell(_ connection: AdbConnection, _ args: [String]) async throw
         do {
             let data = try Data(contentsOf: helperURL)
             guard !data.isEmpty else {
-                throw NSError(domain: "GlassRemote", code: 10,
-                              userInfo: [NSLocalizedDescriptionKey: "Bundled mouse helper is empty"])
+                throw NSError(
+                    domain: "GlassRemote",
+                    code: 10,
+                    userInfo: [NSLocalizedDescriptionKey: "Bundled mouse helper is empty"]
+                )
             }
 
             status = "Mouse helper found · uploading \(data.count) bytes"
@@ -287,15 +293,19 @@ private func runShell(_ connection: AdbConnection, _ args: [String]) async throw
                 adb,
                 ["sh", "-c", "test -s /data/local/tmp/glass_uhid_bridge && chmod 700 /data/local/tmp/glass_uhid_bridge && echo GLASSREMOTE_UPLOAD_OK"]
             )
+
             guard verification.contains("GLASSREMOTE_UPLOAD_OK") else {
-                throw NSError(domain: "GlassRemote", code: 11,
-                              userInfo: [NSLocalizedDescriptionKey: "TV did not confirm helper upload: \(verification)"])
+                throw NSError(
+                    domain: "GlassRemote",
+                    code: 11,
+                    userInfo: [NSLocalizedDescriptionKey: "TV did not confirm helper upload: \(verification)"]
+                )
             }
 
             let stream = try await adb.open(service: .shell, args: [])
             try await stream.write(Data("exec /data/local/tmp/glass_uhid_bridge\n".utf8))
 
-            // The helper prints READY only after successfully opening and creating /dev/uhid.
+            // The helper prints READY only after successfully creating /dev/uhid.
             let startup = try await stream.read()
             let startupText = String(data: startup, encoding: .utf8) ?? ""
 
