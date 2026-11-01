@@ -203,20 +203,30 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-    private func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
-        let stream = try await connection.open(service: .shell, args: args)
-        var result = Data()
 
-        while !(await stream.getIsClosed()) {
-            do {
-                let chunk = try await stream.read()
-                if chunk.isEmpty { break }
-                result.append(chunk)
-            } catch {
-                if await stream.getIsClosed() { break }
-                throw error
-            }
+private func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
+    func quote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    let command = args.map { quote($0) }.joined(separator: " ")
+    let stream = try await connection.open(destination: "shell:\(command)")
+
+    var result = Data()
+
+    while !(await stream.getIsClosed()) {
+        do {
+            let chunk = try await stream.read()
+            if chunk.isEmpty { break }
+            result.append(chunk)
+        } catch {
+            if await stream.getIsClosed() { break }
+            throw error
         }
+    }
+
+    return String(data: result, encoding: .utf8) ?? ""
+}
 
         return String(data: result, encoding: .utf8) ?? ""
     }
