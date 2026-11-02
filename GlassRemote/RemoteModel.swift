@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import SwiftUI
 import SwiftADB
 import UIKit
@@ -514,29 +515,16 @@ final class RemoteModel: ObservableObject {
     }
 
     func key(_ key: String) {
-        let codes: [String: String] = [
-            "UP": "19", "DOWN": "20", "LEFT": "21", "RIGHT": "22",
-            "OK": "23", "BACK": "4", "HOME": "3", "MENU": "82",
-            "VOLUME_DOWN": "25", "MUTE": "164", "VOLUME_UP": "24"
-        ]
-
-        guard let code = codes[key] else {
-            status = "Unknown button: \(key)"
-            return
-        }
-
         guard connected else {
             status = "Button failed · not connected"
             return
         }
-
-        // Virtual HID keyboard when ready and verified for this button; otherwise ADB keyevent.
-        if keyboard.send(key) {
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        // No ADB input-keyevent fallback: navigation uses only the persistent HID device.
+        guard keyboard.send(key) else {
+            status = "Virtual keyboard unavailable · reconnect to restore controls"
+            GRLog.note("keyboard", "ignored \(key): virtual HID stream unavailable; ADB fallback disabled")
             return
         }
-
-        sendPersistentCommand("input keyevent \(code)")
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
     }
 
@@ -673,56 +661,76 @@ final class RemoteModel: ObservableObject {
                 )
             }
 
-            status = "Mouse helper found · uploading \(data.count) bytes"
-
-            let upload = try await adb.open(
-                destination: "exec:sh -c 'cat > /data/local/tmp/glass_uhid_bridge.upload'"
-            )
-            try await upload.write(data)
-            try await upload.close()
-
-            // close() returns before the TV has necessarily finished writing the file, so a
-            // single `test -s` can run too early, fail silently (the && chain prints nothing)
-            // and look like "TV did not confirm helper upload:". Poll the real remote size
-            // instead, exactly as the keyboard uploader does.
             let expected = data.count
-            var remoteBytes: Int?
-            var lastOutput = ""
-            for attempt in 0..<50 {
-                lastOutput = try await runShell(
-                    adb,
-                    ["sh", "-c", "if [ -f /data/local/tmp/glass_uhid_bridge.upload ]; then wc -c < /data/local/tmp/glass_uhid_bridge.upload; else echo MISSING; fi"]
-                )
-                remoteBytes = lastOutput
-                    .split(whereSeparator: { $0.isWhitespace })
-                    .compactMap { Int($0) }
-                    .first
-                if remoteBytes == expected {
-                    GRLog.note("mouse", "helper upload verified after \(attempt + 1) check(s)")
-                    break
-                }
-                try await Task.sleep(nanoseconds: 100_000_000)
-            }
+            let localSHA1 = Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let remotePath = "/data/local/tmp/glass_uhid_bridge"
+            let uploadPath = remotePath + ".upload"
 
-            guard remoteBytes == expected else {
-                throw NSError(
-                    domain: "GlassRemote",
-                    code: 11,
-                    userInfo: [NSLocalizedDescriptionKey: "helper upload incomplete: local \(expected) bytes, TV has \(remoteBytes.map(String.init) ?? "none") (last reply: \(lastOutput.trimmingCharacters(in: .whitespacesAndNewlines)))"]
-                )
-            }
-
-            let chmodOutput = try await runShell(
-                adb,
-                ["sh", "-c", "chmod 700 /data/local/tmp/glass_uhid_bridge.upload && mv -f /data/local/tmp/glass_uhid_bridge.upload /data/local/tmp/glass_uhid_bridge && echo GLASSREMOTE_CHMOD_OK"]
+            // Reuse the previously installed mouse ELF if it is byte-for-byte identical.
+            status = "Mouse helper found · checking installed binary…"
+            let existingSizeText = try await runShell(
+                adb, ["sh", "-c", "if [ -f \(remotePath) ]; then wc -c < \(remotePath); else echo MISSING; fi"]
             )
-            guard chmodOutput.contains("GLASSREMOTE_CHMOD_OK") else {
-                throw NSError(
-                    domain: "GlassRemote",
-                    code: 13,
-                    userInfo: [NSLocalizedDescriptionKey: "could not make helper executable: \(chmodOutput.trimmingCharacters(in: .whitespacesAndNewlines))"]
-                )
+            let existingSize = existingSizeText.split(whereSeparator: { $0.isWhitespace }).compactMap { Int($0) }.first
+            let existingSHA1Text = existingSize == expected
+                ? (try? await runShell(adb, ["sha1sum", remotePath])) ?? ""
+                : ""
+            let existingSHA1 = existingSHA1Text.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)?.lowercased()
+            let alreadyInstalled = existingSize == expected && existingSHA1 == localSHA1
+
+            if alreadyInstalled {
+                status = "Mouse helper already installed · verifying executable…"
+                let chmod = try await runShell(adb, ["sh", "-c", "chmod 700 \(remotePath) && echo GLASS_MOUSE_BINARY_OK"])
+                guard chmod.contains("GLASS_MOUSE_BINARY_OK") else {
+                    throw NSError(domain: "GlassRemote", code: 13,
+                                  userInfo: [NSLocalizedDescriptionKey: "TV has the mouse helper but could not make it executable: \(chmod)"])
+                }
+                GRLog.note("mouse", "reusing existing verified mouse helper (\(expected) bytes)")
+            } else {
+                status = "Mouse helper uploading · 0/\(expected) bytes"
+                let upload = try await adb.open(destination: "exec:sh -c 'cat > \(uploadPath)'")
+                // Send in small chunks so the ADB exec stream never has to accept one large write.
+                let chunkSize = 1024
+                var sent = 0
+                while sent < data.count {
+                    let next = min(sent + chunkSize, data.count)
+                    try await upload.write(data.subdata(in: sent..<next))
+                    sent = next
+                    status = "Mouse helper uploading · \(sent)/\(expected) bytes"
+                }
+                try await upload.close()
+
+                var remoteBytes: Int?
+                var lastOutput = ""
+                for attempt in 0..<50 {
+                    lastOutput = try await runShell(
+                        adb,
+                        ["sh", "-c", "if [ -f \(uploadPath) ]; then wc -c < \(uploadPath); else echo MISSING; fi"]
+                    )
+                    remoteBytes = lastOutput.split(whereSeparator: { $0.isWhitespace }).compactMap { Int($0) }.first
+                    if remoteBytes == expected {
+                        GRLog.note("mouse", "helper upload verified after \(attempt + 1) check(s)")
+                        break
+                    }
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                }
+                guard remoteBytes == expected else {
+                    throw NSError(domain: "GlassRemote", code: 11,
+                                  userInfo: [NSLocalizedDescriptionKey: "mouse upload incomplete: local \(expected) bytes, TV has \(remoteBytes.map(String.init) ?? "none"); last reply: \(lastOutput.trimmingCharacters(in: .whitespacesAndNewlines))"])
+                }
+                if let remoteHashText = try? await runShell(adb, ["sha1sum", uploadPath]),
+                   let remoteHash = remoteHashText.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)?.lowercased(),
+                   remoteHash != localSHA1 {
+                    throw NSError(domain: "GlassRemote", code: 12,
+                                  userInfo: [NSLocalizedDescriptionKey: "mouse helper checksum mismatch after upload"])
+                }
+                let finalize = try await runShell(adb, ["sh", "-c", "chmod 700 \(uploadPath) && mv -f \(uploadPath) \(remotePath) && echo GLASS_MOUSE_BINARY_OK"])
+                guard finalize.contains("GLASS_MOUSE_BINARY_OK") else {
+                    throw NSError(domain: "GlassRemote", code: 13,
+                                  userInfo: [NSLocalizedDescriptionKey: "could not install mouse helper: \(finalize)"])
+                }
             }
+
 
             // Start the detached TCP bridge and connect a client. Closing this client never
             // closes the helper's stdin: the TV-side listener accepts the next connection.

@@ -65,7 +65,12 @@ enum PersistentHelper {
         let p = pidPath(name); return "if [ -s \(p) ]; then P=$(cat \(p)); if [ -r /proc/$P/cmdline ] && grep -q '\(match)' /proc/$P/cmdline 2>/dev/null; then kill -- -$P 2>/dev/null || kill $P 2>/dev/null; fi; fi; rm -f \(p)"
     }
     static func isRunning(adb: AdbConnection, name: String, match: String) async -> Bool {
-        ((try? await shell(adb, "if \(processTest(name, match)); then echo GLASS_ALIVE; fi")) ?? "").contains("GLASS_ALIVE")
+        // Verify the endpoint as well as PID metadata. With a shell pipeline, Android
+        // may expose the supervisor's cmdline rather than the final helper executable.
+        let processProbe = "if \(processTest(name, match)); then echo GLASS_ALIVE; fi"
+        let tcpProbe = "/system/bin/nc -z -w 1 127.0.0.1 \(port(name)) >/dev/null 2>&1 && echo GLASS_TCP_ALIVE"
+        let output = (try? await shell(adb, "\(processProbe); \(tcpProbe)")) ?? ""
+        return output.contains("GLASS_ALIVE") || output.contains("GLASS_TCP_ALIVE")
     }
     static func stop(adb: AdbConnection, name: String, match: String) async { _ = try? await shell(adb, killScript(name, match)) }
 
