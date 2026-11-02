@@ -515,16 +515,41 @@ final class RemoteModel: ObservableObject {
     }
 
     func key(_ key: String) {
+        let adbCodes: [String: String] = [
+            "UP": "19", "DOWN": "20", "LEFT": "21", "RIGHT": "22",
+            "OK": "23", "BACK": "4", "HOME": "3", "MENU": "82",
+            "VOLUME_DOWN": "25", "MUTE": "164", "VOLUME_UP": "24"
+        ]
+
         guard connected else {
             status = "Button failed · not connected"
             return
         }
-        // No ADB input-keyevent fallback: navigation uses only the persistent HID device.
-        guard keyboard.send(key) else {
-            status = "Virtual keyboard unavailable · reconnect to restore controls"
-            GRLog.note("keyboard", "ignored \(key): virtual HID stream unavailable; ADB fallback disabled")
+
+        // Keep frequent navigation on persistent virtual HID. Only use ADB for
+        // controls that are not currently routed through the verified HID path.
+        if keyboard.send(key) {
+            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
             return
         }
+
+        guard let code = adbCodes[key] else {
+            status = "Unknown button: \(key)"
+            return
+        }
+
+        // ADB fallback is deliberately limited to system/media controls. D-pad and
+        // OK never fall back to ADB, avoiding extra shell input traffic during playback.
+        let adbOnlyControls: Set<String> = [
+            "BACK", "HOME", "MENU", "VOLUME_UP", "VOLUME_DOWN", "MUTE"
+        ]
+        guard adbOnlyControls.contains(key) else {
+            status = "Virtual keyboard unavailable · reconnect to restore navigation"
+            GRLog.note("keyboard", "ignored \(key): HID required; ADB fallback disabled for navigation")
+            return
+        }
+
+        sendPersistentCommand("input keyevent \(code)")
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
     }
 
