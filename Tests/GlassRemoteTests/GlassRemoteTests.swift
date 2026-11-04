@@ -128,3 +128,77 @@ final class LiveTypingToggleTests: XCTestCase {
         XCTAssertEqual(LiveTypingDiff.plan(from: "", to: "ab").added, "ab")
     }
 }
+
+// MARK: - v0.3 Phase 1
+
+final class PagerMathTests: XCTestCase {
+    func testLandingPageIsRemoteAndOrderIsStable() {
+        XCTAssertEqual(AppPage.landing, .remote)
+        XCTAssertEqual(AppPage.allCases, [.remote, .player, .discover, .apps])
+    }
+
+    func testTargetPageThresholdsAndClamping() {
+        XCTAssertEqual(AppPage.target(from: .remote, translation: -200, predicted: -250, width: 390), .player)
+        XCTAssertEqual(AppPage.target(from: .remote, translation: -40, predicted: -60, width: 390), .remote)   // too small
+        XCTAssertEqual(AppPage.target(from: .remote, translation: -30, predicted: -300, width: 390), .player)  // flick
+        XCTAssertEqual(AppPage.target(from: .remote, translation: 300, predicted: 400, width: 390), .remote)   // clamped at start
+        XCTAssertEqual(AppPage.target(from: .apps, translation: -300, predicted: -400, width: 390), .apps)     // clamped at end
+        XCTAssertEqual(AppPage.target(from: .discover, translation: 200, predicted: 260, width: 390), .player)
+    }
+
+    func testEdgeResistance() {
+        XCTAssertEqual(AppPage.resisted(100, on: .remote), 25)
+        XCTAssertEqual(AppPage.resisted(-100, on: .apps), -25)
+        XCTAssertEqual(AppPage.resisted(100, on: .player), 100)
+    }
+}
+
+final class StremioCatalogTests: XCTestCase {
+    func testSearchURLEncodesQuery() {
+        let url = StremioCatalog.searchURL(kind: .movie, query: "The Matrix: Reloaded/x")
+        XCTAssertEqual(url?.absoluteString, "https://v3-cinemeta.strem.io/catalog/movie/top/search=The%20Matrix%3A%20Reloaded%2Fx.json")
+        XCTAssertNil(StremioCatalog.searchURL(kind: .series, query: "   "))
+    }
+
+    func testParseToleratesMissingFields() {
+        let json = #"{"metas":[{"id":"tt0133093","name":"The Matrix","poster":"https://example.com/p.jpg","releaseInfo":"1999","imdbRating":"8.7"},{"name":"No id"},{"id":"tt1","poster":"http://insecure/x.jpg","name":"Insecure poster"}]}"#
+        let items = StremioCatalog.parse(Data(json.utf8), kind: .movie)
+        XCTAssertEqual(items.map(\.name), ["The Matrix", "Insecure poster"])
+        XCTAssertNotNil(items[0].posterURL)
+        XCTAssertNil(items[1].posterURL)            // non-https artwork is dropped
+        XCTAssertTrue(StremioCatalog.parse(Data("garbage".utf8), kind: .series).isEmpty)
+    }
+
+    func testDeepLinkValidationRejectsUnsafeIds() {
+        XCTAssertEqual(RemoteModel.stremioDetailLink(kind: .movie, id: "tt0133093"), "stremio:///detail/movie/tt0133093")
+        XCTAssertNil(RemoteModel.stremioDetailLink(kind: .movie, id: "tt0133093'; reboot; '"))
+        XCTAssertNil(RemoteModel.stremioDetailLink(kind: .series, id: "kitsu:1"))
+    }
+}
+
+final class MediaSubtitleTests: XCTestCase {
+    func testDescriptionSplit() {
+        XCTAssertEqual(MediaParser.splitDescription("Show, S1E2 Pilot, null").headline, "Show")
+        XCTAssertEqual(MediaParser.splitDescription("Show, S1E2 Pilot, null").subtitle, "S1E2 Pilot")
+        XCTAssertEqual(MediaParser.splitDescription("Movie, null, null").subtitle, "")
+        XCTAssertEqual(MediaParser.splitDescription("Just a title").headline, "Just a title")
+        XCTAssertEqual(MediaParser.splitDescription("Hello, World, Ep 3, null").headline, "Hello, World")
+    }
+
+    func testDurationIsNeverInvented() {
+        XCTAssertNil(MediaState.idle.durationMs)
+    }
+}
+
+final class FavouritesAndArtworkTests: XCTestCase {
+    func testFavouriteToggleKeepsOrder() {
+        XCTAssertEqual(AppFavourites.toggled(["a"], "b"), ["a", "b"])
+        XCTAssertEqual(AppFavourites.toggled(["a", "b"], "a"), ["b"])
+    }
+
+    func testPosterOnlyForMatchingTitle() {
+        XCTAssertTrue(PlayerArtworkStore.matches(session: "The Matrix", hint: "the matrix"))
+        XCTAssertFalse(PlayerArtworkStore.matches(session: "Something Else", hint: "The Matrix"))
+        XCTAssertFalse(PlayerArtworkStore.matches(session: "", hint: "The Matrix"))
+    }
+}
