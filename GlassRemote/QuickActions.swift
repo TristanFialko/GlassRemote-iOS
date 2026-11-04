@@ -46,10 +46,10 @@ final class QuickActionStore: ObservableObject {
     static let shared = QuickActionStore()
 
     /// Keys a macro may press. Volume is a separate step kind; power keys are never allowed.
-    static let allowedKeys = ["HOME", "BACK", "MENU", "UP", "DOWN", "LEFT", "RIGHT", "OK", "MUTE"]
+    static let allowedKeys = ["HOME", "BACK", "MENU", "UP", "DOWN", "LEFT", "RIGHT", "OK", "MUTE", "TV_SOURCE"]
     static let keyTitles: [String: String] = [
         "HOME": "Home", "BACK": "Back", "MENU": "Menu", "UP": "Up", "DOWN": "Down",
-        "LEFT": "Left", "RIGHT": "Right", "OK": "Select", "MUTE": "Mute"
+        "LEFT": "Left", "RIGHT": "Right", "OK": "Select", "MUTE": "Mute", "TV_SOURCE": "TV input menu"
     ]
 
     private let defaultsKey = "glassRemote.quickActions.v1"

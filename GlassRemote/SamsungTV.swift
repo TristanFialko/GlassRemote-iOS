@@ -27,7 +27,12 @@ private final class TVTrustDelegate: NSObject, URLSessionDelegate {
 /// must be confirmed on hardware; the ADB volume path stays available as the fallback.
 @MainActor
 final class SamsungTV {
-    static let keyNames = ["VOLUME_UP": "KEY_VOLUP", "VOLUME_DOWN": "KEY_VOLDOWN", "MUTE": "KEY_MUTE"]
+    static let keyNames = [
+        "VOLUME_UP": "KEY_VOLUP", "VOLUME_DOWN": "KEY_VOLDOWN", "MUTE": "KEY_MUTE",
+        "TV_POWER": "KEY_POWER", "TV_SOURCE": "KEY_SOURCE", "TV_HDMI": "KEY_HDMI"
+    ]
+    /// Keys that exist only on the TV (never routed to the Android box).
+    static let tvOnlyKeys: Set<String> = ["TV_POWER", "TV_SOURCE", "TV_HDMI"]
 
     var onStatus: ((String) -> Void)?
     var onReadyChanged: ((Bool) -> Void)?
@@ -59,7 +64,7 @@ final class SamsungTV {
         components.port = 8002
         components.path = "/api/v2/channels/samsung.remote.control"
         var items = [URLQueryItem(name: "name", value: Data("GlassRemote".utf8).base64EncodedString())]
-        if let token = UserDefaults.standard.string(forKey: tokenKey), !token.isEmpty {
+        if let token = storedToken(), !token.isEmpty {
             items.append(URLQueryItem(name: "token", value: token))
         }
         components.queryItems = items
@@ -141,7 +146,7 @@ final class SamsungTV {
         case "ms.channel.connect":
             if let payload = json["data"] as? [String: Any], let token = payload["token"] {
                 let value = "\(token)"
-                if !value.isEmpty { UserDefaults.standard.set(value, forKey: tokenKey) }
+                if !value.isEmpty { KeychainStore.set(value, for: tokenKey) }
             }
             timeoutTask?.cancel()
             isAttempting = false
@@ -154,6 +159,18 @@ final class SamsungTV {
         default:
             break
         }
+    }
+
+    /// The pairing token lives in the Keychain. A token saved by an older build in UserDefaults is
+    /// moved there on first read.
+    private func storedToken() -> String? {
+        if let token = KeychainStore.string(for: tokenKey) { return token }
+        if let legacy = UserDefaults.standard.string(forKey: tokenKey), !legacy.isEmpty {
+            KeychainStore.set(legacy, for: tokenKey)
+            UserDefaults.standard.removeObject(forKey: tokenKey)
+            return legacy
+        }
+        return nil
     }
 
     private func setReady(_ ready: Bool) {

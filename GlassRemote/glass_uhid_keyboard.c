@@ -3,7 +3,8 @@
  *
  * Android ARM helper exposing a keyboard and Consumer Control through /dev/uhid.
  * Persistent stdin protocol:
- *   K <USB HID keyboard usage>
+ *   K <USB HID keyboard usage>            press + release
+ *   S <USB HID keyboard usage>            press + release with Left Shift held (typing capitals/symbols)
  *   C <USB HID consumer usage>
  *
  * The helper creates one UHID device, prints READY, then stays alive and
@@ -103,7 +104,7 @@ static int write_event(int fd, const struct uhid_event *event) {
     return n == (ssize_t)sizeof(*event) ? 0 : -1;
 }
 
-static int keyboard_report(int fd, uint8_t usage, int pressed) {
+static int keyboard_report(int fd, uint8_t usage, uint8_t modifiers, int pressed) {
     struct uhid_event event;
     memset(&event, 0, sizeof(event));
 
@@ -111,7 +112,8 @@ static int keyboard_report(int fd, uint8_t usage, int pressed) {
     event.u.input2.size = 9;
     event.u.input2.data[0] = 1; /* Report ID */
     if (pressed) {
-        event.u.input2.data[3] = usage; /* First key slot */
+        event.u.input2.data[1] = modifiers; /* bit 1 = Left Shift */
+        event.u.input2.data[3] = usage;     /* First key slot */
     }
 
     return write_event(fd, &event);
@@ -183,10 +185,11 @@ int main(void) {
 
         int result = 0;
 
-        if (kind == 'K' && value > 0 && value <= 0x65) {
-            result = keyboard_report(fd, (uint8_t)value, 1);
+        if ((kind == 'K' || kind == 'S') && value > 0 && value <= 0x65) {
+            uint8_t modifiers = (kind == 'S') ? 0x02 : 0x00;
+            result = keyboard_report(fd, (uint8_t)value, modifiers, 1);
             if (result == 0) {
-                result = keyboard_report(fd, (uint8_t)value, 0);
+                result = keyboard_report(fd, (uint8_t)value, modifiers, 0);
             }
         } else if (kind == 'C' && value > 0 && value <= 0x03ff) {
             result = consumer_report(fd, (uint16_t)value, 1);

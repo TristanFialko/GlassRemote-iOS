@@ -18,7 +18,7 @@ struct NowPlayingSheet: View {
                 HStack {
                     Spacer()
                     Button { dismiss() } label: {
-                        Image(systemName: "chevron.down").font(.system(size: 15, weight: .semibold))
+                        Image(systemName: "chevron.down").scaledFont(15, .semibold)
                             .foregroundStyle(.white).frame(width: 40, height: 40)
                             .glassSurface(Circle(), interactive: true)
                     }
@@ -29,8 +29,8 @@ struct NowPlayingSheet: View {
 
                 VStack(spacing: 6) {
                     Text(media.isActive ? (media.title.isEmpty ? (app?.name ?? "Playing") : media.title) : "Nothing playing")
-                        .font(.system(size: 22, weight: .bold)).multilineTextAlignment(.center).lineLimit(3)
-                    Text(app?.name ?? media.package).font(.system(size: 14)).foregroundStyle(.white.opacity(0.6))
+                        .scaledFont(22, .bold).multilineTextAlignment(.center).lineLimit(3)
+                    Text(app?.name ?? media.package).scaledFont(14).foregroundStyle(.white.opacity(0.6))
                 }
 
                 timeline(media: media)
@@ -67,7 +67,7 @@ struct NowPlayingSheet: View {
                 Image(app.asset == "stremio" ? "stremio_nowplaying" : "\(app.asset)_dark")
                     .resizable().scaledToFit().padding(app.asset == "stremio" ? 70 : 40)
             } else {
-                Image(systemName: "play.rectangle").font(.system(size: 60)).foregroundStyle(.white.opacity(0.4))
+                Image(systemName: "play.rectangle").scaledFont(60).foregroundStyle(.white.opacity(0.4))
             }
         }
         .aspectRatio(1, contentMode: .fit)
@@ -92,7 +92,7 @@ struct NowPlayingSheet: View {
                 } else {
                     Text(MediaState.format(pos)).font(.system(size: 28, weight: .semibold).monospacedDigit())
                     Text("Elapsed · this app doesn't report total length, so seeking isn't available")
-                        .font(.system(size: 12)).foregroundStyle(.white.opacity(0.5)).multilineTextAlignment(.center)
+                        .scaledFont(12).foregroundStyle(.white.opacity(0.5)).multilineTextAlignment(.center)
                 }
             }
         }

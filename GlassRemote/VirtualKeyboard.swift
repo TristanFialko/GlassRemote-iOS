@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 import SwiftADB
 
 /// Independent virtual HID keyboard subsystem.
@@ -35,7 +34,6 @@ final class VirtualKeyboard {
 
     private static let helperName = "glass_uhid_keyboard"
     private static let remotePath = "/data/local/tmp/glass_uhid_keyboard"
-    private static let uploadPath = "/data/local/tmp/glass_uhid_keyboard.upload"
 
     /// Human-readable keyboard status (shown in the Connection sheet).
     var onStatus: ((String) -> Void)?
@@ -68,8 +66,10 @@ final class VirtualKeyboard {
                 startReader(existing, generation: gen)
                 return
             }
-            let helper = try loadBundledHelper()
-            try await ensureUploaded(adb: adb, helper: helper)
+            let helperData = try await loadBundledHelper(adb: adb)
+            try await TVShell.install(adb, data: helperData, remote: Self.remotePath, mode: "700") { [weak self] text in
+                self?.report("Virtual keyboard: \(text)")
+            }
             let newStream = try await launch(adb: adb)
 
             guard gen == generation else {
@@ -79,7 +79,7 @@ final class VirtualKeyboard {
 
             stream = newStream
             isReady = true
-            report("Virtual keyboard: running · helper verified (\(helper.data.count) bytes)" + PersistentHelper.fallbackNote(Self.helperName))
+            report("Virtual keyboard: running · helper verified (\(helperData.count) bytes)" + PersistentHelper.fallbackNote(Self.helperName))
             startReader(newStream, generation: gen)
         } catch {
             isReady = false
@@ -194,34 +194,9 @@ final class VirtualKeyboard {
 
     // MARK: - Helper discovery
 
-    private struct Helper {
-        let url: URL
-        let data: Data
-        let sha1: String
-    }
-
-    private func loadBundledHelper() throws -> Helper {
-        let bundle = Bundle.main
-        var found = bundle.url(forResource: Self.helperName, withExtension: nil)
-
-        if found == nil {
-            let roots = [bundle.resourceURL, bundle.bundleURL].compactMap { $0 }
-            search: for root in roots {
-                guard let enumerator = FileManager.default.enumerator(
-                    at: root,
-                    includingPropertiesForKeys: [.isRegularFileKey],
-                    options: [.skipsHiddenFiles]
-                ) else { continue }
-
-                for case let url as URL in enumerator where url.lastPathComponent == Self.helperName {
-                    found = url
-                    break search
-                }
-            }
-        }
-
-        guard let url = found else {
-            let root = bundle.resourceURL?.path ?? "unavailable"
+    private func loadBundledHelper(adb: AdbConnection) async throws -> Data {
+        guard let url = await TVShell.bundledHelper(adb, Self.helperName) else {
+            let root = Bundle.main.resourceURL?.path ?? "unavailable"
             throw fail(1, "\(Self.helperName) is not inside the app bundle (\(root)). The CI step 'Bundle and verify helpers' must copy it into the .app")
         }
 
@@ -230,69 +205,13 @@ final class VirtualKeyboard {
             throw fail(2, "bundled helper is only \(data.count) bytes (placeholder file?)")
         }
 
-        // The TV needs a 32-bit little-endian ARM ELF executable.
-        let head = Array(data.prefix(20))
-        let isARM32ELF = head.count == 20
-            && head[0] == 0x7F && head[1] == 0x45 && head[2] == 0x4C && head[3] == 0x46
-            && head[4] == 1 && head[5] == 1
-            && head[18] == 0x28 && head[19] == 0x00
-        guard isARM32ELF else {
+        // The TV needs a little-endian ARM ELF executable: 32-bit ARM (0x28) or AArch64 (0xB7).
+        guard let elf = TVShell.elfMachine(data),
+              (!elf.is64 && elf.machine == 0x28) || (elf.is64 && elf.machine == 0xB7) else {
             let hex = data.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " ")
-            throw fail(3, "bundled helper is not a 32-bit ARM ELF (first bytes: \(hex))")
+            throw fail(3, "bundled helper is not an ARM ELF (first bytes: \(hex))")
         }
-
-        let sha1 = Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        return Helper(url: url, data: data, sha1: sha1)
-    }
-
-    // MARK: - Upload and verification
-
-    private func ensureUploaded(adb: AdbConnection, helper: Helper) async throws {
-        let expected = helper.data.count
-
-        // Fast path: an identical helper is already on the TV.
-        report("Virtual keyboard: checking helper on TV…")
-        let existingSize = parseSize(try await shell(adb, sizeCommand(Self.remotePath)))
-        if existingSize == expected,
-           let remoteSum = parseSHA1(try await shell(adb, "sha1sum \(Self.remotePath) 2>&1")),
-           remoteSum == helper.sha1 {
-            let chmodOut = try await shell(adb, "chmod 700 \(Self.remotePath) && echo GLASSKB_CHMOD_OK")
-            if chmodOut.contains("GLASSKB_CHMOD_OK") { return }
-        }
-
-        // Upload to a temporary name so a partial file can never be executed.
-        report("Virtual keyboard: uploading \(expected) bytes…")
-        let upload = try await adb.open(destination: "exec:sh -c 'cat > \(Self.uploadPath)'")
-        try await upload.write(helper.data)
-        try await upload.close()
-
-        // close() returns before the TV has necessarily finished writing, so poll the
-        // real remote size instead of assuming the upload is complete.
-        var remoteBytes: Int?
-        for _ in 0..<50 {
-            remoteBytes = parseSize(try await shell(adb, sizeCommand(Self.uploadPath)))
-            if remoteBytes == expected { break }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-
-        guard remoteBytes == expected else {
-            let listing = (try? await shell(adb, "ls -l /data/local/tmp 2>&1 | grep -i glass")) ?? ""
-            throw fail(10, "upload incomplete: local \(expected) bytes, TV has \(remoteBytes.map(String.init) ?? "none"). \(listing.trimmingCharacters(in: .whitespacesAndNewlines))")
-        }
-
-        // Checksum when the TV provides sha1sum; the size match above is the fallback.
-        if let remoteSum = parseSHA1(try await shell(adb, "sha1sum \(Self.uploadPath) 2>&1")),
-           remoteSum != helper.sha1 {
-            throw fail(11, "checksum mismatch after upload (local \(helper.sha1.prefix(8)), TV \(remoteSum.prefix(8)))")
-        }
-
-        let finalOut = try await shell(
-            adb,
-            "chmod 700 \(Self.uploadPath) && mv -f \(Self.uploadPath) \(Self.remotePath) && echo GLASSKB_FINAL_OK"
-        )
-        guard finalOut.contains("GLASSKB_FINAL_OK") else {
-            throw fail(12, "could not finalise helper: \(finalOut.trimmingCharacters(in: .whitespacesAndNewlines))")
-        }
+        return data
     }
 
     // MARK: - Launch
@@ -320,46 +239,60 @@ final class VirtualKeyboard {
     private func fail(_ code: Int, _ message: String) -> NSError {
         NSError(domain: "GlassRemoteKeyboard", code: code, userInfo: [NSLocalizedDescriptionKey: message])
     }
+}
 
-    private func sizeCommand(_ path: String) -> String {
-        "if [ -f \(path) ]; then wc -c < \(path); else echo MISSING; fi"
+// MARK: - Live typing (HID)
+
+extension VirtualKeyboard {
+    static let backspaceUsage: UInt8 = 0x2A
+    static let enterUsage: UInt8 = 0x28
+
+    /// US-layout HID usage for one character; `shift` is true for capitals and shifted symbols.
+    /// Returns nil for anything outside ASCII (the TV keyboard cannot type those).
+    nonisolated static func hid(for character: Character) -> (usage: UInt8, shift: Bool)? {
+        guard let ascii = character.asciiValue else { return nil }
+        let c = Character(UnicodeScalar(ascii))
+        switch c {
+        case "a"..."z": return (0x04 + UInt8(ascii - 97), false)
+        case "A"..."Z": return (0x04 + UInt8(ascii - 65), true)
+        case "1"..."9": return (0x1E + UInt8(ascii - 49), false)
+        case "0": return (0x27, false)
+        case " ": return (0x2C, false)
+        case "\n": return (0x28, false)
+        case "\t": return (0x2B, false)
+        default: break
+        }
+        let plain: [Character: UInt8] = ["-": 0x2D, "=": 0x2E, "[": 0x2F, "]": 0x30, "\\": 0x31,
+                                         ";": 0x33, "'": 0x34, "`": 0x35, ",": 0x36, ".": 0x37, "/": 0x38]
+        if let usage = plain[c] { return (usage, false) }
+        let shifted: [Character: UInt8] = ["!": 0x1E, "@": 0x1F, "#": 0x20, "$": 0x21, "%": 0x22, "^": 0x23,
+                                           "&": 0x24, "*": 0x25, "(": 0x26, ")": 0x27, "_": 0x2D, "+": 0x2E,
+                                           "{": 0x2F, "}": 0x30, "|": 0x31, ":": 0x33, "\"": 0x34, "~": 0x35,
+                                           "<": 0x36, ">": 0x37, "?": 0x38]
+        if let usage = shifted[c] { return (usage, true) }
+        return nil
     }
 
-    private func parseSize(_ output: String) -> Int? {
-        output
-            .split(whereSeparator: { $0.isWhitespace })
-            .compactMap { Int($0) }
-            .first
+    /// Protocol lines (`K`/`S <usage>`) that type `text`. Characters the keyboard can't produce are skipped.
+    nonisolated static func lines(forTyping text: String) -> [String] {
+        text.compactMap { character in
+            hid(for: character).map { ($0.shift ? "S " : "K ") + String($0.usage) + "\n" }
+        }
     }
 
-    private func parseSHA1(_ output: String) -> String? {
-        guard let token = output.split(whereSeparator: { $0.isWhitespace }).first else { return nil }
-        let candidate = String(token).lowercased()
-        let isHex = candidate.count == 40 && candidate.allSatisfy { $0.isHexDigit }
-        return isHex ? candidate : nil
-    }
-
-    /// Runs `shell:<command>` and reads until the TV closes the stream.
-    /// Kept separate from the model's runShell so the two cannot affect each other.
-    private func shell(_ adb: AdbConnection, _ command: String) async throws -> String {
-        let stream = try await adb.open(destination: "shell:\(command)")
-        var result = Data()
-
-        while true {
-            let streamClosed = await stream.getIsClosed()
-            if streamClosed { break }
-
-            do {
-                let chunk = try await stream.read()
-                if chunk.isEmpty { break }
-                result.append(chunk)
-            } catch {
-                let closedAfterError = await stream.getIsClosed()
-                if closedAfterError { break }
-                throw error
+    /// Types through the virtual keyboard. Returns false when it isn't ready (caller falls back).
+    func type(_ text: String, backspaces: Int = 0) -> Bool {
+        guard isReady, let stream else { return false }
+        var payload = String(repeating: "K \(Self.backspaceUsage)\n", count: min(backspaces, 400))
+        payload += Self.lines(forTyping: String(text.prefix(400))).joined()
+        guard !payload.isEmpty else { return true }
+        let data = Data(payload.utf8)
+        let gen = generation
+        queue.enqueue { [weak self] in
+            do { try await stream.write(data) } catch {
+                await MainActor.run { self?.writeFailed(error, key: "TEXT", generation: gen) }
             }
         }
-
-        return String(decoding: result, as: UTF8.self)
+        return true
     }
 }

@@ -7,7 +7,7 @@ struct GlassRemoteApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RemoteView()
+            RootPagerView()
                 .environmentObject(remote)
                 .preferredColorScheme(.dark)   // permanent Dark Mode
         }

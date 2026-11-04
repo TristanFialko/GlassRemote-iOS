@@ -10,6 +10,11 @@ struct MediaState: Equatable {
     var speed: Double
     var sampledAt: Date
     var actions: Int64
+    /// Parsed from the same `description=` field as `title`. Android prints MediaDescription as
+    /// "title, subtitle, description"; both extras are empty when the app sets none. Unverified
+    /// against a live Stremio session: check on device.
+    var headline: String = ""
+    var subtitle: String = ""
 
     static let idle = MediaState(package: "", title: "", state: 0, positionMs: 0, speed: 1, sampledAt: .distantPast, actions: 0)
 
@@ -89,12 +94,29 @@ enum MediaParser {
                 if title == "null" { title = "" }
             }
 
-            let candidate = MediaState(package: package, title: title, state: state,
+            var candidate = MediaState(package: package, title: title, state: state,
                                        positionMs: position, speed: speed, sampledAt: now, actions: actions)
+            if let md = match(#"metadata: size=\d+, description=([^\n]*)"#, block)?[1] {
+                let parts = splitDescription(md)
+                candidate.headline = parts.headline
+                candidate.subtitle = parts.subtitle
+            }
             // Sessions are listed by priority; prefer the first, but a playing one beats a paused one.
             if best == nil || (!best!.isPlaying && candidate.isPlaying) { best = candidate }
         }
         return best
+    }
+
+    /// Splits "title, subtitle, description". Needs the three-part shape to treat anything as a
+    /// subtitle; otherwise the whole text is the headline. Titles containing ", " stay intact.
+    static func splitDescription(_ raw: String) -> (headline: String, subtitle: String) {
+        let text = raw.trimmingCharacters(in: .whitespaces)
+        let parts = text.components(separatedBy: ", ")
+        func clean(_ s: String) -> String { s == "null" ? "" : s.trimmingCharacters(in: .whitespaces) }
+        guard parts.count >= 3 else { return (clean(text), "") }
+        let subtitle = clean(parts[parts.count - 2])
+        let headline = clean(parts.dropLast(2).joined(separator: ", "))
+        return (headline, subtitle)
     }
 
     private static func match(_ pattern: String, _ text: String) -> [String]? {

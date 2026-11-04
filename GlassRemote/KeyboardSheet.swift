@@ -8,6 +8,8 @@ struct KeyboardSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var text = ""
+    @State private var lastSent = ""        // what live typing has already forwarded to the TV
+    @State private var liveDeliveryFailed = false   // virtual keyboard refused the last keystroke
     @State private var history: [String] = KeyboardSheet.loadHistory()
     @FocusState private var focused: Bool
 
@@ -18,13 +20,16 @@ struct KeyboardSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Type here, then Send", text: $text, axis: .vertical)
+                    Toggle("Live typing", isOn: $remote.liveTyping)
+                        .onChange(of: remote.liveTyping) { _ in lastSent = text }
+                    TextField(remote.liveTyping ? "Typing goes straight to the TV" : "Type here, then Send", text: $text, axis: .vertical)
                         .lineLimit(1...4)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .focused($focused)
-                        .submitLabel(.send)
+                        .submitLabel(remote.liveTyping ? .return : .send)
                         .onSubmit(send)
+                        .onChange(of: text) { newValue in syncLive(newValue) }
 
                     HStack(spacing: 10) {
                         PasteButton(payloadType: String.self) { strings in
@@ -34,7 +39,10 @@ struct KeyboardSheet: View {
 
                         Spacer()
 
-                        Button { remote.androidKey(67) } label: {
+                        Button {
+                            // Live: editing the field sends the backspace. Otherwise delete on the TV directly.
+                            if remote.liveTyping, !text.isEmpty { text.removeLast() } else { remote.androidKey(67) }
+                        } label: {
                             Image(systemName: "delete.left")
                         }
                         .buttonStyle(.bordered)
@@ -50,10 +58,17 @@ struct KeyboardSheet: View {
                             Label("Send", systemImage: "arrow.up.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(text.isEmpty)
+                        .disabled(text.isEmpty && !remote.liveTyping)
                     }
                 } footer: {
-                    Text("Android can only type plain ASCII characters over ADB.")
+                    if remote.liveTyping && liveDeliveryFailed {
+                        Text("Live typing is on, but the TV keyboard isn't ready (\(remote.connected ? "helper not running" : "not connected")). Typed text is held and will be sent once it's ready.")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text(remote.liveTyping
+                             ? "Each key is sent as you type, through the virtual keyboard. Return presses Enter on the TV. Plain ASCII only."
+                             : "Android can only type plain ASCII characters over ADB.")
+                    }
                 }
 
                 if !history.isEmpty {
@@ -87,7 +102,28 @@ struct KeyboardSheet: View {
         .preferredColorScheme(.dark)
     }
 
+    /// Forwards the difference between what the TV has received and the field's new contents.
+    /// Delivery failure never touches the Live typing toggle (that is the user's choice). On failure
+    /// `lastSent` stays put, so the next edit retries the whole undelivered difference.
+    private func syncLive(_ newValue: String) {
+        guard remote.liveTyping else { lastSent = newValue; liveDeliveryFailed = false; return }
+        guard newValue != lastSent else { return }
+        let plan = LiveTypingDiff.plan(from: lastSent, to: newValue)
+        if remote.typeLive(plan.added, backspaces: plan.backspaces) {
+            lastSent = newValue
+            liveDeliveryFailed = false
+        } else {
+            liveDeliveryFailed = true
+        }
+    }
+
     private func send() {
+        if remote.liveTyping {
+            remote.key("OK")        // Enter
+            lastSent = ""
+            text = ""
+            return
+        }
         guard !text.isEmpty else { return }
         remote.sendText(text)
         history.removeAll { $0 == text }
@@ -103,5 +139,15 @@ struct KeyboardSheet: View {
 
     private static func saveHistory(_ items: [String]) {
         UserDefaults.standard.set(items, forKey: historyKey)
+    }
+}
+
+/// Pure difference between what the TV already has and the field's new contents.
+enum LiveTypingDiff {
+    static func plan(from lastSent: String, to newValue: String) -> (backspaces: Int, added: String) {
+        let common = newValue.commonPrefix(with: lastSent)
+        let removed = lastSent.dropFirst(common.count)
+        let backspaces = removed.filter { VirtualKeyboard.hid(for: $0) != nil }.count
+        return (backspaces, String(newValue.dropFirst(common.count)))
     }
 }

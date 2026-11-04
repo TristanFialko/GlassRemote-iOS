@@ -26,9 +26,13 @@ final class TwoFingerScrollState {
 struct TwoFingerScroll: UIViewRepresentable {
     let state: TwoFingerScrollState
     let onScroll: @MainActor (_ wheel: Int, _ hscroll: Int) -> Void
+    /// A quick, still two-finger tap (used as Back).
+    var onTwoFingerTap: (@MainActor () -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(state: state, onScroll: onScroll)
+        let coordinator = Coordinator(state: state, onScroll: onScroll)
+        coordinator.onTap = onTwoFingerTap
+        return coordinator
     }
 
     func makeUIView(context: Context) -> AnchorView {
@@ -47,6 +51,9 @@ struct TwoFingerScroll: UIViewRepresentable {
         recognizer.onEngagedChanged = { [weak coordinator] engaged in
             coordinator?.engagedChanged(engaged)
         }
+        recognizer.onTap = { [weak coordinator] in
+            coordinator?.onTap?()
+        }
 
         coordinator.trackView = view
         view.recognizer = recognizer
@@ -55,6 +62,7 @@ struct TwoFingerScroll: UIViewRepresentable {
 
     func updateUIView(_ uiView: AnchorView, context: Context) {
         context.coordinator.onScroll = onScroll
+        context.coordinator.onTap = onTwoFingerTap
     }
 
     static func dismantleUIView(_ uiView: AnchorView, coordinator: Coordinator) {
@@ -77,6 +85,7 @@ struct TwoFingerScroll: UIViewRepresentable {
 
         let state: TwoFingerScrollState
         var onScroll: @MainActor (Int, Int) -> Void
+        var onTap: (@MainActor () -> Void)?
         weak var trackView: UIView?
 
         private var lock: Axis?
@@ -187,7 +196,10 @@ final class AnchorView: UIView {
 final class TwoFingerScrollRecognizer: UIGestureRecognizer {
     var onMove: ((CGFloat, CGFloat) -> Void)?
     var onEngagedChanged: ((Bool) -> Void)?
+    var onTap: (() -> Void)?
 
+    private var engagedAt = Date.distantPast
+    private var travel: CGFloat = 0
     private var tracked: [UITouch] = []
     private var lastCentroid: CGPoint?
     private var engaged = false
@@ -200,6 +212,8 @@ final class TwoFingerScrollRecognizer: UIGestureRecognizer {
         if tracked.count >= 2 {
             if !engaged {
                 engaged = true
+                engagedAt = Date()
+                travel = 0
                 onEngagedChanged?(true)
             }
             lastCentroid = centroid()
@@ -211,6 +225,7 @@ final class TwoFingerScrollRecognizer: UIGestureRecognizer {
         guard engaged, tracked.count >= 2, let previous = lastCentroid else { return }
         let current = centroid()
         lastCentroid = current
+        travel += abs(current.x - previous.x) + abs(current.y - previous.y)
         onMove?(current.x - previous.x, current.y - previous.y)
         state = .changed
     }
@@ -238,6 +253,7 @@ final class TwoFingerScrollRecognizer: UIGestureRecognizer {
 
         if tracked.isEmpty {
             if engaged {
+                if !cancelled, travel < 14, Date().timeIntervalSince(engagedAt) < 0.30 { onTap?() }
                 state = cancelled ? .cancelled : .ended
             } else {
                 state = .failed
