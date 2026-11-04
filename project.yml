@@ -26,6 +26,8 @@ targets:
           - "glass_uhid_bridge"
           - "glass_uhid_keyboard"
           - "glass_tcp_input_server"
+          - "glass_uhid_keyboard_arm64"
+          - "glass_tcp_input_server_arm64"
           - "glass_uhid_keyboard.c"
           - "glass_tcp_input_server.c"
           - "glass_cursor_setter.jar"
@@ -39,8 +41,25 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.glassremote.ios
+    scheme:
+      testTargets:
+        - GlassRemoteTests
+
+  GlassRemoteTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/GlassRemoteTests
+    dependencies:
+      - target: GlassRemote
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.glassremote.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
 
 packages:
   SwiftADB:
     url: https://github.com/akshaynexus/SwiftADB.git
+    # TODO: pin to a commit. The CI run prints the resolved commit in its summary;
+    # replace the next line with `revision: <that SHA>` so upstream changes can't break the build.
     branch: main
