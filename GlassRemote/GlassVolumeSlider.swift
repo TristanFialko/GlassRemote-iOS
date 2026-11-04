@@ -89,7 +89,7 @@ struct GlassVolumeSlider: View {
 
     private func glyph(_ color: Color) -> some View {
         Image(systemName: symbolName)
-            .font(.system(size: 20, weight: .medium))
+            .scaledFont(20, .medium)
             .foregroundStyle(color)
             .modifier(SymbolSwap())
             .frame(width: 30, alignment: .leading)

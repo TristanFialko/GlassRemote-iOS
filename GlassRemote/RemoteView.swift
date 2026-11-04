@@ -8,6 +8,8 @@ final class PointerBox {
     var residual = CGPoint.zero   // sub-point remainder so slow movement is not truncated away
     var moving = false            // travel passed the dead zone
     var cancelled = false         // two-finger scroll took over this touch
+    var dragging = false          // touch-and-hold engaged: the left button is held down
+    var token = 0                 // invalidates a pending touch-and-hold when the touch changes
 }
 
 struct RemoteView: View {
@@ -28,6 +30,7 @@ struct RemoteView: View {
     @State private var showQuickEditor = false
     @State private var pendingPower: PowerAction?
     @State private var didAutoConnect = false
+    @State private var screenshotItem: ScreenshotItem?
     @State private var showPlayer = false
     @State private var volumeSliderValue: Double = 0.5
     @State private var externalVolumeEcho: Double?
@@ -58,8 +61,11 @@ struct RemoteView: View {
         }
         .background { backdrop }
         .preferredColorScheme(.dark)
+        // Text follows Dynamic Type, capped so the fixed remote layout keeps fitting.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .sheet(isPresented: $remote.showConnection) { ConnectionSheet().environmentObject(remote) }
         .sheet(isPresented: $showKeyboard) { KeyboardSheet().environmentObject(remote) }
+        .sheet(item: $screenshotItem) { item in ScreenshotSheet(item: item) }
         .sheet(isPresented: $showQuickEditor) { QuickActionEditor(store: quick) }
         .sheet(isPresented: $showPlayer) {
             NowPlayingSheet().environmentObject(remote)
@@ -79,7 +85,13 @@ struct RemoteView: View {
         .task {
             guard !didAutoConnect else { return }
             didAutoConnect = true
-            if !remote.connected && !remote.requiresUserReconnect { remote.connect() }
+            Haptics.prepare()
+            if remote.isFirstRun {
+                // Nothing saved yet: open the connection sheet, which scans for devices.
+                remote.showConnection = true
+            } else if !remote.connected && !remote.requiresUserReconnect {
+                remote.connect()
+            }
         }
     }
 
@@ -90,17 +102,19 @@ struct RemoteView: View {
     // MARK: - Header
 
     private var statusLabel: String {
-        if remote.requiresUserReconnect { return "Reconnect needed" }
-        if remote.connected { return "Connected" }
-        if remote.status.hasPrefix("Connecting") || remote.status.contains("reconnect") { return "Connecting…" }
-        return "Offline"
+        switch remote.linkState {
+        case .reconnectNeeded: return "Reconnect needed"
+        case .connected: return "Connected"
+        case .connecting: return "Connecting…"
+        case .offline: return "Offline"
+        }
     }
 
     private var header: some View {
         HStack(spacing: 10) {
             Button { remote.showConnection = true } label: {
                 Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 17, weight: .medium))
+                    .scaledFont(17, .medium)
                     .frame(width: 44, height: 44)
                     .glassSurface(Circle(), interactive: true)
             }
@@ -115,7 +129,7 @@ struct RemoteView: View {
                         .fill(remote.connected && !remote.requiresUserReconnect ? Color.green : Color.orange)
                         .frame(width: 8, height: 8)
                         .shadow(color: (remote.connected && !remote.requiresUserReconnect ? Color.green : Color.orange).opacity(0.35), radius: 2)
-                    Text(statusLabel).font(.system(size: 13, weight: .semibold))
+                    Text(statusLabel).scaledFont(13, .semibold)
                 }
                 .foregroundStyle(Color.white.opacity(0.85))
                 .padding(.horizontal, 16)
@@ -131,10 +145,22 @@ struct RemoteView: View {
                 Button { pendingPower = .standby } label: { Label("Standby", systemImage: "moon.zzz") }
                 Button { remote.wake() } label: { Label("Wake", systemImage: "sun.max") }
                 Button { pendingPower = .restartLauncher } label: { Label("Restart launcher", systemImage: "arrow.clockwise") }
+                Button {
+                    Task {
+                        if let image = await remote.captureScreenshot() { screenshotItem = ScreenshotItem(image: image) }
+                    }
+                } label: { Label("TV screenshot", systemImage: "camera.viewfinder") }
+                if remote.tvVolumeEnabled {
+                    Divider()
+                    Button { remote.tvKey("TV_POWER") } label: { Label("TV power", systemImage: "tv") }
+                    Button { remote.tvKey("TV_SOURCE") } label: { Label("TV input menu", systemImage: "rectangle.on.rectangle") }
+                    Button { pendingPower = .everythingOff } label: { Label("Turn off box and TV", systemImage: "power.circle") }
+                    Divider()
+                }
                 Button(role: .destructive) { pendingPower = .restartBox } label: { Label("Restart TV box", systemImage: "power") }
             } label: {
                 Image(systemName: "power")
-                    .font(.system(size: 17, weight: .medium))
+                    .scaledFont(17, .medium)
                     .frame(width: 44, height: 44)
                     .glassSurface(Circle(), interactive: true)
             }
@@ -148,6 +174,7 @@ struct RemoteView: View {
         case .standby: remote.standby()
         case .restartLauncher: remote.restartLauncher()
         case .restartBox: remote.restartBox()
+        case .everythingOff: remote.turnEverythingOff()
         }
     }
 
@@ -156,18 +183,18 @@ struct RemoteView: View {
     private var appsSection: some View {
         VStack(spacing: 10) {
             Button {
-                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                Haptics.soft()
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded.toggle() }
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: "square.grid.2x2").font(.system(size: 19, weight: .medium))
-                    Text("Apps").font(.system(size: 15, weight: .semibold))
+                    Image(systemName: "square.grid.2x2").scaledFont(19, .medium)
+                    Text("Apps").scaledFont(15, .semibold)
                     Spacer()
                     if !appsExpanded {
-                        Text("\(remote.apps.count)").font(.system(size: 13)).foregroundStyle(.white.opacity(0.65))
+                        Text("\(remote.apps.count)").scaledFont(13).foregroundStyle(.white.opacity(0.65))
                     }
                     Image(systemName: appsExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 14, weight: .semibold))
+                        .scaledFont(14, .semibold)
                 }
                 .foregroundStyle(.white)
                 .padding(.horizontal, 18)
@@ -206,7 +233,7 @@ struct RemoteView: View {
                         }
                         .background {
                             RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .fill(.ultraThinMaterial)
+                                .fill(Color.white.opacity(0.07))   // flat fill: no material on top of the glass panel
                         }
                         .shadow(color: .black.opacity(0.34), radius: 8, y: 4)
                         .frame(maxWidth: .infinity)
@@ -219,7 +246,7 @@ struct RemoteView: View {
                         remote.restartApp(app)
                         withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded = false }
                     } label: {
-                        Label("Restart \\(app.name)", systemImage: "arrow.clockwise")
+                        Label("Restart \(app.name)", systemImage: "arrow.clockwise")
                     }
                 }
             }
@@ -240,7 +267,7 @@ struct RemoteView: View {
                     Image(app.asset == "stremio" ? "stremio_nowplaying" : "\(app.asset)_dark").resizable().scaledToFit().padding(app.asset == "stremio" ? 9 : 3)
                 } else {
                     Image(systemName: media.isActive ? "play.rectangle" : "tv")
-                        .font(.system(size: 20)).foregroundStyle(.white.opacity(0.55))
+                        .scaledFont(20).foregroundStyle(.white.opacity(0.55))
                 }
             }
             .frame(width: 50, height: 50)
@@ -249,7 +276,7 @@ struct RemoteView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(media.isActive ? (media.title.isEmpty ? (app?.name ?? "Playing") : media.title) : "Nothing playing")
-                    .font(.system(size: 14, weight: .semibold))
+                    .scaledFont(14, .semibold)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 subtitle(media: media, app: app)
@@ -296,18 +323,18 @@ struct RemoteView: View {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let position = MediaState.format(media.position(at: context.date))
                 Text(media.positionMs > 0 || media.isPlaying ? "\(name) · \(position)" : name)
-                    .font(.system(size: 12)).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
+                    .scaledFont(12).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
             }
         } else {
             Text(remote.connected ? "Start something on the TV" : "Not connected")
-                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+                .scaledFont(12).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
         }
     }
 
     private func mediaButton(icon: String, label: String, enabled: Bool, prominent: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
+                .scaledFont(15, .semibold)
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
                 .glassSurface(Circle(), interactive: enabled, elevated: prominent)
@@ -327,7 +354,7 @@ struct RemoteView: View {
                     ForEach(quick.actions) { action in
                         Button { remote.runQuickAction(action) } label: {
                             Text(action.name)
-                                .font(.system(size: 14, weight: .semibold))
+                                .scaledFont(14, .semibold)
                                 .lineLimit(1)
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 16)
@@ -341,7 +368,7 @@ struct RemoteView: View {
             }
             Button { showQuickEditor = true } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 15, weight: .semibold))
+                    .scaledFont(15, .semibold)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
                     .frame(height: 36)
@@ -363,16 +390,44 @@ struct RemoteView: View {
     private static let tapMaxNanos: UInt64 = 450_000_000   // a touch held longer than this is not a tap
     private static let deadZone: CGFloat = 3                    // points before the cursor starts moving
 
+    private static let holdToDragNanos: UInt64 = 500_000_000  // touch and hold this long to start a drag
+
     private func resetPointer() {
         let box = pointerBox
+        box.token += 1                      // cancels a pending touch-and-hold
         box.last = nil; box.start = nil; box.moving = false
         box.cancelled = false; box.residual = .zero
+        box.dragging = false
+    }
+
+    /// Releases the button if a touch-and-hold drag is in progress.
+    private func releaseDragIfNeeded() {
+        let box = pointerBox
+        if box.dragging {
+            box.dragging = false
+            remote.mouseButton(0)
+        }
     }
 
     /// Drops the touch in progress if it is interrupted (view hidden, Apps grid opened, ...).
     private func cancelPointer() {
-        let box = pointerBox
+        releaseDragIfNeeded()
         resetPointer()
+    }
+
+    /// After half a second of holding still, press the left button so the next movement drags.
+    private func armHoldToDrag() {
+        let box = pointerBox
+        box.token += 1
+        let token = box.token
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.holdToDragNanos)
+            guard box.token == token, box.start != nil, !box.moving, !box.cancelled,
+                  !box.dragging, !scrollState.suppressesClicks else { return }
+            box.dragging = true
+            remote.mouseButton(1)
+            Haptics.medium()
+        }
     }
 
     private var mouseSurface: some View {
@@ -380,16 +435,21 @@ struct RemoteView: View {
         return Color.clear
             .glassSurface(shape, elevated: true)
             .overlay(alignment: .bottom) {
-                Text("Tap to click · two fingers to scroll")
-                    .font(.system(size: 12)).foregroundStyle(.white.opacity(0.7))
+                Text("Tap to click · hold to drag · two fingers to scroll or tap for Back")
+                    .scaledFont(12).foregroundStyle(.white.opacity(0.7))
                     .padding(.bottom, 16)
                     .allowsHitTesting(false)
             }
             .contentShape(shape)
             .background {
-                TwoFingerScroll(state: scrollState) { wheel, hscroll in
-                    remote.mouse(wheel: wheel, hscroll: hscroll)
-                }
+                TwoFingerScroll(
+                    state: scrollState,
+                    onScroll: { wheel, hscroll in remote.mouse(wheel: wheel, hscroll: hscroll) },
+                    onTwoFingerTap: {
+                        Haptics.light()
+                        remote.key("BACK")
+                    }
+                )
             }
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
                 .onChanged { value in
@@ -400,11 +460,14 @@ struct RemoteView: View {
                         box.residual = .zero
                         box.moving = false
                         box.cancelled = false
+                        box.dragging = false
                         box.last = value.location
+                        armHoldToDrag()
                     }
 
                     // Two fingers = scroll. Abandon this touch (and any held button) cleanly.
                     if scrollState.isActive {
+                        releaseDragIfNeeded()
                         box.cancelled = true
                         box.last = value.location
                         return
@@ -420,8 +483,17 @@ struct RemoteView: View {
                     }
 
                     if let previous = box.last {
-                        let fx = (value.location.x - previous.x) * 2 + box.residual.x
-                        let fy = (value.location.y - previous.y) * 2 + box.residual.y
+                        let deltaX = value.location.x - previous.x
+                        let deltaY = value.location.y - previous.y
+                        // Base gain from the sensitivity setting; fast swipes get up to 60 % extra
+                        // so a long reach is quick while slow movements stay precise.
+                        var gain = CGFloat(remote.mouseSensitivity)
+                        if remote.mouseAcceleration {
+                            let speed = hypot(deltaX, deltaY)
+                            gain *= 1 + 0.6 * min(1, max(0, (speed - 3) / 20))
+                        }
+                        let fx = deltaX * gain + box.residual.x
+                        let fy = deltaY * gain + box.residual.y
                         let dx = Int(fx.rounded(.towardZero))
                         let dy = Int(fy.rounded(.towardZero))
                         box.residual = CGPoint(x: fx - CGFloat(dx), y: fy - CGFloat(dy))
@@ -431,6 +503,13 @@ struct RemoteView: View {
                 }
                 .onEnded { value in
                     let box = pointerBox
+                    if box.dragging {
+                        // Touch-and-hold drag finished: let go of the button.
+                        releaseDragIfNeeded()
+                        Haptics.light()
+                        resetPointer()
+                        return
+                    }
                     let held = box.start.map { Date().timeIntervalSince($0) } ?? 0
                     let wasTap = !box.moving && !box.cancelled
                         && held < Double(Self.tapMaxNanos) / 1_000_000_000
@@ -438,7 +517,7 @@ struct RemoteView: View {
                         && !scrollState.suppressesClicks
                     if wasTap {
                         remote.mouseButton(1)
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Haptics.light()
                         Task { @MainActor in
                             try? await Task.sleep(nanoseconds: 45_000_000)
                             remote.mouseButton(0)
@@ -477,14 +556,25 @@ struct RemoteView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .glassSurface(shape)
+        // Swipe anywhere on the pad to send an arrow, like the Apple TV remote.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 28)
+                .onEnded { value in
+                    let w = value.translation.width, h = value.translation.height
+                    let name = abs(w) > abs(h) ? (w > 0 ? "RIGHT" : "LEFT") : (h > 0 ? "DOWN" : "UP")
+                    Haptics.soft()
+                    remote.key(name)
+                }
+        )
         .allowsHitTesting(!appsExpanded)
         .opacity(appsExpanded ? 0.6 : 1)
     }
 
     private func dpadKey(_ icon: String, _ key: String, _ label: String, ok: Bool = false) -> some View {
-        Button { remote.key(key) } label: {
+        // Tap = one press; hold = auto-repeat (arrows only, so OK never repeats into a double-select).
+        RepeatKey(onFire: { remote.key(key) }) {
             Image(systemName: icon)
-                .font(.system(size: ok ? 12 : 22, weight: .medium))
+                .scaledFont(ok ? 12 : 22, .medium)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background {
@@ -492,24 +582,27 @@ struct RemoteView: View {
                 }
                 .contentShape(Rectangle())
         }
-        .buttonStyle(PressStyle())
         .accessibilityLabel(label)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { remote.key(key) }
     }
 
     // MARK: - Navigation and volume
 
     private var navRow: some View {
-        HStack(spacing: 10) {
-            navButton("arrow.uturn.backward", "Back") { remote.key("BACK") }
-            navButton("Home", action: { remote.key("HOME") }) { HomeGlyph() }
-            navButton("line.3.horizontal", "Menu") { remote.key("MENU") }
-            navButton("keyboard", "Keyboard") { showKeyboard = true }
+        GlassGroup(spacing: 10) {
+            HStack(spacing: 10) {
+                navButton("arrow.uturn.backward", "Back") { remote.key("BACK") }
+                navButton("Home", action: { remote.key("HOME") }) { HomeGlyph() }
+                navButton("line.3.horizontal", "Menu") { remote.key("MENU") }
+                navButton("keyboard", "Keyboard") { showKeyboard = true }
+            }
         }
     }
 
     private func navButton(_ icon: String, _ label: String, action: @escaping () -> Void) -> some View {
         navButton(label, action: action) {
-            Image(systemName: icon).font(.system(size: 19, weight: .medium))
+            Image(systemName: icon).scaledFont(19, .medium)
         }
     }
 

@@ -6,7 +6,7 @@ import UIKit
 // Nothing here changes the UHID protocol, the ADB identity or any Android package state.
 
 enum PowerAction: Identifiable {
-    case standby, restartLauncher, restartBox
+    case standby, restartLauncher, restartBox, everythingOff
     var id: Self { self }
 
     var title: String {
@@ -14,6 +14,7 @@ enum PowerAction: Identifiable {
         case .standby: return "Put TV box in standby?"
         case .restartLauncher: return "Restart Glass Launcher?"
         case .restartBox: return "Restart TV box?"
+        case .everythingOff: return "Turn off box and TV?"
         }
     }
 
@@ -22,6 +23,7 @@ enum PowerAction: Identifiable {
         case .standby: return "The box goes to sleep. Glass Remote may lose its connection until the box is awake again."
         case .restartLauncher: return "Only the launcher restarts. Glass Utility Hub is not touched."
         case .restartBox: return "Glass Remote will disconnect and reconnect automatically. This can take about a minute."
+        case .everythingOff: return "The Android box goes to standby, then the Samsung TV is switched off. Turning the TV back on needs its own remote."
         }
     }
 
@@ -30,6 +32,7 @@ enum PowerAction: Identifiable {
         case .standby: return "Standby"
         case .restartLauncher: return "Restart Launcher"
         case .restartBox: return "Restart"
+        case .everythingOff: return "Turn Off Both"
         }
     }
 
@@ -44,9 +47,11 @@ extension RemoteModel {
         mediaTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollMedia()
-                // `dumpsys media_session` is relatively expensive on this small TV box.
-                // Five-second refresh keeps Now Playing useful without hammering playback.
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                // `dumpsys media_session` is relatively expensive on this small TV box. The elapsed
+                // time is extrapolated between polls, so a playing app needs only a slow refresh and
+                // an idle box an even slower one; a button press triggers its own quick re-poll.
+                let playing = self?.media.isPlaying ?? false
+                try? await Task.sleep(nanoseconds: (playing ? 8 : 10) * 1_000_000_000)
             }
         }
     }
@@ -81,8 +86,7 @@ extension RemoteModel {
     func androidKey(_ code: Int) {
         GRLog.note("media", "user-initiated keyevent \(code)")
         guard connected else { status = "Button failed · not connected"; return }
-        sendPersistentCommand("input keyevent \(code)")
-        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        sendPersistentCommand("input keyevent \(code)")   // the pressed button already gave haptic feedback
     }
 
     // MARK: - Volume routing
@@ -91,10 +95,11 @@ extension RemoteModel {
     /// through the existing ADB path.
     func volume(_ name: String, haptic: Bool = true) {
         if tvVolumeEnabled, tv.send(name) {
-            if haptic { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
+            if haptic { Haptics.soft() }
             scheduleVolumeReadback()
             return
         }
+        if haptic { Haptics.soft() }
         key(name)
     }
 
@@ -329,7 +334,7 @@ extension RemoteModel {
         guard connected else { status = "Quick Action failed · not connected"; return }
         quickActionTask?.cancel()
         runningQuickActionID = action.id
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        Haptics.medium()
 
         quickActionTask = Task { [weak self] in
             guard let self else { return }
@@ -375,5 +380,58 @@ extension RemoteModel {
 
     func appName(forPackage package: String) -> String {
         apps.first(where: { $0.package == package })?.name ?? package
+    }
+}
+
+// MARK: - Samsung TV keys, combined power, screenshot, live typing, discovery
+
+extension RemoteModel {
+    /// Sends one Samsung-only key (power, source). Needs the Samsung link to be connected.
+    func tvKey(_ name: String) {
+        key(name)
+    }
+
+    /// Box to standby, then the TV off. (A Samsung TV can't be switched ON by this app: that needs Wake-on-LAN.)
+    func turnEverythingOff() {
+        standby()
+        Task {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            if !tv.send("TV_POWER") {
+                status = "Box in standby · TV power needs the Samsung link"
+            }
+        }
+    }
+
+    /// Full-resolution PNG of what the box is showing (protected video comes back black).
+    func captureScreenshot() async -> UIImage? {
+        guard let connection = adb, connected else {
+            status = "Screenshot failed · not connected"
+            return nil
+        }
+        status = "Taking screenshot…"
+        // `exec:` keeps the PNG byte-exact; `shell:` could rewrite line endings and corrupt it.
+        let data = await withDeadline(25) { () async -> Data? in
+            try? await TVShell.runData(connection, destination: "exec:screencap -p")
+        } ?? nil
+        guard let data, !data.isEmpty, let image = UIImage(data: data) else {
+            status = "Screenshot failed · the box returned no image"
+            return nil
+        }
+        status = "Screenshot captured"
+        return image
+    }
+
+    /// Live typing: forwards a text change to the TV through the virtual keyboard.
+    /// Returns false when the virtual keyboard isn't ready.
+    func typeLive(_ text: String, backspaces: Int = 0) -> Bool {
+        guard connected else { return false }
+        return keyboard.type(text, backspaces: backspaces)
+    }
+
+    var liveTypingAvailable: Bool { connected && keyboard.isReady }
+
+    /// Candidate hosts for the Android box (ADB on 5555) or Samsung TV (8002) on this Wi-Fi network.
+    func discover(port: UInt16) async -> [String] {
+        await NetworkScanner.scan(port: port)
     }
 }

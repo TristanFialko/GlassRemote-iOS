@@ -3,9 +3,63 @@ import SwiftUI
 struct ConnectionSheet: View {
     @EnvironmentObject private var remote: RemoteModel
 
+    @State private var scanning = false
+    @State private var scanned = false
+    @State private var androidHits: [String] = []
+    @State private var samsungHits: [String] = []
+
+    private func scan() {
+        guard !scanning else { return }
+        scanning = true
+        Task {
+            async let android = remote.discover(port: 5555)
+            async let samsung = remote.discover(port: 8002)
+            let results = await (android, samsung)
+            androidHits = results.0
+            samsungHits = results.1
+            scanning = false
+            scanned = true
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
+                if remote.isFirstRun && !remote.connected {
+                    Section {
+                        Text("Welcome. Turn on network debugging (ADB) on your Android TV box, keep it and this iPhone on the same Wi-Fi, then pick it below.")
+                            .font(.footnote)
+                    }
+                }
+
+                Section("Find devices") {
+                    Button {
+                        scan()
+                    } label: {
+                        HStack {
+                            Text(scanning ? "Scanning your Wi-Fi…" : "Scan Wi-Fi for devices")
+                            if scanning { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(scanning)
+                    ForEach(androidHits, id: \.self) { ip in
+                        Button("Use \(ip) as Android TV box") {
+                            remote.host = ip
+                            remote.port = "5555"
+                        }
+                    }
+                    ForEach(samsungHits, id: \.self) { ip in
+                        Button("Use \(ip) as Samsung TV") {
+                            remote.samsungHost = ip
+                            remote.tvVolumeEnabled = true
+                        }
+                    }
+                    if scanned && androidHits.isEmpty && samsungHits.isEmpty {
+                        Text("Nothing answered. Check that ADB network debugging is on and both devices share this Wi-Fi, or enter the address by hand.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Android TV") {
                     TextField("IP address", text: $remote.host)
                         .keyboardType(.numbersAndPunctuation)
@@ -35,6 +89,16 @@ struct ConnectionSheet: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
+                Section("Pointer") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Sensitivity: \(String(format: "%.1f", remote.mouseSensitivity))×")
+                        Slider(value: $remote.mouseSensitivity, in: 0.5...4.0, step: 0.1)
+                    }
+                    Toggle("Faster swipes move further", isOn: $remote.mouseAcceleration)
+                    Text("Touch and hold for half a second, then move, to drag. Tap with two fingers for Back.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+
                 Section("Status") {
                     Text(remote.status).font(.footnote).textSelection(.enabled)
                     Text(remote.keyboardStatus).font(.footnote).textSelection(.enabled)
@@ -61,6 +125,9 @@ struct ConnectionSheet: View {
             }
             .scrollContentBackground(.hidden)
             .background { AmbientBackdrop() }
+            .task {
+                if remote.isFirstRun && !scanned { scan() }
+            }
             .navigationTitle("Connection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

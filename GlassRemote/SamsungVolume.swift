@@ -61,14 +61,19 @@ final class SamsungVolumeLink {
     func setVolume(_ value: Int) {
         guard isAvailable else { return }
         pendingTarget = min(max(value, 0), 100)
+        fastPollUntil = Date().addingTimeInterval(8)
         resumeWake()
     }
 
     /// Ask for an immediate re-read (e.g. after a key press or when the app becomes active).
     func refresh() {
         readbackDue = true
+        fastPollUntil = Date().addingTimeInterval(8)
         resumeWake()
     }
+
+    /// Poll every second for a few seconds after any interaction, then relax to 3 s.
+    private var fastPollUntil = Date.distantPast
 
     // MARK: Loop
 
@@ -112,7 +117,7 @@ final class SamsungVolumeLink {
 
             readbackDue = false
             // 1 s while reachable (cheap local request); back off when the TV is off/unreachable.
-            let delay: Double = consecutiveFailures == 0 ? 1.0 : min(2.0 * Double(consecutiveFailures), 15)
+            let delay: Double = consecutiveFailures == 0 ? (Date() < fastPollUntil ? 1.0 : 3.0) : min(2.0 * Double(consecutiveFailures), 15)
             await sleepOrWake(seconds: delay)
         }
     }
@@ -197,9 +202,9 @@ final class SamsungVolumeLink {
             }
             func receive() {
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { data, _, isComplete, error in
-                    if let data, !data.isEmpty { box.buffer.append(data) }
-                    if let error { finish(box.buffer.isEmpty ? .failure(error) : .success(box.buffer)); return }
-                    if isComplete { finish(.success(box.buffer)); return }
+                    if let data, !data.isEmpty { box.append(data) }
+                    if let error { finish(box.isEmpty ? .failure(error) : .success(box.snapshot)); return }
+                    if isComplete { finish(.success(box.snapshot)); return }
                     receive()
                 }
             }
@@ -216,7 +221,7 @@ final class SamsungVolumeLink {
             }
             connection.start(queue: .global(qos: .userInitiated))
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                finish(box.buffer.isEmpty ? .failure(LinkError.timeout) : .success(box.buffer))
+                finish(box.isEmpty ? .failure(LinkError.timeout) : .success(box.snapshot))
             }
         }
     }
@@ -232,7 +237,12 @@ final class SamsungVolumeLink {
 private final class ExchangeBox: @unchecked Sendable {
     private let lock = NSLock()
     private var done = false
-    var buffer = Data()
+    private var buffer = Data()
+
+    // The receive callback and the timeout timer run on different queues, so the buffer is locked too.
+    func append(_ data: Data) { lock.lock(); buffer.append(data); lock.unlock() }
+    var isEmpty: Bool { lock.lock(); defer { lock.unlock() }; return buffer.isEmpty }
+    var snapshot: Data { lock.lock(); defer { lock.unlock() }; return buffer }
     func finish() -> Bool {
         lock.lock(); defer { lock.unlock() }
         if done { return false }

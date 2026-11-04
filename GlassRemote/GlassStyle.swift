@@ -85,15 +85,16 @@ struct GlassGroup<Content: View>: View {
 }
 
 struct PressStyle: ButtonStyle {
+    /// The one place a button press gives haptic feedback; actions themselves stay silent.
+    var haptic = true
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .opacity(configuration.isPressed ? 0.88 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
             .onChange(of: configuration.isPressed) { pressed in
-                if pressed {
-                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-                }
+                if pressed && haptic { Haptics.soft() }
             }
     }
 }
@@ -108,7 +109,7 @@ struct ModeSelector: View {
             HStack(spacing: 0) {
                 segment("Mouse", selected: isMouse, action: { isMouse = true }) { MouseGlyph(color: isMouse ? .white : Color.white.opacity(0.72)) }
                 segment("D-pad", selected: !isMouse, action: { isMouse = false }) {
-                    Image(systemName: "circle.grid.cross").font(.system(size: 15, weight: .semibold))
+                    Image(systemName: "circle.grid.cross").scaledFont(15, .semibold)
                 }
             }
             .padding(4)
@@ -120,12 +121,12 @@ struct ModeSelector: View {
 
     private func segment<Icon: View>(_ title: String, selected: Bool, action: @escaping () -> Void, @ViewBuilder icon: () -> Icon) -> some View {
         Button {
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+            Haptics.soft()
             action()
         } label: {
             HStack(spacing: 7) {
                 icon()
-                Text(title).font(.system(size: 14, weight: .semibold))
+                Text(title).scaledFont(14, .semibold)
             }
             .foregroundStyle(selected ? Color.white : Color.white.opacity(0.72))
             .frame(maxWidth: .infinity)

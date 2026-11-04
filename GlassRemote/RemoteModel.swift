@@ -26,6 +26,35 @@ final class RemoteModel: ObservableObject {
     @Published var showConnection = false
     @Published var isTrackpad = true
 
+    /// True until the first successful connect has saved an address: shows the welcome / scan flow.
+    let isFirstRun = UserDefaults.standard.object(forKey: "tvHost") == nil
+
+    // Pointer feel. Sensitivity is the base gain (the previous fixed value was 2.0); acceleration
+    // adds extra gain on fast swipes while slow movements stay precise.
+    @Published var mouseSensitivity: Double = {
+        let saved = UserDefaults.standard.double(forKey: "glassRemote.mouseSensitivity")
+        return saved == 0 ? 2.0 : min(4.0, max(0.5, saved))
+    }() {
+        didSet { UserDefaults.standard.set(mouseSensitivity, forKey: "glassRemote.mouseSensitivity") }
+    }
+    @Published var mouseAcceleration: Bool = (UserDefaults.standard.object(forKey: "glassRemote.mouseAcceleration") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(mouseAcceleration, forKey: "glassRemote.mouseAcceleration") }
+    }
+    /// Keyboard sheet: forward each keystroke to the TV as it is typed.
+    @Published var liveTyping: Bool = UserDefaults.standard.bool(forKey: "glassRemote.liveTyping") {
+        didSet { UserDefaults.standard.set(liveTyping, forKey: "glassRemote.liveTyping") }
+    }
+
+    enum LinkState { case connected, connecting, reconnectNeeded, offline }
+
+    /// Connection state for the header, derived from real flags instead of parsing `status` text.
+    var linkState: LinkState {
+        if requiresUserReconnect { return .reconnectNeeded }
+        if connected { return .connected }
+        if isBusyConnecting { return .connecting }
+        return .offline
+    }
+
     // Media, quick actions, volume routing (see RemoteModel+Features.swift)
     @Published var media = MediaState.idle
     @Published var runningQuickActionID: UUID?
@@ -95,33 +124,31 @@ final class RemoteModel: ObservableObject {
     var adb: AdbConnection?
     private var commandStream: AdbStream?
     private var commandReaderTask: Task<Void, Never>?
-    private var mouseStream: AdbStream?
-    private var mouseReady = false
+    var mouseStream: AdbStream?
+    var mouseReady = false
 
     // Custom white pointer on the TV (glass_cursor_setter.jar + glass_cursor_white.png).
     // Independent of the mouse: its failure never affects mouse or keyboard startup.
-    private var cursorStream: AdbStream?
-    private var cursorReaderTask: Task<Void, Never>?
     /// TCP client attached to the persistent cursor helper; writes "R" to reapply the icon.
-    private var cursorInput: AdbStream?
-    private var cursorQueue = TaskQueue()
-    private var lastCursorNudge = Date.distantPast
-    private var cursorTrailTask: Task<Void, Never>?
+    var cursorInput: AdbStream?
+    var cursorQueue = TaskQueue()
+    var lastCursorNudge = Date.distantPast
+    var cursorTrailTask: Task<Void, Never>?
     @Published var cursorStatus = "Cursor: not started"
     @Published var playbackDiagnostics = "No diagnostics captured yet. Reproduce the playback interruption, then capture diagnostics before reconnecting if possible."
     private var commandQueue = TaskQueue()
-    private var reportQueue = TaskQueue()
+    var reportQueue = TaskQueue()
 
     // Pointer motion is coalesced: touch moves only add to these counters, and one queued drain
     // writes whatever has accumulated. The ADB write queue can therefore never build a backlog
     // of stale single-pixel reports (the cause of lag, rubber-banding and late jumps).
-    private var pendingMoveDX = 0
-    private var pendingMoveDY = 0
-    private var moveDrainQueued = false
-    private var mouseButtonsHeld = 0
+    var pendingMoveDX = 0
+    var pendingMoveDY = 0
+    var moveDrainQueued = false
+    var mouseButtonsHeld = 0
 
     // Virtual HID keyboard: fully independent subsystem (see VirtualKeyboard.swift).
-    private let keyboard = VirtualKeyboard()
+    let keyboard = VirtualKeyboard()
     @Published var keyboardStatus = "Virtual keyboard: not started"
 
     // Connection lifecycle. `sessionID` changes on every connect/disconnect so a slow or
@@ -137,7 +164,7 @@ final class RemoteModel: ObservableObject {
     let tv = SamsungTV()
     private var lastKeyboardRestart = Date.distantPast
     /// Recovery requests raised while iOS is inactive are held until foreground.
-    private var recoveryPending = false
+    var recoveryPending = false
     /// Set after an automatic recovery cannot validate the transport; only an explicit
     /// user reconnect may then close/recreate the UHID streams.
     private(set) var requiresUserReconnect = false
@@ -414,10 +441,8 @@ final class RemoteModel: ObservableObject {
     }
 
     func launch(_ app: TVApp) {
-        Task {
-            await launchApp(app)
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        }
+        // The tile's PressStyle already gave haptic feedback.
+        Task { await launchApp(app) }
     }
 
     /// Force-stops and relaunches one selected app without rebooting the TV box.
@@ -440,7 +465,7 @@ final class RemoteModel: ObservableObject {
             } catch {
                 status = "Restart failed · \(app.name): \(error.localizedDescription)"
             }
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            Haptics.medium()
         }
     }
 
@@ -515,6 +540,11 @@ final class RemoteModel: ObservableObject {
     }
 
     func key(_ key: String) {
+        // Samsung-only keys (power, source) go to the TV, not the Android box.
+        if SamsungTV.tvOnlyKeys.contains(key) {
+            if !tv.send(key) { status = "TV key needs the Samsung link · enable it in Settings" }
+            return
+        }
         let adbCodes: [String: String] = [
             "UP": "19", "DOWN": "20", "LEFT": "21", "RIGHT": "22",
             "OK": "23", "BACK": "4", "HOME": "3", "MENU": "82",
@@ -528,10 +558,8 @@ final class RemoteModel: ObservableObject {
 
         // Keep frequent navigation on persistent virtual HID. Only use ADB for
         // controls that are not currently routed through the verified HID path.
-        if keyboard.send(key) {
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-            return
-        }
+        // Buttons give their own haptic on press (PressStyle); keys sent from Quick Actions stay silent.
+        if keyboard.send(key) { return }
 
         guard let code = adbCodes[key] else {
             status = "Unknown button: \(key)"
@@ -550,7 +578,6 @@ final class RemoteModel: ObservableObject {
         }
 
         sendPersistentCommand("input keyevent \(code)")
-        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
     }
 
     /// Types text on the TV. Handles spaces, newlines, quotes, URLs and a literal "%s"
@@ -561,28 +588,23 @@ final class RemoteModel: ObservableObject {
         let lines = text.components(separatedBy: .newlines)
         let hasNonASCII = !text.allSatisfy { $0.isASCII }
 
-        Task {
-            guard let adb else {
-                status = "Text entry failed · not connected"
-                return
-            }
+        guard connected, commandStream != nil else {
+            status = "Text entry failed · not connected"
+            return
+        }
 
-            do {
-                for (index, line) in lines.enumerated() {
-                    for chunk in Self.textChunks(line, maxLength: 160) {
-                        _ = try await runShell(adb, ["input", "text", Self.escapeInputText(chunk)])
-                    }
-                    if index < lines.count - 1 {
-                        _ = try await runShell(adb, ["input", "keyevent", "66"])
-                    }
-                }
-                status = hasNonASCII
-                    ? "Text sent · characters outside ASCII can't be typed over ADB"
-                    : "Text sent"
-            } catch {
-                status = "Text entry failed: \(error.localizedDescription)"
+        // One already-open shell runs every chunk in order (no new ADB stream per chunk).
+        for (index, line) in lines.enumerated() {
+            for chunk in Self.textChunks(line, maxLength: 160) {
+                sendPersistentCommand("input text \(TVShell.quote(Self.escapeInputText(chunk)))")
+            }
+            if index < lines.count - 1 {
+                sendPersistentCommand("input keyevent 66")
             }
         }
+        status = hasNonASCII
+            ? "Text sent · characters outside ASCII can't be typed over ADB"
+            : "Text sent"
     }
 
     /// `input text` turns "%s" into a space; spaces must therefore be written as "%s".
@@ -605,479 +627,15 @@ final class RemoteModel: ObservableObject {
         return chunks
     }
 
-    // SwiftADB's LocalServices.shell concatenates its argument array without
-    // spaces. Build the shell destination directly and quote each argument.
+    /// Runs a command on the TV box and returns its output (see `TVShell`).
     func runShell(_ connection: AdbConnection, _ args: [String]) async throws -> String {
-        func shellQuote(_ value: String) -> String {
-            "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        }
-
-        let command = args.map(shellQuote).joined(separator: " ")
-        let stream = try await connection.open(destination: "shell:\(command)")
-        var result = Data()
-
-        while !(await stream.getIsClosed()) {
-            do {
-                let chunk = try await stream.read()
-                if chunk.isEmpty { break }
-                result.append(chunk)
-            } catch {
-                if await stream.getIsClosed() { break }
-                throw error
-            }
-        }
-
-        return String(data: result, encoding: .utf8) ?? ""
-    }
-
-    private func findMouseHelper() -> URL? {
-        let bundle = Bundle.main
-        let roots = [bundle.resourceURL, bundle.bundleURL].compactMap { $0 }
-
-        if let direct = bundle.url(forResource: "glass_uhid_bridge", withExtension: nil),
-            FileManager.default.fileExists(atPath: direct.path) {
-            return direct
-        }
-
-        for root in roots {
-            guard let enumerator = FileManager.default.enumerator(
-                at: root,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            ) else { continue }
-
-            for case let url as URL in enumerator {
-                if url.lastPathComponent == "glass_uhid_bridge",
-                    FileManager.default.fileExists(atPath: url.path) {
-                    return url
-                }
-            }
-        }
-
-        return nil
-    }
-
-    private func startMouse() async {
-        guard let adb else { return }
-        // The helper (and its UHID device) outlives the phone connection: reuse it when present.
-        if let input = await PersistentHelper.attach(adb: adb, name: "glass_uhid_bridge", match: "glass_uhid_bridge") {
-            mouseStream = input
-            pendingMoveDX = 0; pendingMoveDY = 0; mouseButtonsHeld = 0
-            mouseReady = true
-            status = "Mouse ready · TV helper already running"
-            return
-        }
-        await stopMouse()
-
-        guard let helperURL = findMouseHelper() else {
-            mouseReady = false
-            let root = Bundle.main.resourceURL?.path ?? "unavailable"
-            status = "Mouse helper not found · bundle resources: \(root)"
-            return
-        }
-
-        do {
-            let data = try Data(contentsOf: helperURL)
-            guard !data.isEmpty else {
-                throw NSError(
-                    domain: "GlassRemote",
-                    code: 10,
-                    userInfo: [NSLocalizedDescriptionKey: "Bundled mouse helper is empty"]
-                )
-            }
-
-            let expected = data.count
-            let localSHA1 = Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined()
-            let remotePath = "/data/local/tmp/glass_uhid_bridge"
-            let uploadPath = remotePath + ".upload"
-
-            // Reuse the previously installed mouse ELF if it is byte-for-byte identical.
-            status = "Mouse helper found · checking installed binary…"
-            let existingSizeText = try await runShell(
-                adb, ["sh", "-c", "if [ -f \(remotePath) ]; then wc -c < \(remotePath); else echo MISSING; fi"]
-            )
-            let existingSize = existingSizeText.split(whereSeparator: { $0.isWhitespace }).compactMap { Int($0) }.first
-            let existingSHA1Text = existingSize == expected
-                ? (try? await runShell(adb, ["sha1sum", remotePath])) ?? ""
-                : ""
-            let existingSHA1 = existingSHA1Text.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)?.lowercased()
-            let alreadyInstalled = existingSize == expected && existingSHA1 == localSHA1
-
-            if alreadyInstalled {
-                status = "Mouse helper already installed · verifying executable…"
-                let chmod = try await runShell(adb, ["sh", "-c", "chmod 700 \(remotePath) && echo GLASS_MOUSE_BINARY_OK"])
-                guard chmod.contains("GLASS_MOUSE_BINARY_OK") else {
-                    throw NSError(domain: "GlassRemote", code: 13,
-                                  userInfo: [NSLocalizedDescriptionKey: "TV has the mouse helper but could not make it executable: \(chmod)"])
-                }
-                GRLog.note("mouse", "reusing existing verified mouse helper (\(expected) bytes)")
-            } else {
-                status = "Mouse helper uploading · 0/\(expected) bytes"
-                let upload = try await adb.open(destination: "exec:sh -c 'cat > \(uploadPath)'")
-                // Send in small chunks so the ADB exec stream never has to accept one large write.
-                let chunkSize = 1024
-                var sent = 0
-                while sent < data.count {
-                    let next = min(sent + chunkSize, data.count)
-                    try await upload.write(data.subdata(in: sent..<next))
-                    sent = next
-                    status = "Mouse helper uploading · \(sent)/\(expected) bytes"
-                }
-                try await upload.close()
-
-                var remoteBytes: Int?
-                var lastOutput = ""
-                for attempt in 0..<50 {
-                    lastOutput = try await runShell(
-                        adb,
-                        ["sh", "-c", "if [ -f \(uploadPath) ]; then wc -c < \(uploadPath); else echo MISSING; fi"]
-                    )
-                    remoteBytes = lastOutput.split(whereSeparator: { $0.isWhitespace }).compactMap { Int($0) }.first
-                    if remoteBytes == expected {
-                        GRLog.note("mouse", "helper upload verified after \(attempt + 1) check(s)")
-                        break
-                    }
-                    try await Task.sleep(nanoseconds: 100_000_000)
-                }
-                guard remoteBytes == expected else {
-                    throw NSError(domain: "GlassRemote", code: 11,
-                                  userInfo: [NSLocalizedDescriptionKey: "mouse upload incomplete: local \(expected) bytes, TV has \(remoteBytes.map(String.init) ?? "none"); last reply: \(lastOutput.trimmingCharacters(in: .whitespacesAndNewlines))"])
-                }
-                if let remoteHashText = try? await runShell(adb, ["sha1sum", uploadPath]),
-                   let remoteHash = remoteHashText.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)?.lowercased(),
-                   remoteHash != localSHA1 {
-                    throw NSError(domain: "GlassRemote", code: 12,
-                                  userInfo: [NSLocalizedDescriptionKey: "mouse helper checksum mismatch after upload"])
-                }
-                let finalize = try await runShell(adb, ["sh", "-c", "chmod 700 \(uploadPath) && mv -f \(uploadPath) \(remotePath) && echo GLASS_MOUSE_BINARY_OK"])
-                guard finalize.contains("GLASS_MOUSE_BINARY_OK") else {
-                    throw NSError(domain: "GlassRemote", code: 13,
-                                  userInfo: [NSLocalizedDescriptionKey: "could not install mouse helper: \(finalize)"])
-                }
-            }
-
-
-            // Start the detached TCP bridge and connect a client. Closing this client never
-            // closes the helper's stdin: the TV-side listener accepts the next connection.
-            guard await PersistentHelper.launch(
-                adb: adb,
-                name: "glass_uhid_bridge",
-                match: "glass_uhid_bridge",
-                command: "exec /data/local/tmp/glass_uhid_bridge",
-                ready: "READY"
-            ), let stream = await PersistentHelper.openInput(adb: adb, name: "glass_uhid_bridge") else {
-                let reason = PersistentHelper.fallbackNote("glass_uhid_bridge")
-                throw NSError(domain: "GlassRemote", code: 14,
-                              userInfo: [NSLocalizedDescriptionKey: "Persistent mouse TCP helper failed to start or accept a connection\(reason)"])
-            }
-
-            mouseStream = stream
-            pendingMoveDX = 0; pendingMoveDY = 0; mouseButtonsHeld = 0
-            mouseReady = true
-            status = "Mouse ready · Android UHID created" + PersistentHelper.fallbackNote("glass_uhid_bridge")
-
-        } catch {
-            mouseReady = false
-            mouseStream = nil
-            status = "Mouse startup failed: \(error.localizedDescription)"
-        }
-    }
-
-    func mouse(
-        buttons: Int = 0,
-        dx: Int = 0,
-        dy: Int = 0,
-        wheel: Int = 0,
-        hscroll: Int = 0
-    ) {
-        guard connected, mouseReady, let mouseStream else { return }
-        nudgeCursor()
-
-        let line = "M \(buttons) \(max(-127, min(127, dx))) \(max(-127, min(127, dy))) \(max(-127, min(127, wheel))) \(max(-127, min(127, hscroll)))\n"
-
-        reportQueue.enqueue {
-            do {
-                try await mouseStream.write(Data(line.utf8))
-            } catch {
-                GRLog.note("mouse", "input stream write failed: \(error.localizedDescription)")
-                await MainActor.run {
-                    self.mouseReady = false
-                    self.recoveryPending = true
-                    self.status = "Mouse input stream failed: \(error.localizedDescription)"
-                    self.recoverIfNeeded()
-                }
-            }
-        }
-    }
-
-    /// Pointer motion (never changes button state; a held button stays held while dragging).
-    func mouseMove(dx: Int, dy: Int) {
-        guard connected, mouseReady, dx != 0 || dy != 0 else { return }
-        nudgeCursor()
-        pendingMoveDX += dx
-        pendingMoveDY += dy
-        guard !moveDrainQueued else { return }
-        moveDrainQueued = true
-        reportQueue.enqueue { [weak self] in await self?.drainPointerMotion() }
-    }
-
-    /// Sets the mouse button state (1 = left down, 0 = all up), ordered with respect to motion.
-    func mouseButton(_ buttons: Int) {
-        guard connected, mouseReady else { return }
-        nudgeCursor()
-        reportQueue.enqueue { [weak self] in await self?.sendButtonReport(buttons) }
-    }
-
-    private func drainPointerMotion() async {
-        moveDrainQueued = false
-        guard mouseReady, let stream = mouseStream else {
-            pendingMoveDX = 0; pendingMoveDY = 0
-            return
-        }
-        while pendingMoveDX != 0 || pendingMoveDY != 0 {
-            // A report carries at most +-127 per axis; send the remainder next, never discard it.
-            let sx = max(-127, min(127, pendingMoveDX))
-            let sy = max(-127, min(127, pendingMoveDY))
-            pendingMoveDX -= sx
-            pendingMoveDY -= sy
-            let line = "M \(mouseButtonsHeld) \(sx) \(sy) 0 0\n"
-            do {
-                try await stream.write(Data(line.utf8))
-            } catch {
-                mouseWriteFailed(error)
-                return
-            }
-        }
-    }
-
-    private func sendButtonReport(_ buttons: Int) async {
-        guard mouseReady, let stream = mouseStream else { return }
-        mouseButtonsHeld = buttons
-        do {
-            try await stream.write(Data("M \(buttons) 0 0 0 0\n".utf8))
-        } catch {
-            mouseWriteFailed(error)
-        }
-    }
-
-    private func mouseWriteFailed(_ error: Error) {
-        GRLog.note("mouse", "input stream write failed: \(error.localizedDescription)")
-        pendingMoveDX = 0; pendingMoveDY = 0
-        mouseButtonsHeld = 0
-        mouseReady = false
-        recoveryPending = true
-        status = "Mouse input stream failed: \(error.localizedDescription)"
-        recoverIfNeeded()
-    }
-
-    private func stopMouse() async {
-        mouseReady = false
-        if let mouseStream {
-            try? await mouseStream.close()
-        }
-        mouseStream = nil
+        try await TVShell.run(connection, args)
     }
 
     private func startKeyboard() async {
         guard let adb else { return }
         // Bounded so a dead transport can never stall connect() or recovery forever.
         _ = await withDeadline(30) { await self.keyboard.start(adb: adb) }
-    }
-
-    // MARK: - Custom white cursor
-
-    /// Tip of the arrow inside the 128x128 `glass_cursor_white.png` (pixels).
-    private static let cursorHotspot = (x: 18, y: 8)
-
-    private func findBundledFile(_ name: String) -> URL? {
-        let bundle = Bundle.main
-        if let direct = bundle.url(forResource: name, withExtension: nil),
-           FileManager.default.fileExists(atPath: direct.path) {
-            return direct
-        }
-        for root in [bundle.resourceURL, bundle.bundleURL].compactMap({ $0 }) {
-            guard let enumerator = FileManager.default.enumerator(
-                at: root,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            ) else { continue }
-            for case let url as URL in enumerator where url.lastPathComponent == name {
-                return url
-            }
-        }
-        return nil
-    }
-
-    /// Uploads to `<remote>.upload`, waits until the TV reports the full size (close() returns
-    /// before the TV has finished writing), then moves it into place.
-    private func uploadToTV(_ connection: AdbConnection, data: Data, remote: String, mode: String) async throws {
-        let temp = remote + ".upload"
-        let upload = try await connection.open(destination: "exec:sh -c 'cat > \(temp)'")
-        try await upload.write(data)
-        try await upload.close()
-
-        var remoteBytes: Int?
-        for _ in 0..<50 {
-            let out = try await runShell(
-                connection,
-                ["sh", "-c", "if [ -f \(temp) ]; then wc -c < \(temp); else echo MISSING; fi"]
-            )
-            remoteBytes = out.split(whereSeparator: { $0.isWhitespace }).compactMap { Int($0) }.first
-            if remoteBytes == data.count { break }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-        guard remoteBytes == data.count else {
-            throw NSError(
-                domain: "GlassRemote", code: 30,
-                userInfo: [NSLocalizedDescriptionKey: "\((remote as NSString).lastPathComponent) upload incomplete: local \(data.count) bytes, TV has \(remoteBytes.map(String.init) ?? "none")"]
-            )
-        }
-        let done = try await runShell(
-            connection,
-            ["sh", "-c", "chmod \(mode) \(temp) && mv -f \(temp) \(remote) && echo GLASSREMOTE_FILE_OK"]
-        )
-        guard done.contains("GLASSREMOTE_FILE_OK") else {
-            throw NSError(
-                domain: "GlassRemote", code: 31,
-                userInfo: [NSLocalizedDescriptionKey: "could not install \((remote as NSString).lastPathComponent): \(done.trimmingCharacters(in: .whitespacesAndNewlines))"]
-            )
-        }
-    }
-
-    /// Persistent cursor helper. The `watch` command accepts `R` on stdin to reapply its icon.
-    private static let cursorHelperName = "glass_cursor"
-    private static let cursorMatch = "glass_cursor"
-
-    func retryCursorHelper() {
-        guard connected else {
-            cursorStatus = "Cursor: connect to the TV first"
-            return
-        }
-        Task { _ = await withDeadline(20) { await self.startCursor() } }
-    }
-
-    private func startCursor() async {
-        guard let adb else { return }
-        await stopCursor()
-
-        // Migrate away from the old helper name, whose TCP listener never sent reapply commands.
-        await PersistentHelper.stop(adb: adb, name: "glass_cursor_setter", match: "com.glassremote.cursor")
-
-        if await PersistentHelper.isRunning(adb: adb, name: Self.cursorHelperName, match: Self.cursorMatch) {
-            cursorInput = await PersistentHelper.openInput(adb: adb, name: Self.cursorHelperName)
-            if cursorInput != nil {
-                cursorStatus = "Cursor: custom white cursor active · persistent helper"
-                nudgeCursor()
-            } else {
-                cursorStatus = "Cursor: helper running · input feed reconnect pending"
-            }
-            return
-        }
-
-        guard let jarURL = findBundledFile("glass_cursor_setter.jar"),
-              let pngURL = findBundledFile("glass_cursor_white.png") else {
-            cursorStatus = "Cursor: helper files are not inside the app bundle"
-            return
-        }
-
-        do {
-            cursorStatus = "Cursor: uploading…"
-            let jar = try Data(contentsOf: jarURL)
-            let png = try Data(contentsOf: pngURL)
-            try await uploadToTV(adb, data: jar, remote: "/data/local/tmp/glass_cursor_setter.jar", mode: "644")
-            try await uploadToTV(adb, data: png, remote: "/data/local/tmp/glass_cursor_white.png", mode: "644")
-
-            let hotspot = Self.cursorHotspot
-            let launched = await PersistentHelper.launch(
-                adb: adb,
-                name: Self.cursorHelperName,
-                match: Self.cursorMatch,
-                command: "export CLASSPATH=/data/local/tmp/glass_cursor_setter.jar; exec app_process /system/bin com.glassremote.cursor.Main watch /data/local/tmp/glass_cursor_white.png \(hotspot.x) \(hotspot.y)",
-                ready: "READY",
-                // The jar only reapplies when it receives R. Keep sending a low-rate heartbeat
-                // while the phone is suspended, and let phone-side nudges cover active movement.
-                keeper: "while :; do echo R; sleep 1; done"
-            )
-            guard launched else {
-                let reason = PersistentHelper.failures[Self.cursorHelperName] ?? "TV helper did not report READY"
-                cursorStatus = "Cursor: persistent helper failed · \(reason)"
-                GRLog.note("cursor", "persistent cursor helper failed to start: \(reason)")
-                return
-            }
-
-            cursorInput = await PersistentHelper.openInput(adb: adb, name: Self.cursorHelperName)
-            guard cursorInput != nil else {
-                cursorStatus = "Cursor: helper started · input feed unavailable"
-                return
-            }
-            cursorStatus = "Cursor: custom white cursor applied · persistent reapply active" + PersistentHelper.fallbackNote(Self.cursorHelperName)
-            GRLog.note("cursor", "persistent white cursor helper running with 1 s reapply heartbeat")
-            nudgeCursor()
-        } catch {
-            cursorInput = nil
-            cursorStatus = "Cursor failed: \(error.localizedDescription)"
-            GRLog.note("cursor", "start failed: \(error.localizedDescription)")
-        }
-    }
-
-    /// Throttled while the pointer moves, with a trailing reapply after hover state settles.
-    private func nudgeCursor() {
-        guard let input = cursorInput else { return }
-        let now = Date()
-        if now.timeIntervalSince(lastCursorNudge) >= 0.08 {
-            lastCursorNudge = now
-            cursorQueue.enqueue { [weak self] in
-                do {
-                    try await input.write(Data("R\n".utf8))
-                } catch {
-                    await MainActor.run {
-                        guard let self, self.cursorInput === input else { return }
-                        self.cursorInput = nil
-                        self.cursorStatus = "Cursor: reapply feed disconnected · will retry on resume"
-                        GRLog.note("cursor", "reapply feed write failed: \(error.localizedDescription)")
-                    }
-                }
-            }
-        }
-
-        cursorTrailTask?.cancel()
-        cursorTrailTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 180_000_000)
-            guard !Task.isCancelled, let self, let current = self.cursorInput else { return }
-            self.cursorQueue.enqueue {
-                do { try await current.write(Data("R\n".utf8)) }
-                catch {
-                    await MainActor.run {
-                        guard self.cursorInput === current else { return }
-                        self.cursorInput = nil
-                        self.cursorStatus = "Cursor: reapply feed disconnected · will retry on resume"
-                        GRLog.note("cursor", "trailing reapply failed: \(error.localizedDescription)")
-                    }
-                }
-            }
-        }
-    }
-
-    private func stopCursor() async {
-        cursorTrailTask?.cancel()
-        cursorTrailTask = nil
-        let input = cursorInput
-        cursorInput = nil
-        cursorReaderTask?.cancel()
-        cursorReaderTask = nil
-        let old = cursorStream
-        cursorStream = nil
-        // In persistent mode, closing the phone-side writer does NOT send STOP to the helper.
-        // The TV-side heartbeat keeps it alive and continues restoring the white cursor.
-        if let input {
-            _ = await withDeadline(2) { () async -> Void in _ = try? await input.close() }
-        }
-        if let old {
-            _ = await withDeadline(2) { () async -> Void in
-                try? await old.write(Data("STOP\n".utf8))
-                _ = try? await old.close()
-            }
-        }
     }
 
     // MARK: - Lifecycle: teardown and recovery
@@ -1125,7 +683,7 @@ final class RemoteModel: ObservableObject {
 
     /// Single-flight health check. Does nothing while the user wants to be disconnected
     /// or while a connect is already in progress.
-    private func recoverIfNeeded() {
+    func recoverIfNeeded() {
         guard wantsConnection, !requiresUserReconnect else { return }
         guard appActive else {
             recoveryPending = true
@@ -1243,51 +801,5 @@ final class RemoteModel: ObservableObject {
         // the TV helper is alive and repairs a stale TCP client left by iOS suspension.
         _ = await withDeadline(15) { await self.startCursor() }
         recoveryPending = false
-    }
-}
-
-/// Runs `operation` but stops waiting after `seconds`. A hung operation is abandoned rather
-/// than awaited, so one dead socket cannot freeze connect, disconnect or recovery.
-func withDeadline<T>(_ seconds: Double, _ operation: @escaping @Sendable () async -> T) async -> T? {
-    await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
-        let gate = DeadlineGate<T>(continuation)
-        let timer = Task {
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            gate.finish(nil)
-        }
-        Task {
-            let value = await operation()
-            timer.cancel()
-            gate.finish(value)
-        }
-    }
-}
-
-private final class DeadlineGate<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<T?, Never>?
-
-    init(_ continuation: CheckedContinuation<T?, Never>) {
-        self.continuation = continuation
-    }
-
-    func finish(_ value: T?) {
-        lock.lock()
-        let pending = continuation
-        continuation = nil
-        lock.unlock()
-        pending?.resume(returning: value)
-    }
-}
-
-final class TaskQueue {
-    private var tail: Task<Void, Never> = Task {}
-
-    func enqueue(_ operation: @escaping () async -> Void) {
-        let previous = tail
-        tail = Task {
-            await previous.value
-            await operation()
-        }
     }
 }
