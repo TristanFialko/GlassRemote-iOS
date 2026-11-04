@@ -9,6 +9,7 @@ struct KeyboardSheet: View {
 
     @State private var text = ""
     @State private var lastSent = ""        // what live typing has already forwarded to the TV
+    @State private var liveDeliveryFailed = false   // virtual keyboard refused the last keystroke
     @State private var history: [String] = KeyboardSheet.loadHistory()
     @FocusState private var focused: Bool
 
@@ -60,9 +61,14 @@ struct KeyboardSheet: View {
                         .disabled(text.isEmpty && !remote.liveTyping)
                     }
                 } footer: {
-                    Text(remote.liveTyping
-                         ? "Each key is sent as you type, through the virtual keyboard. Return presses Enter on the TV. Plain ASCII only."
-                         : "Android can only type plain ASCII characters over ADB.")
+                    if remote.liveTyping && liveDeliveryFailed {
+                        Text("Live typing is on, but the TV keyboard isn't ready (\(remote.connected ? "helper not running" : "not connected")). Typed text is held and will be sent once it's ready.")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text(remote.liveTyping
+                             ? "Each key is sent as you type, through the virtual keyboard. Return presses Enter on the TV. Plain ASCII only."
+                             : "Android can only type plain ASCII characters over ADB.")
+                    }
                 }
 
                 if !history.isEmpty {
@@ -97,19 +103,17 @@ struct KeyboardSheet: View {
     }
 
     /// Forwards the difference between what the TV has received and the field's new contents.
+    /// Delivery failure never touches the Live typing toggle (that is the user's choice). On failure
+    /// `lastSent` stays put, so the next edit retries the whole undelivered difference.
     private func syncLive(_ newValue: String) {
-        guard remote.liveTyping else { lastSent = newValue; return }
+        guard remote.liveTyping else { lastSent = newValue; liveDeliveryFailed = false; return }
         guard newValue != lastSent else { return }
-        let common = newValue.commonPrefix(with: lastSent)
-        let removed = lastSent.dropFirst(common.count)
-        let backspaces = removed.filter { VirtualKeyboard.hid(for: $0) != nil }.count
-        let added = String(newValue.dropFirst(common.count))
-        if remote.typeLive(added, backspaces: backspaces) {
+        let plan = LiveTypingDiff.plan(from: lastSent, to: newValue)
+        if remote.typeLive(plan.added, backspaces: plan.backspaces) {
             lastSent = newValue
+            liveDeliveryFailed = false
         } else {
-            // Virtual keyboard not ready: fall back to the normal Send flow.
-            remote.liveTyping = false
-            lastSent = newValue
+            liveDeliveryFailed = true
         }
     }
 
@@ -135,5 +139,15 @@ struct KeyboardSheet: View {
 
     private static func saveHistory(_ items: [String]) {
         UserDefaults.standard.set(items, forKey: historyKey)
+    }
+}
+
+/// Pure difference between what the TV already has and the field's new contents.
+enum LiveTypingDiff {
+    static func plan(from lastSent: String, to newValue: String) -> (backspaces: Int, added: String) {
+        let common = newValue.commonPrefix(with: lastSent)
+        let removed = lastSent.dropFirst(common.count)
+        let backspaces = removed.filter { VirtualKeyboard.hid(for: $0) != nil }.count
+        return (backspaces, String(newValue.dropFirst(common.count)))
     }
 }
