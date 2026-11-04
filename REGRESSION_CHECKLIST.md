@@ -36,3 +36,7 @@
 - AppIcon and the nine app tiles unchanged.
 - Nine tiles use the supplied transparent PNGs, centred and balanced; launch targets unchanged.
 - Cursor feel unchanged after PointerBox change.
+
+## v0.3 Phase 1 additions
+- Switching pages never restarts helpers or changes Stremio playback (see V0_3_PHASE1.md checklist).
+- Live Typing toggle survives failed keystrokes.
