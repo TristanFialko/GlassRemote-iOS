@@ -99,3 +99,32 @@ final class QuickActionTests: XCTestCase {
         }
     }
 }
+
+
+@MainActor
+final class LiveTypingToggleTests: XCTestCase {
+    /// Regression: a keystroke the virtual keyboard cannot accept (disconnected / helper not ready)
+    /// must never switch the Live typing toggle off.
+    func testFailedKeystrokeDoesNotResetToggle() {
+        let remote = RemoteModel()
+        remote.liveTyping = true
+        XCTAssertFalse(remote.typeLive("a"))          // not connected: keyboard refuses
+        XCTAssertTrue(remote.liveTyping)
+        XCTAssertFalse(remote.typeLive("B", backspaces: 1))
+        XCTAssertTrue(remote.liveTyping)
+        remote.liveTyping = false                     // restore the persisted default
+    }
+
+    func testDiffPlanAppendCapitalSymbolAndDelete() {
+        XCTAssertEqual(LiveTypingDiff.plan(from: "", to: "a").added, "a")
+        XCTAssertEqual(LiveTypingDiff.plan(from: "a", to: "aB!").added, "B!")
+        let del = LiveTypingDiff.plan(from: "abc", to: "ab")
+        XCTAssertEqual(del.backspaces, 1)
+        XCTAssertEqual(del.added, "")
+    }
+
+    func testRetryAfterFailureSendsWholeUndeliveredText() {
+        // lastSent stays "" after a failed send, so the next edit carries everything.
+        XCTAssertEqual(LiveTypingDiff.plan(from: "", to: "ab").added, "ab")
+    }
+}
