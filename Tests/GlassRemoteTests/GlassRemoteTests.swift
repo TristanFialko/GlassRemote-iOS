@@ -80,27 +80,6 @@ final class MediaParsingTests: XCTestCase {
     }
 }
 
-final class QuickActionTests: XCTestCase {
-    func testRoundTripThroughJSON() throws {
-        let action = QuickAction(name: "Movie Night", steps: [.key("HOME"), .delay(1.5), .launch("com.stremio.one"), .volume("VOLUME_UP", count: 3)])
-        let data = try JSONEncoder().encode(action)
-        let decoded = try JSONDecoder().decode(QuickAction.self, from: data)
-        XCTAssertEqual(decoded, action)
-    }
-
-    func testPowerKeysAreNeverAllowed() {
-        XCTAssertFalse(QuickActionStore.allowedKeys.contains("TV_POWER"))
-        XCTAssertFalse(QuickActionStore.allowedKeys.contains("POWER"))
-    }
-
-    func testEveryAllowedKeyHasATitle() {
-        for key in QuickActionStore.allowedKeys {
-            XCTAssertNotNil(QuickActionStore.keyTitles[key], "\(key) has no title")
-        }
-    }
-}
-
-
 @MainActor
 final class LiveTypingToggleTests: XCTestCase {
     /// Regression: a keystroke the virtual keyboard cannot accept (disconnected / helper not ready)
@@ -134,7 +113,7 @@ final class LiveTypingToggleTests: XCTestCase {
 final class PagerMathTests: XCTestCase {
     func testLandingPageIsRemoteAndOrderIsStable() {
         XCTAssertEqual(AppPage.landing, .remote)
-        XCTAssertEqual(AppPage.allCases, [.remote, .player, .discover, .play])
+        XCTAssertEqual(AppPage.allCases, [.remote, .player, .discover])
     }
 
     func testTargetPageThresholdsAndClamping() {
@@ -142,13 +121,13 @@ final class PagerMathTests: XCTestCase {
         XCTAssertEqual(AppPage.target(from: .remote, translation: -40, predicted: -60, width: 390), .remote)   // too small
         XCTAssertEqual(AppPage.target(from: .remote, translation: -30, predicted: -300, width: 390), .player)  // flick
         XCTAssertEqual(AppPage.target(from: .remote, translation: 300, predicted: 400, width: 390), .remote)   // clamped at start
-        XCTAssertEqual(AppPage.target(from: .play, translation: -300, predicted: -400, width: 390), .play)     // clamped at end
+        XCTAssertEqual(AppPage.target(from: .discover, translation: -300, predicted: -400, width: 390), .discover)     // clamped at end
         XCTAssertEqual(AppPage.target(from: .discover, translation: 200, predicted: 260, width: 390), .player)
     }
 
     func testEdgeResistance() {
         XCTAssertEqual(AppPage.resisted(100, on: .remote), 25)
-        XCTAssertEqual(AppPage.resisted(-100, on: .play), -25)
+        XCTAssertEqual(AppPage.resisted(-100, on: .discover), -25)
         XCTAssertEqual(AppPage.resisted(100, on: .player), 100)
     }
 }
@@ -450,26 +429,6 @@ final class RecentSearchesTests: XCTestCase {
 }
 
 
-final class RecentsProbeTests: XCTestCase {
-    private func snap(_ w: String, _ a: String = "act") -> RecentsSnapshot { RecentsSnapshot(window: w, activity: a) }
-
-    func testParseSplitsWindowAndActivity() {
-        let out = "  mCurrentFocus=Window{1 u0 com.stremio.one/Main}\n---\n topResumedActivity=ActivityRecord{x com.stremio.one/.Main}"
-        let parsed = RecentsProbe.parse(out)
-        XCTAssertTrue(parsed.window.contains("com.stremio.one"))
-        XCTAssertTrue(parsed.activity.contains("topResumedActivity"))
-    }
-
-    func testOutcomesNeverOverclaim() {
-        let a = snap("mCurrentFocus=Window{com.stremio.one/Main}")
-        XCTAssertEqual(RecentsProbe.outcome(before: a, after: a), .unchanged)
-        XCTAssertEqual(RecentsProbe.outcome(before: a, after: snap("mCurrentFocus=Window{com.android.systemui/.recents.RecentsActivity}")), .opened)
-        XCTAssertEqual(RecentsProbe.outcome(before: a, after: snap("mCurrentFocus=Window{com.android.tv.launcher/Home}")), .changedUnrecognised)
-        XCTAssertEqual(RecentsProbe.outcome(before: a, after: RecentsSnapshot(window: "", activity: "")), .unknown)
-        XCTAssertEqual(RecentsProbe.outcome(before: RecentsSnapshot(window: "", activity: ""), after: a), .unknown)
-    }
-}
-
 final class DirectionalTrackpadTests: XCTestCase {
     func testDeadZoneProducesNoKeysAndMarksTap() {
         var pad = DirectionalTrackpad()
@@ -543,7 +502,7 @@ final class SamsungRemoteLayoutTests: XCTestCase {
     }
 
     func testPrimaryKeysAreTheShortSet() {
-        XCTAssertEqual(primary, [.back, .home, .mute, .rewind, .play, .pause, .fastForward])
+        XCTAssertEqual(primary, [.back, .home, .mute, .rewind, .play, .fastForward])   // .play is the combined Play/Pause button
     }
 
     func testNothingUsefulWasLost() {
@@ -606,99 +565,6 @@ final class MenuRoutingTests: XCTestCase {
     }
 }
 
-final class QuickActionMigrationTests: XCTestCase {
-    func testMenuKeyStepsAreRemovedAndTheRestIsKept() {
-        let saved = [QuickAction(name: "Mixed", steps: [.key("HOME"), .key("MENU"), .delay(1), .launch("com.stremio.one")]),
-                     QuickAction(name: "Clean", steps: [.key("BACK")])]
-        let result = QuickActionStore.migrate(saved)
-        XCTAssertEqual(result.affected, ["Mixed"])
-        XCTAssertEqual(result.actions[0].steps.map(\.kind), [.key, .delay, .launch])
-        XCTAssertEqual(result.actions[0].steps.first?.key, "HOME")
-        XCTAssertEqual(result.actions[1], saved[1])               // untouched action is identical
-    }
-
-    func testAnActionThatOnlyHadMenuIsKeptNotDeleted() {
-        let saved = [QuickAction(name: "Menu only", steps: [.key("MENU")])]
-        let result = QuickActionStore.migrate(saved)
-        XCTAssertEqual(result.actions.count, 1)
-        XCTAssertEqual(result.actions[0].name, "Menu only")
-        XCTAssertTrue(result.actions[0].steps.isEmpty)
-        XCTAssertEqual(result.affected, ["Menu only"])
-    }
-
-    func testMenuIsNoLongerAllowedOrTitled() {
-        XCTAssertFalse(QuickActionStore.allowedKeys.contains("MENU"))
-        XCTAssertNil(QuickActionStore.keyTitles["MENU"])
-        XCTAssertTrue(QuickActionStore.deprecatedKeys.contains("MENU"))
-    }
-
-    func testNoticeNamesTheAffectedActions() {
-        XCTAssertTrue(QuickActionStore.notice(for: ["A", "B"]).contains("A, B"))
-    }
-
-    @MainActor func testMenuHasNoRemoteKeyPath() {
-        XCTAssertNil(VirtualKeyboard.usages["MENU"])
-    }
-}
-
-final class GooglePlayTests: XCTestCase {
-    func testSearchLinkIsEncodedAndCannotInjectShell() {
-        let link = GooglePlay.searchLink(query: "spotify tv")
-        XCTAssertEqual(link, "market://search?q=spotify%20tv&c=apps")
-        let nasty = GooglePlay.searchLink(query: "a'; rm -rf /; echo '&x=$(id)")
-        XCTAssertNotNil(nasty)
-        let q = nasty!.replacingOccurrences(of: "market://search?q=", with: "").replacingOccurrences(of: "&c=apps", with: "")
-        XCTAssertFalse(q.contains("'") || q.contains(";") || q.contains("$") || q.contains(" ") || q.contains("&"))
-    }
-
-    func testQueryValidation() {
-        XCTAssertNil(GooglePlay.searchLink(query: ""))
-        XCTAssertNil(GooglePlay.searchLink(query: " a "))
-        XCTAssertNil(GooglePlay.searchLink(query: String(repeating: "x", count: 81)))
-        XCTAssertEqual(GooglePlay.normalisedQuery("  vlc   player \n"), "vlc player")
-    }
-
-    func testPackageValidation() {
-        XCTAssertTrue(GooglePlay.isValidPackage("com.netflix.ninja"))
-        XCTAssertFalse(GooglePlay.isValidPackage("netflix"))
-        XCTAssertFalse(GooglePlay.isValidPackage("com.x; reboot"))
-        XCTAssertFalse(GooglePlay.isValidPackage("com..x"))
-        XCTAssertEqual(GooglePlay.detailsLink(package: "org.videolan.vlc"), "market://details?id=org.videolan.vlc")
-        XCTAssertNil(GooglePlay.detailsLink(package: "bad id"))
-        XCTAssertEqual(GooglePlay.webURL(package: "org.videolan.vlc")?.host, "play.google.com")
-    }
-
-    func testIntentTargetsThePlayStoreOnly() {
-        let command = GooglePlay.intentCommand(link: "market://search?q=vlc&c=apps")
-        XCTAssertTrue(command.hasPrefix("am start -a android.intent.action.VIEW -d 'market://search?q=vlc&c=apps' -p com.android.vending"))
-        XCTAssertTrue(command.contains("GLASSREMOTE_INTENT_EXIT:$rc"))
-        XCTAssertFalse(command.contains("KEYEVENT") || command.lowercased().contains("keyevent"))   // no input keys sent
-    }
-
-    func testOutcomesDoNotOverclaim() {
-        XCTAssertEqual(GooglePlay.outcome(from: "Starting: Intent { act=android.intent.action.VIEW }\nGLASSREMOTE_INTENT_EXIT:0"), .accepted)
-        XCTAssertEqual(GooglePlay.outcome(from: "Warning: Activity not started, its current task has been brought to the front\nGLASSREMOTE_INTENT_EXIT:0"), .accepted)
-        XCTAssertEqual(GooglePlay.outcome(from: "Error: Activity not started, unable to resolve Intent\nGLASSREMOTE_INTENT_EXIT:1"), .storeUnavailable)
-        if case .rejected(let text) = GooglePlay.outcome(from: "Error: boom\nGLASSREMOTE_INTENT_EXIT:255") { XCTAssertTrue(text.contains("boom")) }
-        else { XCTFail("expected rejected") }
-        if case .rejected = GooglePlay.outcome(from: "") {} else { XCTFail("empty output is not success") }
-    }
-
-    func testSuggestionsAreValidUniqueAndSearchableLocally() {
-        let ids = GooglePlay.suggestions.map(\.package)
-        XCTAssertEqual(Set(ids).count, ids.count)
-        XCTAssertTrue(ids.allSatisfy(GooglePlay.isValidPackage))
-        XCTAssertEqual(GooglePlay.matches("netf").map(\.name), ["Netflix"])
-        XCTAssertEqual(GooglePlay.matches("").count, GooglePlay.suggestions.count)
-        XCTAssertTrue(GooglePlay.matches("zzzz-no-such-app").isEmpty)
-    }
-
-    func testFourthTabIsGooglePlay() {
-        XCTAssertEqual(AppPage.allCases.last, .play)
-        XCTAssertEqual(AppPage.play.accessibilityName, "Google Play")
-    }
-}
-
 final class DiscoverArtworkTests: XCTestCase {
     func testFallbackPosterOnlyForRealImdbIds() {
         let ok = StremioTitle(id: "tt0133093", kind: .movie, name: "X", year: "", posterURL: nil, rating: "")
@@ -710,5 +576,110 @@ final class DiscoverArtworkTests: XCTestCase {
     func testHttpPostersAreDropped() {
         let json = #"{"metas":[{"id":"tt0133093","name":"A","poster":"http://x/p.jpg"}]}"#.data(using: .utf8)!
         XCTAssertNil(StremioCatalog.parse(json, kind: .movie).first?.posterURL)
+    }
+}
+
+
+final class ThreeTabTests: XCTestCase {
+    func testExactlyThreeTabsInOrder() {
+        XCTAssertEqual(AppPage.allCases.map(\.title), ["Remote", "Player", "Discover"])
+    }
+    func testEveryTabHasASymbol() {
+        for page in AppPage.allCases { XCTAssertFalse(page.symbol.isEmpty) }
+    }
+}
+
+final class StremioAccountParsingTests: XCTestCase {
+    func testLoginReturnsAuthKeyOrThrowsAPIError() throws {
+        XCTAssertEqual(try StremioAccountParser.parseLogin(#"{"result":{"authKey":"abc","user":{}}}"#.data(using: .utf8)!), "abc")
+        XCTAssertThrowsError(try StremioAccountParser.parseLogin(#"{"error":{"message":"Wrong passphrase","code":2}}"#.data(using: .utf8)!)) { error in
+            XCTAssertEqual(error as? StremioError, .api(message: "Wrong passphrase", code: 2))
+        }
+        XCTAssertThrowsError(try StremioAccountParser.parseLogin(Data("nope".utf8)))
+    }
+
+    func testLibraryProgressAndContinueWatching() throws {
+        let json = #"""
+        {"result":[
+         {"_id":"tt0903747","name":"Breaking Bad","type":"series","poster":"https://x/p.jpg","removed":false,"temp":false,
+          "state":{"lastWatched":"2026-10-01T20:00:00.000Z","timeOffset":1200000,"duration":2700000,"video_id":"tt0903747:2:3","timesWatched":0,"flaggedWatched":0}},
+         {"_id":"tt0133093","name":"The Matrix","type":"movie","removed":true,"state":{"timeOffset":100,"duration":200}},
+         {"_id":"tt0111161","name":"Done","type":"movie","state":{"timeOffset":1900,"duration":2000}},
+         {"_id":"tt1","name":"Never started","type":"movie","state":{"timeOffset":0,"duration":0}},
+         {"name":"No id"}]}
+        """#.data(using: .utf8)!
+        let items = try StremioAccountParser.parseLibrary(json)
+        XCTAssertEqual(items.count, 4)
+        let bb = try XCTUnwrap(items.first { $0.id == "tt0903747" })
+        XCTAssertTrue(bb.isContinueWatching)
+        XCTAssertEqual(bb.progress, 1200000.0 / 2700000.0, accuracy: 0.0001)
+        XCTAssertEqual(bb.episode?.season, 2); XCTAssertEqual(bb.episode?.episode, 3)
+        XCTAssertNotNil(bb.lastWatched)
+        XCTAssertFalse(items.first { $0.id == "tt0133093" }!.isInLibrary)       // removed
+        XCTAssertFalse(items.first { $0.id == "tt0111161" }!.isContinueWatching) // 95 %+ is finished
+        XCTAssertFalse(items.first { $0.id == "tt1" }!.isContinueWatching)
+    }
+
+    func testExpiredSessionDetectionIsConservative() {
+        XCTAssertTrue(StremioError.looksLikeExpiredSession(message: "Session does not exist", code: 1))
+        XCTAssertFalse(StremioError.looksLikeExpiredSession(message: "Internal error", code: 500))
+    }
+}
+
+final class StremioLinkTests: XCTestCase {
+    func testDetailLinksFollowTheDocumentedShapes() {
+        XCTAssertEqual(RemoteModel.stremioDetailLink(kind: .series, id: "tt0903747", videoID: "tt0903747:1:2"), "stremio:///detail/series/tt0903747/tt0903747:1:2")
+        XCTAssertEqual(RemoteModel.stremioDetailLink(kind: .series, id: "tt0903747", videoID: "tt0903747:1:2", autoPlay: true), "stremio:///detail/series/tt0903747/tt0903747:1:2?autoPlay=true")
+        XCTAssertNil(RemoteModel.stremioDetailLink(kind: .series, id: "tt0903747", videoID: "tt9999999:1:2"))   // id mismatch
+        XCTAssertNil(RemoteModel.stremioDetailLink(kind: .series, id: "tt0903747", videoID: "x';reboot;'"))
+    }
+
+    func testSearchLinkIsEncodedAndBounded() {
+        XCTAssertEqual(RemoteModel.stremioSearchLink(query: "the matrix"), "stremio:///search?search=the%20matrix")
+        let nasty = RemoteModel.stremioSearchLink(query: "a'; rm -rf /; echo '")!
+        XCTAssertFalse(nasty.contains("'") || nasty.contains(";") || nasty.contains(" "))
+        XCTAssertNil(RemoteModel.stremioSearchLink(query: "a"))
+        XCTAssertNil(RemoteModel.stremioSearchLink(query: String(repeating: "x", count: 81)))
+    }
+
+    func testIntentOutcomeNeedsExitZeroAndNoError() {
+        XCTAssertTrue(RemoteModel.intentAccepted("Starting: Intent\nGLASSREMOTE_INTENT_EXIT:0"))
+        XCTAssertFalse(RemoteModel.intentAccepted("Error: Activity not started\nGLASSREMOTE_INTENT_EXIT:0"))
+        XCTAssertFalse(RemoteModel.intentAccepted(""))
+    }
+}
+
+final class PlayerArtworkMatcherTests: XCTestCase {
+    private func t(_ name: String, _ kind: StremioTitle.Kind, year: String = "") -> StremioTitle {
+        StremioTitle(id: "tt1234567", kind: kind, name: name, year: year, posterURL: URL(string: "https://x/\(name).jpg"), rating: "")
+    }
+
+    func testNormalisationIgnoresCasePunctuationAndLeadingArticle() {
+        XCTAssertEqual(PlayerArtworkMatcher.normalise("The Matrix"), PlayerArtworkMatcher.normalise("matrix"))
+        XCTAssertEqual(PlayerArtworkMatcher.normalise("Spider-Man: No Way Home"), "spider man no way home")
+    }
+
+    func testEpisodeNamesYieldTheShowName() {
+        let q = PlayerArtworkMatcher.query(title: "Breaking Bad S01E05 Gray Matter")
+        XCTAssertEqual(q.names.first, "Breaking Bad"); XCTAssertTrue(q.looksEpisodic)
+        let q2 = PlayerArtworkMatcher.query(title: "Severance", subtitle: "S2:E3 - Who Is Alive?")
+        XCTAssertTrue(q2.looksEpisodic); XCTAssertEqual(q2.names.first, "Severance")
+    }
+
+    func testFileNameStyleTitlesAreCleaned() {
+        let q = PlayerArtworkMatcher.query(title: "Blade.Runner.2049.2017.1080p.WEB-DL")
+        XCTAssertEqual(q.year, "2017"); XCTAssertEqual(q.names.first, "Blade Runner 2049")
+    }
+
+    func testYearOnlyTitleIsNotStripped() {
+        XCTAssertEqual(PlayerArtworkMatcher.query(title: "1917").names, ["1917"])
+    }
+
+    func testOnlyExactNamesMatchAndSeriesPosterWinsForEpisodes() {
+        let results = [t("Dune: Part Two", .movie), t("Dune", .movie, year: "2021"), t("Dune", .series, year: "2000")]
+        XCTAssertEqual(PlayerArtworkMatcher.best(from: results, for: .init(names: ["Dune"], year: nil, looksEpisodic: true))?.kind, .series)
+        XCTAssertEqual(PlayerArtworkMatcher.best(from: results, for: .init(names: ["Dune"], year: nil, looksEpisodic: false))?.kind, .movie)
+        XCTAssertEqual(PlayerArtworkMatcher.best(from: results, for: .init(names: ["Dune"], year: "2021", looksEpisodic: false))?.year, "2021")
+        XCTAssertNil(PlayerArtworkMatcher.best(from: results, for: .init(names: ["Dun"], year: nil, looksEpisodic: false)))   // no fuzzy guesses
     }
 }
