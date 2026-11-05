@@ -168,7 +168,6 @@ jobs:
             CODE_SIGNING_ALLOWED=NO build
 
       - name: Run unit tests
-        continue-on-error: true   # informational for now; remove this line once tests are known-good on CI
         shell: bash
         run: |
           DEVICE="$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [0-9A-Za-z ]+' | sed 's/ *$//')"
