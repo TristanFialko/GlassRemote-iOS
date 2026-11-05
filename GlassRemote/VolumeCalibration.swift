@@ -33,12 +33,21 @@ struct VolumeCalibration: Equatable {
         min(max(Double(raw - lo) / Double(span), 0), 1)
     }
 
+    /// Fraction of the slider, measured from either end, inside which a drag snaps to that end.
+    /// Both ends use this one value, so the snap zone is exactly symmetric.
+    static let magnetMargin = 0.015
+
     /// Snap a dragged value within `margin` of an end to that end exactly, so a finger that
-    /// stops a hair short still reaches 0 % or 100 %.
-    static func magnet(_ value: Double, margin: Double = 0.012) -> Double {
-        if value <= margin { return 0 }
-        if value >= 1 - margin { return 1 }
-        return value
+    /// stops a hair short still reaches 0 % or 100 %. The distance to each end is measured the
+    /// same way (`value` from 0, `1 - value` from 1) and compared with a tiny epsilon, so a
+    /// value sitting exactly on the boundary (e.g. 0.985) is not lost to binary rounding of
+    /// `1 - margin`. Values outside 0...1 are clamped first.
+    static func magnet(_ value: Double, margin: Double = magnetMargin) -> Double {
+        let v = min(max(value, 0), 1)
+        let epsilon = 1e-9
+        if v <= margin + epsilon { return 0 }
+        if 1 - v <= margin + epsilon { return 1 }
+        return v
     }
 }
 
