@@ -1,10 +1,12 @@
+> **UI refactor (this build):** new header menu, Auto removed, larger Android pad, trackpad-only Samsung remote, and the fourth tab is now **Google Play**. See `IMPLEMENTATION_REPORT.md`. Design references: `References/UI/`.
+
 # Glass Remote (iOS)
 
 Native iPhone remote for the ARRIS VIP7802 Android TV box running Glass Launcher.
 Black smoked-glass look using native Liquid Glass on iOS 26+ (your iOS 27 phone), always in Dark Mode.
 
 ## What is in this version
-- **Mouse / D-pad** are still the two core modes. The selector now spans the full width (50% / 50%, capsule, selected glass pill that slides between segments).
+- **Mouse / D-pad** are still the two core modes. The selector is now a compact capsule beside the Quick Actions button so the pad gets the height.
 - **Mouse**: unchanged engine (UHID bridge, ×2 movement, 8 pt tap threshold, 45 ms click, drag, two-finger scroll, white cursor).
 - **Apps**: collapsed row by default; opens to the original 3×3 grid (same nine apps, order, artwork); collapses after a launch. While open, the mouse/D-pad surface is dimmed and the page scrolls.
 - **Now Playing**: title, app, playback position. Controls appear only if the active media session advertises them (see "Media" below).
@@ -41,4 +43,4 @@ Intents set `openAppWhenRun`, so they bring the app to the foreground and reuse 
 
 
 ## v0.4
-Dual-device remote (Auto / Android TV / Samsung TV), explicit Play/Pause, Samsung volume range handling, Recent Apps, Discover filters, native Liquid Glass dock. Read V0_4_NOTES.md first: it lists what is verified (nothing on device yet) and the test checklist.
+Dual-device remote (Android TV / Samsung TV, explicit selection only), explicit Play/Pause, Samsung volume range handling, Recent Apps, Discover filters, native Liquid Glass dock. Read V0_4_NOTES.md first: it lists what is verified (nothing on device yet) and the test checklist.

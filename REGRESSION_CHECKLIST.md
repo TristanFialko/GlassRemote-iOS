@@ -5,7 +5,7 @@
 - [ ] Mouse moves at the same speed; tap clicks; drag works
 - [ ] Two-finger scroll vertical and horizontal; no stray click when lifting
 - [ ] White cursor still shown on the TV
-- [ ] D-pad Up/Down/Left/Right/Select; Back; Home; Menu
+- [ ] D-pad Up/Down/Left/Right/Select; Back; Home (there is no Android Menu key any more)
 - [ ] Volume up/down/mute (ADB path, with Samsung route off)
 - [ ] Each of the nine apps launches, in the original order
 - [ ] Haptics on buttons, tap, launch
@@ -13,7 +13,7 @@
 - [ ] Keyboard helper still reports running (Connection → Status)
 
 ## New UI
-- [ ] Mouse/D-pad selector fills the full width, 50/50, slides smoothly
+- [ ] Mouse/D-pad selector is compact beside the bolt (Quick Actions) button and slides smoothly
 - [ ] App stays Dark Mode with the phone set to Light
 - [ ] Apps collapsed by default; expands; collapses after launching; page scrolls while open
 - [ ] Native Liquid Glass visible on iOS 27 (not the flat fallback)
@@ -44,9 +44,9 @@
 ## v0.4 additions
 - Play and Pause each verified from the Player (explicit 126 / 127).
 - Volume slider reaches 0 % and 100 %; TV readings never move it mid-drag.
-- Samsung target and Auto never send one command to both devices.
+- Android and Samsung targets never send one command to both devices, and a disconnected selected device never falls back to the other.
 - A denied Samsung pairing prompt is not re-raised until Reconnect.
-- Recent Apps either works or opens the Apps page; the Remote Search button focuses Discover.
+- Recent Apps either works or expands the Apps launcher on the Remote page; the Remote Search button focuses Discover.
 - See V0_4_NOTES.md.
 
 ## v0.4 review additions
@@ -55,3 +55,15 @@
 - Reconnecting the remote does not restart the volume link (and vice versa).
 - Samsung limit learning needs two confirmed attempts before it is saved; reset works.
 - Recent Apps reports opened / unchanged / unknown honestly.
+
+
+## UI refactor checks (new)
+- [ ] Header: menu button (top left), status-only Box/TV capsule, power button. Tapping the capsule does nothing.
+- [ ] Menu: Connections and devices, Reconnect entries only when needed, Samsung TV > TV keys, Volume through Samsung TV, TV screenshot, Device information.
+- [ ] Power button: Standby, Wake, Restart launcher, (TV power, Turn off box and TV when Samsung is on), Restart TV box last.
+- [ ] Selector shows only Android TV and Samsung TV; an old saved "Auto" opens as Android TV.
+- [ ] Android: pad is clearly larger than before on small and large iPhones; Quick Actions bolt menu runs and edits actions; favourites (long-press an app) sort first.
+- [ ] Quick Action that used the old Menu key: its step is gone, a notice shows in the editor, the action still exists.
+- [ ] Samsung: only the trackpad plus Back/Home/Mute and Rewind/Play/Pause/Fast-forward; Input/Guide/Info/TV menu/Channel/Stop under Menu > Samsung TV > TV keys.
+- [ ] Google Play tab: "Search on the TV" opens Play's search results on the TV; a suggestion opens that app's listing; not-connected state is clear. (Needs the ARRIS box: not verified.)
+- [ ] Discover: titles without a Cinemeta poster show the placeholder or a Metahub poster.
