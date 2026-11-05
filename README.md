@@ -38,3 +38,7 @@ Enable in Connection → Volume, enter the TV's IP. First connect shows an appro
 
 ## Siri / Shortcuts
 Intents set `openAppWhenRun`, so they bring the app to the foreground and reuse its ADB connection. A true background intent cannot hold the ADB socket, so full hands-free operation is not promised.
+
+
+## v0.4
+Dual-device remote (Auto / Android TV / Samsung TV), explicit Play/Pause, Samsung volume range handling, Recent Apps, Discover filters, native Liquid Glass dock. Read V0_4_NOTES.md first: it lists what is verified (nothing on device yet) and the test checklist.

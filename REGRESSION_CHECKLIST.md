@@ -40,3 +40,11 @@
 ## v0.3 Phase 1 additions
 - Switching pages never restarts helpers or changes Stremio playback (see V0_3_PHASE1.md checklist).
 - Live Typing toggle survives failed keystrokes.
+
+## v0.4 additions
+- Play and Pause each verified from the Player (explicit 126 / 127).
+- Volume slider reaches 0 % and 100 %; TV readings never move it mid-drag.
+- Samsung target and Auto never send one command to both devices.
+- A denied Samsung pairing prompt is not re-raised until Reconnect.
+- Recent Apps either works or opens the Apps page; the Remote Search button focuses Discover.
+- See V0_4_NOTES.md.
