@@ -170,7 +170,8 @@ final class StremioCatalogTests: XCTestCase {
     }
 
     func testDeepLinkValidationRejectsUnsafeIds() {
-        XCTAssertEqual(RemoteModel.stremioDetailLink(kind: .movie, id: "tt0133093"), "stremio:///detail/movie/tt0133093")
+        XCTAssertEqual(RemoteModel.stremioDetailLink(kind: .movie, id: "tt0133093"), "stremio:///detail/movie/tt0133093/tt0133093")
+        XCTAssertEqual(RemoteModel.stremioDetailLink(kind: .series, id: "tt0903747"), "stremio:///detail/series/tt0903747")
         XCTAssertNil(RemoteModel.stremioDetailLink(kind: .movie, id: "tt0133093'; reboot; '"))
         XCTAssertNil(RemoteModel.stremioDetailLink(kind: .series, id: "kitsu:1"))
     }
@@ -200,5 +201,127 @@ final class FavouritesAndArtworkTests: XCTestCase {
         XCTAssertTrue(PlayerArtworkStore.matches(session: "The Matrix", hint: "the matrix"))
         XCTAssertFalse(PlayerArtworkStore.matches(session: "Something Else", hint: "The Matrix"))
         XCTAssertFalse(PlayerArtworkStore.matches(session: "", hint: "The Matrix"))
+    }
+}
+
+// MARK: - v0.4
+
+final class RemoteRoutingTests: XCTestCase {
+    func testExplicitTargetsNeverCrossOver() {
+        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .android, androidConnected: true, samsungReady: true), .android)
+        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .samsung, androidConnected: true, samsungReady: true), .samsung)
+        XCTAssertNil(RemoteRouting.device(for: .navigation, target: .samsung, androidConnected: true, samsungReady: false))
+        XCTAssertNil(RemoteRouting.device(for: .navigation, target: .android, androidConnected: false, samsungReady: true))
+    }
+
+    func testAutoPrefersBoxForNavigationAndTVForTVOnlyCapabilities() {
+        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .auto, androidConnected: true, samsungReady: true), .android)
+        XCTAssertEqual(RemoteRouting.device(for: .media, target: .auto, androidConnected: true, samsungReady: true), .android)
+        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .auto, androidConnected: false, samsungReady: true), .samsung)
+        XCTAssertEqual(RemoteRouting.device(for: .source, target: .auto, androidConnected: true, samsungReady: true), .samsung)
+        XCTAssertNil(RemoteRouting.device(for: .channel, target: .auto, androidConnected: true, samsungReady: false))
+    }
+
+    func testVolumeKeepsExistingPreference() {
+        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .auto, androidConnected: true, samsungReady: true), .samsung)
+        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .auto, androidConnected: true, samsungReady: false), .android)
+    }
+}
+
+final class SamsungKeyTests: XCTestCase {
+    func testAllowlistContainsOnlyKeyNames() {
+        XCTAssertTrue(SamsungKey.allCases.allSatisfy { $0.rawValue.hasPrefix("KEY_") })
+        XCTAssertTrue(SamsungKey.allowlist.contains("KEY_VOLUP"))
+        XCTAssertFalse(SamsungKey.allowlist.contains("KEY_ANYTHING_ELSE"))
+    }
+
+    func testAppKeyMapping() {
+        XCTAssertEqual(SamsungKey.forAppKey("OK"), .enter)
+        XCTAssertEqual(SamsungKey.forAppKey("BACK"), .back)
+        XCTAssertEqual(SamsungKey.forAppKey("TV_SOURCE"), .source)
+        XCTAssertNil(SamsungKey.forAppKey("NOT_A_KEY"))
+    }
+}
+
+final class VolumeCalibrationTests: XCTestCase {
+    func testDefaultRangeReachesExactEndsAndMiddle() {
+        let c = VolumeCalibration.standard
+        XCTAssertEqual(c.raw(forFraction: 0), 0)
+        XCTAssertEqual(c.raw(forFraction: 1), 100)
+        XCTAssertEqual(c.raw(forFraction: 0.5), 50)
+        XCTAssertEqual(c.fraction(forRaw: 0), 0)
+        XCTAssertEqual(c.fraction(forRaw: 100), 1)
+        XCTAssertEqual(c.fraction(forRaw: 37), 0.37, accuracy: 0.0001)
+    }
+
+    func testNarrowedRangeStillMapsToFullSlider() {
+        let c = VolumeCalibration(lo: 2, hi: 98)
+        XCTAssertEqual(c.raw(forFraction: 0), 2)
+        XCTAssertEqual(c.raw(forFraction: 1), 98)
+        XCTAssertEqual(c.fraction(forRaw: 2), 0)
+        XCTAssertEqual(c.fraction(forRaw: 98), 1)
+        XCTAssertEqual(c.fraction(forRaw: 50), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(c.fraction(forRaw: 0), 0)       // below the range clamps, never negative
+    }
+
+    func testMagnetSnapsOnlyNearTheEnds() {
+        XCTAssertEqual(VolumeCalibration.magnet(0.985), 1)
+        XCTAssertEqual(VolumeCalibration.magnet(0.01), 0)
+        XCTAssertEqual(VolumeCalibration.magnet(0.5), 0.5)
+        XCTAssertEqual(VolumeCalibration.magnet(0.97), 0.97)
+    }
+
+    func testLearnsLimitOnlyAfterTwoIdenticalSettledReadings() {
+        var learner = EndpointLearner()
+        let cal = VolumeCalibration.standard
+        learner.commandSent(raw: 100, isMax: true)
+        XCTAssertNil(learner.reading(98, calibration: cal))            // one reading proves nothing
+        let learned = learner.reading(98, calibration: cal)
+        XCTAssertEqual(learned?.hi, 98)
+        XCTAssertEqual(learned?.lo, 0)
+    }
+
+    func testDoesNotLearnWhenTVHonoursOrIsFarOrMoving() {
+        var learner = EndpointLearner()
+        let cal = VolumeCalibration.standard
+        learner.commandSent(raw: 0, isMax: false)
+        XCTAssertNil(learner.reading(0, calibration: cal))             // honoured
+        learner.commandSent(raw: 100, isMax: true)
+        XCTAssertNil(learner.reading(60, calibration: cal))            // far from the command: not an end
+        learner.commandSent(raw: 100, isMax: true)
+        XCTAssertNil(learner.reading(97, calibration: cal))
+        XCTAssertNil(learner.reading(98, calibration: cal))            // still moving
+    }
+}
+
+final class MediaCommandTests: XCTestCase {
+    func testExplicitPlayAndPauseKeycodes() {
+        XCTAssertEqual(MediaCommand.play.keycode, 126)
+        XCTAssertEqual(MediaCommand.pause.keycode, 127)
+        XCTAssertEqual(MediaCommand.next.keycode, 87)
+        XCTAssertEqual(MediaCommand.previous.keycode, 88)
+        XCTAssertEqual(MediaCommand.rewind.keycode, 89)
+        XCTAssertEqual(MediaCommand.fastForward.keycode, 90)
+    }
+
+    func testSatisfactionFollowsSessionState() {
+        var state = MediaState.idle
+        state.state = 3
+        XCTAssertEqual(MediaCommand.play.satisfied(by: state), true)
+        XCTAssertEqual(MediaCommand.pause.satisfied(by: state), false)
+        state.state = 2
+        XCTAssertEqual(MediaCommand.play.satisfied(by: state), false)
+        XCTAssertEqual(MediaCommand.pause.satisfied(by: state), true)
+        XCTAssertNil(MediaCommand.next.satisfied(by: state))
+    }
+}
+
+final class RecentSearchesTests: XCTestCase {
+    func testNewestFirstDedupedAndLimited() {
+        var list: [String] = []
+        for q in ["matrix", "Dune", "MATRIX", "a", "  ", "alien"] { list = RecentSearches.adding(list, q) }
+        XCTAssertEqual(list, ["alien", "MATRIX", "Dune"])
+        for i in 0..<20 { list = RecentSearches.adding(list, "title \(i)") }
+        XCTAssertEqual(list.count, RecentSearches.limit)
     }
 }
