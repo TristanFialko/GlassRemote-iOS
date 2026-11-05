@@ -2,7 +2,7 @@ name: iOS build
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, v0.4-dev ]
 
 jobs:
   build:
