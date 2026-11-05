@@ -12,7 +12,6 @@ struct RootPagerView: View {
     @StateObject private var navigator = PageNavigator()
     @State private var settle = 0
     @GestureState private var drag: CGFloat = 0
-    @State private var measuredWidth: CGFloat = 390   // updated from the layout; used by the dock's gesture
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let edgeWidth: CGFloat = 16
@@ -49,13 +48,10 @@ struct RootPagerView: View {
                 .clipped()
                 .simultaneousGesture(pagerDrag(width: width), including: page == .remote ? .none : .all)
 
-                PageDock(page: page, select: { navigator.go($0) })
+                PageDock()
                     .padding(.horizontal, 14)
                     .padding(.bottom, 4)
-                    .simultaneousGesture(pagerDrag(width: measuredWidth))
             }
-            .onAppear { measuredWidth = width }
-            .onChange(of: width) { measuredWidth = $0 }
         }
         .background { AmbientBackdrop() }
         .environmentObject(navigator)
@@ -84,11 +80,11 @@ struct RootPagerView: View {
         DragGesture(minimumDistance: 14)
             .updating($drag) { value, state, _ in
                 let dx = value.translation.width, dy = value.translation.height
-                state = abs(dx) > abs(dy) * 1.4 ? dx : 0
+                state = (!ScrubTouch.shared.isActive && abs(dx) > abs(dy) * 1.4) ? dx : 0
             }
             .onEnded { value in
                 let dx = value.translation.width, dy = value.translation.height
-                guard abs(dx) > abs(dy) * 1.4 else { return }
+                guard !ScrubTouch.shared.isActive, abs(dx) > abs(dy) * 1.4 else { return }
                 let target = AppPage.target(from: page, translation: dx, predicted: value.predictedEndTranslation.width, width: width)
                 if target != page { Haptics.soft() }
                 withAnimation(spring) { navigator.page = target; settle += 1 }
@@ -96,51 +92,25 @@ struct RootPagerView: View {
     }
 }
 
-/// Floating Liquid Glass page bar: one wide glass capsule, one sliding glass lens behind the
-/// selected page (icon over caption, like the system tab bar). On iOS 26 both are native glass in
-/// one container so the lens refracts and morphs; earlier systems get the material fallback.
+/// Floating Liquid Glass page bar. Slide a finger along it and the glass bubble follows, switching
+/// pages as it crosses each icon (like the YouTube bar). Tapping works the same way.
+/// The icon / caption labels are drawn above the glass (see `GlassScrubSelector`).
 struct PageDock: View {
-    let page: AppPage
-    let select: (AppPage) -> Void
-    @Namespace private var ns
-
-    private let inset: CGFloat = 5
+    @EnvironmentObject private var navigator: PageNavigator
 
     var body: some View {
-        GlassGroup(spacing: 10) {
-            GeometryReader { geo in
-                let seg = (geo.size.width - inset * 2) / CGFloat(AppPage.allCases.count)
-                ZStack(alignment: .leading) {
-                    Color.clear.glassBar(Capsule()).glassMorph("dock", in: ns)
-                    Color.clear
-                        .frame(width: seg, height: DockMetrics.height - inset * 2)
-                        .glassLens(Capsule())
-                        .glassMorph("lens", in: ns)
-                        .offset(x: inset + seg * CGFloat(page.rawValue))
-                        .animation(.spring(response: 0.40, dampingFraction: 0.80), value: page)
-                    HStack(spacing: 0) {
-                        ForEach(AppPage.allCases) { item in
-                            let selected = item == page
-                            Button { select(item) } label: {
-                                VStack(spacing: 3) {
-                                    Image(systemName: item.symbol).scaledFont(21, .semibold)
-                                    Text(item.title).scaledFont(10, .semibold).lineLimit(1)
-                                }
-                                .foregroundStyle(selected ? Color.white : Color.white.opacity(0.62))
-                                .frame(width: seg, height: DockMetrics.height)
-                                .contentShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(item.accessibilityName)
-                            .accessibilityAddTraits(selected ? .isSelected : [])
-                        }
-                    }
-                    .padding(.horizontal, inset)
-                }
+        GlassScrubSelector(
+            values: AppPage.allCases,
+            selection: Binding(get: { navigator.page }, set: { navigator.go($0, haptic: false) }),
+            height: DockMetrics.height, inset: 5
+        ) { item, selected in
+            VStack(spacing: 3) {
+                Image(systemName: item.symbol).scaledFont(21, .semibold)
+                Text(item.title).scaledFont(10, .semibold).lineLimit(1)
             }
-            .frame(height: DockMetrics.height)
+            .foregroundStyle(selected ? Color.white : Color.white.opacity(0.62))
+            .accessibilityLabel(item.accessibilityName)
         }
-        .frame(height: DockMetrics.height)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Pages")
     }

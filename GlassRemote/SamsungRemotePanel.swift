@@ -6,12 +6,20 @@ import SwiftUI
 struct SamsungRemotePanel: View {
     @EnvironmentObject private var remote: RemoteModel
 
-    private var ready: Bool { remote.tvVolumeReady }
+    private var ready: Bool { remote.samsungRemoteReady }
+    @AppStorage("glassRemote.samsungPadMode") private var padMode = "dpad"
 
     var body: some View {
         VStack(spacing: 10) {
             banner
-            dpad.frame(minHeight: 170, maxHeight: .infinity)
+            GlassSegmented(
+                items: [GlassSegmented<String>.Item(value: "dpad", title: "D-pad", symbol: "circle.grid.cross"),
+                        GlassSegmented<String>.Item(value: "trackpad", title: "Trackpad", symbol: "hand.point.up.left")],
+                selection: $padMode, height: 34)
+            Group {
+                if padMode == "trackpad" { SamsungTrackpad().disabled(!ready) } else { dpad }
+            }
+            .frame(minHeight: 170, maxHeight: .infinity)
             keyRow([("arrow.uturn.backward", "Back", .back), ("house", "Home", .home),
                     ("line.3.horizontal", "Menu", .menu), ("info.circle", "Info", .info), ("list.bullet.rectangle", "Guide", .guide)])
             keyRow([("backward.fill", "Rewind", .rewind), ("play.fill", "Play", .play),

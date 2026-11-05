@@ -80,13 +80,23 @@ struct ConnectionSheet: View {
                             .onSubmit { remote.reconnectTV() }
                         Button("Connect to Samsung TV") { remote.reconnectTV() }
                         Text(remote.samsungStatus).font(.footnote).foregroundStyle(.secondary)
-                        Text("Link: \(remote.samsungState.label)").font(.footnote).foregroundStyle(.secondary)
+                        Text("Remote (WebSocket): \(remote.samsungState.label)").font(.footnote).foregroundStyle(.secondary)
+                        Text("Volume link (UPnP): \(remote.samsungVolumeReady ? "Ready" : "Not available") · the two work independently")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Text(remote.samsungDiagnostics).font(.footnote).foregroundStyle(.secondary)
+                        Button("Reconnect remote only") { remote.reconnectTV() }
+                        Button("Reconnect volume link only") { remote.reconnectVolumeLink() }
+                        Button("Test hold: Right arrow, Press then Release (experimental)") { remote.samsungHoldTest() }
+                        Text("Open a menu on the TV first. If focus moves once, Press/Release behaves like a click on this model; if it keeps moving while held, it is a real hold. Normal buttons keep using repeated clicks either way.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        SamsungTrackpadSettings()
                         Text("TV volume range used by the slider: \(remote.volumeCalibration.lo)–\(remote.volumeCalibration.hi) (default 0–100; narrowed only if the TV repeatedly stops short of a commanded end)")
                             .font(.footnote).foregroundStyle(.secondary)
                         if remote.volumeCalibration != .standard {
-                            Button("Reset volume range to 0–100") {
-                                remote.volumeCalibration = .standard
-                                VolumeCalibration.standard.save()
+                            Button("Reset volume range to 0–100") { remote.resetVolumeCalibration() }
+                            if remote.volumeCalibration.lo > 0 {
+                                Text("0 % on the slider means this TV's minimum (\(remote.volumeCalibration.lo)), which is not mute. Use Mute to silence it.")
+                                    .font(.footnote).foregroundStyle(.secondary)
                             }
                         }
                         Text(remote.volumeStatus).font(.footnote).textSelection(.enabled)
@@ -147,5 +157,20 @@ struct ConnectionSheet: View {
         }
         .presentationDetents([.medium, .large])
         .preferredColorScheme(.dark)
+    }
+}
+
+
+/// Samsung trackpad tuning (experimental mode on the Remote page).
+private struct SamsungTrackpadSettings: View {
+    @AppStorage(SamsungTrackpad.sensitivityKey) private var sensitivity = 1.5
+    @AppStorage(SamsungTrackpad.accelerationKey) private var acceleration = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Samsung trackpad sensitivity").font(.footnote.weight(.semibold))
+            Slider(value: $sensitivity, in: 0.5...3, step: 0.1)
+            Toggle("Acceleration", isOn: $acceleration).font(.footnote)
+        }
     }
 }

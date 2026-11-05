@@ -59,9 +59,13 @@ final class RemoteModel: ObservableObject {
     @Published var media = MediaState.idle
     @Published var runningQuickActionID: UUID?
     @Published var samsungStatus = "Samsung TV: off"
-    @Published private(set) var tvVolumeReady = false
+    /// Samsung remote WebSocket (keys, pairing). Independent of the UPnP volume link below.
+    @Published private(set) var samsungRemoteReady = false
     // Real volume read from the TV over UPnP RenderingControl (see SamsungVolume.swift).
+    /// Samsung UPnP RenderingControl (real TV volume). Independent of the WebSocket above.
     @Published var volumeLinkReady = false
+    var samsungVolumeReady: Bool { volumeLinkReady }
+    @Published private(set) var samsungDiagnostics = "No Samsung keys sent yet"
     @Published var tvVolumeFraction: Double?
     @Published var volumeStatus = "TV volume: not read yet"
     let volumeLink = SamsungVolumeLink()
@@ -192,10 +196,11 @@ final class RemoteModel: ObservableObject {
 
         tv.onStatus = { [weak self] text in self?.samsungStatus = text }
         tv.onState = { [weak self] state in self?.samsungState = state }
+        tv.onStats = { [weak self] stats in self?.samsungDiagnostics = stats.summary }
         // A volume key accepted by the TV connection that then failed is re-sent over ADB.
         tv.onSendFailed = { [weak self] name in self?.key(name) }
         tv.onReadyChanged = { [weak self] ready in
-            self?.tvVolumeReady = ready
+            self?.samsungRemoteReady = ready
             self?.volumeStateReset()
         }
         // Connect to the Samsung TV on launch and keep it connected, independent of ADB.

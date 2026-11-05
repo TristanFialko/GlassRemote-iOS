@@ -94,6 +94,7 @@ extension RemoteModel {
     /// Volume and mute go to the Samsung TV when that connection is ready, otherwise
     /// through the existing ADB path.
     func volume(_ name: String, haptic: Bool = true) {
+        endpointLearner.invalidate()   // a volume key is a newer command: discard any pending endpoint attempt
         if tvVolumeEnabled, tv.send(name) {
             if haptic { Haptics.soft() }
             scheduleVolumeReadback()
@@ -118,10 +119,22 @@ extension RemoteModel {
             guard let self else { return }
             // Learn where this TV really stops (only after an end was commanded and the TV
             // repeatedly settles just short of it), then map through the calibration.
-            if let learned = self.endpointLearner.reading(value, calibration: self.volumeCalibration) {
+            // A reading outside the learned range proves the calibration wrong: go back to 0...100.
+            if self.volumeCalibration != .standard, value < self.volumeCalibration.lo || value > self.volumeCalibration.hi {
+                self.volumeCalibration = .standard
+                VolumeCalibration.standard.save()
+                self.endpointLearner.resetAll()
+                GRLog.note("volume", "reading \(value) outside learned range; calibration reset")
+            }
+            switch self.endpointLearner.reading(value, dragging: self.volumeDragActive, calibration: self.volumeCalibration) {
+            case .none: break
+            case .tentative(let learned):
+                self.volumeCalibration = learned   // this session only; not saved yet
+                GRLog.note("volume", "TV limit seen once: \(learned.lo)...\(learned.hi) (tentative, not saved)")
+            case .confirmed(let learned):
                 self.volumeCalibration = learned
                 learned.save()
-                GRLog.note("volume", "learned TV volume limits \(learned.lo)...\(learned.hi)")
+                GRLog.note("volume", "TV limit confirmed twice: \(learned.lo)...\(learned.hi) (saved)")
             }
             let cal = self.volumeCalibration
             self.volumeStatus = "TV volume: \(value) (range \(cal.lo)–\(cal.hi), read from the TV)"
@@ -141,6 +154,18 @@ extension RemoteModel {
 
     /// False for a moment after the user touches the slider, so a reading that was already in
     /// flight cannot yank it back.
+    /// Called by the slider when a finger lands / lifts. A touch discards any pending endpoint attempt.
+    func volumeDragChanged(_ active: Bool) {
+        volumeDragActive = active
+        if active { endpointLearner.invalidate() }
+    }
+
+    func resetVolumeCalibration() {
+        volumeCalibration = .standard
+        VolumeCalibration.standard.save()
+        endpointLearner.resetAll()
+    }
+
     /// Readings from the TV never move the slider while a finger is on it, nor for 2 s after the
     /// last change (the TV can lag behind a command, and a stale reading would pull the thumb back).
     var volumeSliderAcceptsExternal: Bool {
@@ -151,7 +176,7 @@ extension RemoteModel {
 
     /// Number of volume-key presses a full slider sweep spans. Through the TV this is the
     /// soundbar's own scale (`tvVolumeMax`); over ADB it stays at the original 20 steps.
-    var volumeLevels: Int { volumeLinkReady ? 100 : ((tvVolumeEnabled && tvVolumeReady) ? tvVolumeMax : 20) }
+    var volumeLevels: Int { volumeLinkReady ? 100 : ((tvVolumeEnabled && samsungRemoteReady) ? tvVolumeMax : 20) }
 
     /// Forget what we assumed about the real volume (range or route changed).
     func volumeStateReset() {
@@ -172,7 +197,7 @@ extension RemoteModel {
             let raw = cal.raw(forFraction: fraction)
             if fraction <= 0 { endpointLearner.commandSent(raw: raw, isMax: false) }
             else if fraction >= 1 { endpointLearner.commandSent(raw: raw, isMax: true) }
-            else { endpointLearner.clear() }   // a mid-range command can never teach an end
+            else { endpointLearner.invalidate() }   // a mid-range command can never teach an end
             volumeLink.setVolume(raw)
             return
         }
@@ -223,7 +248,7 @@ extension RemoteModel {
             volumeLink.start(host: samsungHost)   // idempotent; also re-reads when the app resumes
             volumeLink.refresh()
             // Never replace an attempt that is already in flight (that created duplicates).
-            if !tvVolumeReady, !tv.isAttempting, !tv.pairingBlocked { tv.connect(host: samsungHost) }
+            if !samsungRemoteReady, !tv.isAttempting, !tv.pairingBlocked { tv.connect(host: samsungHost) }
         } else {
             volumeLink.stop()
             tv.stop(report: false)
@@ -259,14 +284,18 @@ extension RemoteModel {
         }
     }
 
+    /// Reconnects ONLY the remote WebSocket (explicit: may ask for approval again). The UPnP
+    /// volume link keeps running untouched.
     func reconnectTV() {
-        tv.stop(report: false)
-        if tvVolumeEnabled, !samsungHost.trimmingCharacters(in: .whitespaces).isEmpty {
-            volumeLink.start(host: samsungHost)
-            tv.connect(host: samsungHost, userInitiated: true)   // explicit: may ask for approval again
-        } else {
-            applyTVSettings()
-        }
+        guard tvVolumeEnabled, !samsungHost.trimmingCharacters(in: .whitespaces).isEmpty else { applyTVSettings(); return }
+        tv.connect(host: samsungHost, userInitiated: true)
+    }
+
+    /// Restarts ONLY the UPnP volume link; the remote WebSocket is not touched.
+    func reconnectVolumeLink() {
+        guard tvVolumeEnabled, !samsungHost.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        volumeLink.stop()
+        volumeLink.start(host: samsungHost)
     }
 
     // MARK: - Power and device

@@ -37,6 +37,10 @@ final class SamsungTV {
     var onStatus: ((String) -> Void)?
     /// Structured connection state for the UI (pairing / denied / unreachable ...).
     var onState: ((SamsungLinkState) -> Void)?
+    /// Command bookkeeping for diagnostics. "Written" means the message was handed to the socket;
+    /// the TV never confirms that a key was executed.
+    private(set) var stats = SamsungCommandStats()
+    var onStats: ((SamsungCommandStats) -> Void)?
     var onReadyChanged: ((Bool) -> Void)?
     /// A key accepted for sending failed afterwards; the caller re-sends it over ADB.
     var onSendFailed: ((String) -> Void)?
@@ -100,7 +104,7 @@ final class SamsungTV {
                     self.isAttempting = false
                     self.setReady(false)
                     if !self.pairingBlocked { self.setState(.unreachable) }
-                    self.report("Samsung TV: not connected · using ADB volume (retrying)")
+                    self.report("Samsung TV: remote not connected (retrying)")
                     return
                 }
             }
@@ -113,7 +117,7 @@ final class SamsungTV {
             // prompt is not re-raised every few seconds.
             if self.state == .pairing { self.pairingBlocked = true; self.setState(.denied) }
             else { self.setState(.unreachable) }
-            self.report("Samsung TV: no response · using ADB volume")
+            self.report("Samsung TV: no response from the remote service")
             self.stop(report: false, keepState: true)
         }
     }
@@ -128,6 +132,14 @@ final class SamsungTV {
         setReady(false)
         if !keepState { setState(.off) }
         if shouldReport { report("Samsung TV: off") }
+    }
+
+    /// Hold experiment (Press, wait, Release). Used only by the Connection sheet's test button;
+    /// normal controls keep repeating `Click`. Always sends Release, even if the wait is cancelled.
+    func holdTest(_ key: SamsungKey, seconds: Double = 0.8) async {
+        guard sendKey(key, command: .press) else { return }
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        sendKey(key, command: .release)
     }
 
     enum Command: String { case click = "Click", press = "Press", release = "Release" }
@@ -152,16 +164,29 @@ final class SamsungTV {
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let payload = String(data: data, encoding: .utf8) else { return false }
         let gen = generation
-        let name = key.rawValue
+        stats.queued += 1
+        stats.lastKey = key.rawValue
+        stats.lastCommand = command.rawValue
+        stats.lastAt = Date()
+        onStats?(stats)
         Task { [weak self] in
             do {
                 try await task.send(.string(payload))
+                guard let self, self.generation == gen else { return }
+                self.stats.written += 1
+                self.onStats?(self.stats)
             } catch {
                 guard let self, self.generation == gen else { return }
+                self.stats.failed += 1
+                self.stats.lastFailureAt = Date()
+                self.onStats?(self.stats)
+                GRLog.note("samsung", "\(key.rawValue) \(command.rawValue): socket write failed")
                 self.setReady(false)
                 self.setState(.unreachable)
-                self.report("Samsung TV: send failed · using ADB volume")
-                self.onSendFailed?(name)
+                self.report("Samsung TV: send failed (retrying connection)")
+                // Only volume keys have a safe fallback (the same action over ADB). Navigation keys
+                // are never re-sent anywhere: a retry could double-press or reach the wrong device.
+                if let legacy = key.legacyVolumeName { self.onSendFailed?(legacy) }
             }
         }
         return true
@@ -189,7 +214,7 @@ final class SamsungTV {
             pairingBlocked = false
             setState(.connected)
             setReady(true)
-            report("Samsung TV: connected · volume routed through the TV to the soundbar")
+            report("Samsung TV: remote connected")
         case "ms.channel.unauthorized":
             pairingBlocked = true
             setState(.denied)
@@ -228,4 +253,21 @@ final class SamsungTV {
     }
 
     private func report(_ text: String) { onStatus?(text) }
+}
+
+
+/// Counters for the Samsung command diagnostics line. No tokens or addresses are ever stored here.
+struct SamsungCommandStats: Equatable {
+    var queued = 0
+    var written = 0
+    var failed = 0
+    var lastKey = ""
+    var lastCommand = ""
+    var lastAt: Date?
+    var lastFailureAt: Date?
+
+    var summary: String {
+        guard queued > 0 else { return "No Samsung keys sent yet" }
+        return "Last: \(lastKey) (\(lastCommand.lowercased())) · handed to the TV connection \(written) of \(queued) · socket errors \(failed) · the TV does not confirm key presses"
+    }
 }

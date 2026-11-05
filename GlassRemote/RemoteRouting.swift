@@ -35,7 +35,7 @@ enum RemoteCommandKind { case navigation, media, volume, power, source, channel,
 ///   Capabilities only the TV has (source, channel, guide) always go to the TV.
 enum RemoteRouting {
     static func device(for kind: RemoteCommandKind, target: RemoteTarget,
-                       androidConnected: Bool, samsungReady: Bool) -> RemoteDevice? {
+                       androidConnected: Bool, samsungRemoteReady samsungReady: Bool) -> RemoteDevice? {
         switch target {
         case .android:
             switch kind {
@@ -74,6 +74,16 @@ enum SamsungKey: String, CaseIterable {
     static let allowlist: Set<String> = Set(allCases.map(\.rawValue))
 
     /// Maps the app's existing key names (the ones Android uses) onto Samsung keys.
+    /// App-level name for keys that have an ADB equivalent (the only keys with a fallback).
+    var legacyVolumeName: String? {
+        switch self {
+        case .volUp: return "VOLUME_UP"
+        case .volDown: return "VOLUME_DOWN"
+        case .mute: return "MUTE"
+        default: return nil
+        }
+    }
+
     static func forAppKey(_ name: String) -> SamsungKey? {
         switch name {
         case "UP": return .up

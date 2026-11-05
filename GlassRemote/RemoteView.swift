@@ -643,7 +643,7 @@ struct RemoteView: View {
                 navButton("arrow.uturn.backward", "Back") { remote.routedKey("BACK") }
                 navButton("Home", action: { remote.routedKey("HOME") }) { HomeGlyph() }
                 navButton("rectangle.stack", "Recent apps") {
-                    Task { @MainActor in if await remote.openRecents() == false { navigator.go(.apps) } }
+                    Task { @MainActor in if await remote.openRecents() == .unchanged { navigator.go(.apps) } }
                 }
                 navButton("magnifyingglass", "Search") { navigator.openSearch() }
                 navButton("keyboard", "Keyboard") { showKeyboard = true }
@@ -671,7 +671,8 @@ struct RemoteView: View {
 
 
     private var volumeBar: some View {
-        GlassVolumeSlider(value: $volumeSliderValue, onDragChange: { remote.volumeDragActive = $0 })
+        GlassVolumeSlider(value: $volumeSliderValue, floorIsMute: remote.volumeCalibration.lo == 0,
+                          onDragChange: { remote.volumeDragChanged($0) })
             .onChange(of: volumeSliderValue) { newValue in
                 // A value we just applied from the TV's own reading must not be sent back to it.
                 if let echo = externalVolumeEcho, abs(newValue - echo) < 0.0001 {

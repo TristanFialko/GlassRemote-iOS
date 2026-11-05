@@ -161,20 +161,24 @@ struct PlayerPage: View {
     private func transport(media: MediaState) -> some View {
         let active = media.isActive
         let busy = remote.mediaCommandPending
-        return GlassGroup(spacing: 12) {
-            ZStack {
-                Color.clear.frame(height: 92).glassBar(Capsule(), interactive: false)
-                HStack(spacing: 6) {
-                    control("backward.end.fill", "Previous", enabled: active && media.canPrevious && !busy) { remote.sendMedia(.previous) }
-                    control("backward.fill", "Rewind", enabled: active && media.canRewind && !busy) { remote.sendMedia(.rewind) }
-                    playButton(media: media, enabled: active && media.canPlayPause && !busy, busy: busy)
-                    control("forward.fill", "Fast forward", enabled: active && media.canFastForward && !busy) { remote.sendMedia(.fastForward) }
-                    control("forward.end.fill", "Next", enabled: active && media.canNext && !busy) { remote.sendMedia(.next) }
+        return ZStack {
+            // Glass only (bar + centre bubble); the buttons sit above it so they are never refracted.
+            GlassGroup(spacing: 12) {
+                ZStack {
+                    Color.clear.frame(height: 92).glassBar(Capsule(), interactive: false)
+                    Color.clear.frame(width: 70, height: 70).glassLens(Circle())
                 }
-                .padding(.horizontal, 10)
             }
-            .frame(height: 92)
+            HStack(spacing: 6) {
+                control("backward.end.fill", "Previous", enabled: active && media.canPrevious && !busy) { remote.sendMedia(.previous) }
+                control("backward.fill", "Rewind", enabled: active && media.canRewind && !busy) { remote.sendMedia(.rewind) }
+                playButton(media: media, enabled: active && media.canPlayPause && !busy, busy: busy)
+                control("forward.fill", "Fast forward", enabled: active && media.canFastForward && !busy) { remote.sendMedia(.fastForward) }
+                control("forward.end.fill", "Next", enabled: active && media.canNext && !busy) { remote.sendMedia(.next) }
+            }
+            .padding(.horizontal, 10)
         }
+        .frame(height: 92)
     }
 
     private func playButton(media: MediaState, enabled: Bool, busy: Bool) -> some View {
@@ -184,7 +188,7 @@ struct PlayerPage: View {
                 else { Image(systemName: media.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 28, weight: .semibold)) }
             }
             .frame(width: 70, height: 70)
-            .glassLens(Circle())
+            .contentShape(Circle())
         }
         .buttonStyle(PressStyle())
         .disabled(!enabled)

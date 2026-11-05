@@ -9,9 +9,9 @@ final class PageNavigator: ObservableObject {
     /// Bumped to ask Discover to focus its search field (keyboard appears).
     @Published private(set) var searchFocusToken = 0
 
-    func go(_ target: AppPage) {
+    func go(_ target: AppPage, haptic: Bool = true) {
         guard target != page else { return }
-        Haptics.soft()
+        if haptic { Haptics.soft() }
         withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { page = target }
     }
 

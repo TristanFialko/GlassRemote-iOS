@@ -33,52 +33,94 @@ struct VolumeCalibration: Equatable {
         min(max(Double(raw - lo) / Double(span), 0), 1)
     }
 
-    /// Fraction of the slider, measured from either end, inside which a drag snaps to that end.
-    /// Both ends use this one value, so the snap zone is exactly symmetric.
-    static let magnetMargin = 0.015
-
     /// Snap a dragged value within `margin` of an end to that end exactly, so a finger that
-    /// stops a hair short still reaches 0 % or 100 %. The distance to each end is measured the
-    /// same way (`value` from 0, `1 - value` from 1) and compared with a tiny epsilon, so a
-    /// value sitting exactly on the boundary (e.g. 0.985) is not lost to binary rounding of
-    /// `1 - margin`. Values outside 0...1 are clamped first.
-    static func magnet(_ value: Double, margin: Double = magnetMargin) -> Double {
-        let v = min(max(value, 0), 1)
-        let epsilon = 1e-9
-        if v <= margin + epsilon { return 0 }
-        if 1 - v <= margin + epsilon { return 1 }
-        return v
+    /// stops a hair short still reaches 0 % or 100 %.
+    static func magnet(_ value: Double, margin: Double = 0.012) -> Double {
+        if value <= margin { return 0 }
+        if value >= 1 - margin { return 1 }
+        return value
     }
 }
 
-/// Learns where the TV really stops. After the user commands an end of the range and the TV then
-/// reports the SAME value twice in a row (and that value differs from the command by at most
-/// `tolerance`), that value is the real end. Nothing is learned from a single reading, from a
-/// reading that is still moving, or from a value far from the command.
+/// Learns where the TV really stops, conservatively. A limit is only established when ALL hold:
+///  - the user commanded an end (0 % or 100 %) and nothing newer has happened since (no other
+///    volume command, no drag, no volume key);
+///  - readings arrive after the TV had `settleDelay` to act (so a reading that was already in
+///    flight when the command was sent cannot count) and before `window` expires;
+///  - the SAME value is read `requiredReadings` times at least `minSpacing` apart (settled, not moving);
+///  - that value is within `tolerance` of the command and plausible (>= 80 for a top, <= 20 for a floor).
+/// Any reading that breaks a rule discards the attempt. A limit found once is only TENTATIVE
+/// (used this session, never saved); a second independent attempt landing on the same value makes
+/// it CONFIRMED (saved). A later reading outside the learned range resets to 0...100.
 struct EndpointLearner {
-    var tolerance = 6
-    private var commanded: (raw: Int, isMax: Bool)?
-    private var last: Int?
-    private var repeats = 0
-
-    mutating func commandSent(raw: Int, isMax: Bool) {
-        commanded = (raw, isMax)
-        last = nil
-        repeats = 0
+    struct Config {
+        var settleDelay: TimeInterval = 1.0
+        var window: TimeInterval = 10.0
+        var minSpacing: TimeInterval = 0.7
+        var requiredReadings = 3
+        var tolerance = 6
     }
 
-    mutating func clear() { commanded = nil; last = nil; repeats = 0 }
+    enum Outcome: Equatable {
+        case none
+        case tentative(VolumeCalibration)
+        case confirmed(VolumeCalibration)
+    }
 
-    /// Returns an updated calibration when a limit was learned.
-    mutating func reading(_ raw: Int, calibration: VolumeCalibration) -> VolumeCalibration? {
-        guard let commanded else { return nil }
-        if raw == commanded.raw { clear(); return nil }               // TV honoured the command
-        guard abs(raw - commanded.raw) <= tolerance else { clear(); return nil }
-        if raw == last { repeats += 1 } else { last = raw; repeats = 1 }
-        guard repeats >= 2 else { return nil }
+    var config = Config()
+    private var command: (raw: Int, isMax: Bool, at: Date)?
+    private var stableValue: Int?
+    private var stableCount = 0
+    private var lastStableAt = Date.distantPast
+    private var tentativeMax: Int?
+    private var tentativeMin: Int?
+
+    var isArmed: Bool { command != nil }
+
+    mutating func commandSent(raw: Int, isMax: Bool, at: Date = Date()) {
+        command = (raw, isMax, at)
+        stableValue = nil; stableCount = 0; lastStableAt = .distantPast
+    }
+
+    /// A newer command, a drag, or any other disturbance.
+    mutating func invalidate() {
+        command = nil
+        stableValue = nil; stableCount = 0; lastStableAt = .distantPast
+    }
+
+    /// Forget tentative results too (calibration was reset).
+    mutating func resetAll() {
+        invalidate()
+        tentativeMax = nil; tentativeMin = nil
+    }
+
+    mutating func reading(_ raw: Int, at: Date = Date(), dragging: Bool,
+                          calibration: VolumeCalibration) -> Outcome {
+        if dragging { invalidate(); return .none }
+        guard let command else { return .none }
+        let age = at.timeIntervalSince(command.at)
+        if age > config.window { invalidate(); return .none }            // stale attempt
+        if age < config.settleDelay { return .none }                      // TV has not settled yet
+        if raw == command.raw { invalidate(); return .none }              // TV honoured the command
+        guard abs(raw - command.raw) <= config.tolerance,
+              command.isMax ? raw >= 80 : raw <= 20 else { invalidate(); return .none }   // inconsistent
+
+        if raw == stableValue {
+            guard at.timeIntervalSince(lastStableAt) >= config.minSpacing else { return .none }
+            stableCount += 1
+        } else {
+            stableValue = raw; stableCount = 1
+        }
+        lastStableAt = at
+        guard stableCount >= config.requiredReadings else { return .none }
+
         var updated = calibration
-        if commanded.isMax { updated.hi = raw } else { updated.lo = raw }
-        clear()
-        return updated.hi - updated.lo >= 20 ? updated : nil
+        if command.isMax { updated.hi = raw } else { updated.lo = raw }
+        let isMax = command.isMax
+        invalidate()
+        guard updated.hi - updated.lo >= 20 else { return .none }
+        let previous = isMax ? tentativeMax : tentativeMin
+        if isMax { tentativeMax = raw } else { tentativeMin = raw }
+        return previous == raw ? .confirmed(updated) : .tentative(updated)
     }
 }

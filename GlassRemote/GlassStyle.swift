@@ -139,56 +139,113 @@ extension View {
     }
 }
 
-/// Glass segmented control (Device selector, Discover filter). One bar, one sliding lens.
-/// Equal-width segments so the lens position is exact; both are glass inside one `GlassGroup`.
+/// Records that a scrub bar is being touched, so the page-swipe gesture (which runs alongside every
+/// child gesture) ignores the same finger. Touched from the main thread only.
+final class ScrubTouch: @unchecked Sendable {
+    static let shared = ScrubTouch()
+    private var last = Date.distantPast
+    func touch() { last = Date() }
+    var isActive: Bool { Date().timeIntervalSince(last) < 0.4 }
+}
+
+/// A glass bar with a glass "bubble" that follows your finger. Used by the page dock, the device
+/// selector and the Discover filter.
+///
+/// Why the labels are NOT inside the glass container: native glass refracts whatever is rendered
+/// beneath it inside the same container, which warped the labels and drew ghost copies of them at
+/// the bar's edges. The container now holds only the bar and the bubble; labels sit above it and
+/// are never sampled.
+///
+/// Touch: pressing or sliding along the bar moves the bubble live (it grows slightly while a finger
+/// is down) and selects the segment under the finger as it crosses it, with a haptic tick.
+struct GlassScrubSelector<Value: Hashable, Label: View>: View {
+    let values: [Value]
+    @Binding var selection: Value
+    var height: CGFloat = 40
+    var inset: CGFloat = 4
+    var haptic: Bool = true
+    @ViewBuilder var label: (Value, Bool) -> Label
+
+    @Namespace private var ns
+    @State private var fingerX: CGFloat?
+
+    var body: some View {
+        GeometryReader { geo in
+            let count = max(values.count, 1)
+            let seg = (geo.size.width - inset * 2) / CGFloat(count)
+            let index = values.firstIndex(of: selection) ?? 0
+            let restX = inset + seg * CGFloat(index)
+            let lensX = fingerX.map { min(max($0 - seg / 2, inset), geo.size.width - inset - seg) } ?? restX
+            let dragging = fingerX != nil
+
+            ZStack(alignment: .leading) {
+                // Glass only: bar + bubble. Nothing else may live in this container.
+                GlassGroup(spacing: 10) {
+                    ZStack(alignment: .leading) {
+                        Color.clear.glassBar(Capsule()).glassMorph("bar", in: ns)
+                        Color.clear
+                            .frame(width: seg, height: height - inset * 2)
+                            .glassLens(Capsule())
+                            .glassMorph("lens", in: ns)
+                            .scaleEffect(dragging ? 1.12 : 1)
+                            .offset(x: lensX)
+                            .animation(dragging ? .interactiveSpring(response: 0.18, dampingFraction: 0.85)
+                                                : .spring(response: 0.38, dampingFraction: 0.80), value: lensX)
+                            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: dragging)
+                    }
+                }
+
+                // Labels above the glass, untouched by refraction.
+                HStack(spacing: 0) {
+                    ForEach(Array(values.enumerated()), id: \.offset) { offset, value in
+                        label(value, offset == index)
+                            .frame(width: seg, height: height)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityAddTraits(offset == index ? [.isButton, .isSelected] : .isButton)
+                            .accessibilityAction { choose(value) }
+                    }
+                }
+                .padding(.horizontal, inset)
+                .allowsHitTesting(false)
+            }
+            .contentShape(Capsule())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        ScrubTouch.shared.touch()
+                        fingerX = drag.location.x
+                        let i = min(max(Int((drag.location.x - inset) / seg), 0), count - 1)
+                        if values[i] != selection { choose(values[i]) }
+                    }
+                    .onEnded { _ in fingerX = nil }
+            )
+        }
+        .frame(height: height)
+    }
+
+    private func choose(_ value: Value) {
+        guard value != selection else { return }
+        if haptic { Haptics.soft() }
+        selection = value
+    }
+}
+
+/// Text (+ optional symbol) segmented control built on `GlassScrubSelector`.
 struct GlassSegmented<Value: Hashable>: View {
     struct Item { let value: Value; let title: String; let symbol: String? }
     let items: [Item]
     @Binding var selection: Value
     var height: CGFloat = 40
-    @Namespace private var ns
-
-    private var index: Int { items.firstIndex { $0.value == selection } ?? 0 }
 
     var body: some View {
-        GlassGroup(spacing: 8) {
-            GeometryReader { geo in
-                let inner = geo.size.width - 8
-                let seg = inner / CGFloat(max(items.count, 1))
-                ZStack(alignment: .leading) {
-                    Color.clear.glassBar(Capsule()).glassMorph("bar", in: ns)
-                    Color.clear
-                        .frame(width: seg, height: height - 8)
-                        .glassLens(Capsule())
-                        .glassMorph("lens", in: ns)
-                        .offset(x: 4 + seg * CGFloat(index))
-                        .animation(.spring(response: 0.36, dampingFraction: 0.82), value: index)
-                    HStack(spacing: 0) {
-                        ForEach(items, id: \.value) { item in
-                            Button {
-                                guard item.value != selection else { return }
-                                Haptics.soft()
-                                selection = item.value
-                            } label: {
-                                HStack(spacing: 5) {
-                                    if let symbol = item.symbol { Image(systemName: symbol).scaledFont(13, .semibold) }
-                                    Text(item.title).scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
-                                }
-                                .foregroundStyle(item.value == selection ? Color.white : Color.white.opacity(0.68))
-                                .frame(width: seg, height: height)
-                                .contentShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(item.title)
-                            .accessibilityAddTraits(item.value == selection ? .isSelected : [])
-                        }
-                    }
-                    .padding(.horizontal, 4)
-                }
+        GlassScrubSelector(values: items.map(\.value), selection: $selection, height: height) { value, selected in
+            let item = items.first { $0.value == value }
+            HStack(spacing: 5) {
+                if let symbol = item?.symbol { Image(systemName: symbol).scaledFont(13, .semibold) }
+                Text(item?.title ?? "").scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
             }
-            .frame(height: height)
+            .foregroundStyle(selected ? Color.white : Color.white.opacity(0.68))
         }
-        .frame(height: height)
     }
 }
 

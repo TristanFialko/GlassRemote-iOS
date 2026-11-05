@@ -8,7 +8,7 @@ extension RemoteModel {
     /// With the Android target and a live box this is the unchanged `key(_:)` path.
     func routedKey(_ name: String) {
         switch RemoteRouting.device(for: .navigation, target: target,
-                                    androidConnected: connected, samsungReady: tvVolumeReady) {
+                                    androidConnected: connected, samsungRemoteReady: samsungRemoteReady) {
         case .android:
             key(name)
         case .samsung:
@@ -27,6 +27,14 @@ extension RemoteModel {
         return false
     }
 
+    /// Hold experiment for the Connection sheet: Right arrow, Press then Release after 0.8 s.
+    /// Watch the TV: one step = Press/Release acts like a click; repeated steps = a real hold.
+    func samsungHoldTest() {
+        guard samsungRemoteReady else { status = samsungUnavailableMessage; return }
+        GRLog.note("samsung", "hold test: KEY_RIGHT press/release 0.8 s (user-initiated)")
+        Task { await tv.holdTest(.right) }
+    }
+
     var samsungUnavailableMessage: String {
         guard tvVolumeEnabled else { return "Samsung TV is off · enable it in Connection settings" }
         switch samsungState {
@@ -36,26 +44,31 @@ extension RemoteModel {
         }
     }
 
-    /// KEYCODE_APP_SWITCH (187). Returns false when the launcher visibly did nothing, so the caller
-    /// can offer something more useful (the Apps page) instead of a dead button. The check compares
-    /// the focused window before and after; if the probe itself fails, nothing is claimed either way.
-    func openRecents() async -> Bool {
-        guard connected, appActive, let connection = adb else { status = "Not connected"; return true }
-        let probe = ["sh", "-c", "dumpsys window | grep -m1 mCurrentFocus"]
-        let before = ((try? await runShell(connection, probe)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    /// KEYCODE_APP_SWITCH (187). Reports what could actually be observed (see RecentsProbe); only
+    /// `.unchanged` is treated as "the launcher ignored it". Samples twice, 0.9 s apart, in case the
+    /// overlay is slow. Task-level state (`dumpsys activity recents`) is not used: it is heavy and its
+    /// format varies by Android version, so detection stays best-effort.
+    func openRecents() async -> RecentsOutcome {
+        guard connected, appActive, let connection = adb else { status = "Not connected"; return .unknown }
+        let probe = ["sh", "-c", RecentsProbe.command]
+        func snapshot() async -> RecentsSnapshot {
+            RecentsProbe.parse((try? await runShell(connection, probe)) ?? "")
+        }
+        let before = await snapshot()
         androidKey(187)
-        try? await Task.sleep(nanoseconds: 900_000_000)
-        let after = ((try? await runShell(connection, probe)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !before.isEmpty, !after.isEmpty else {
-            GRLog.note("recents", "sent 187; focus probe unavailable, result unknown")
-            return true
+        var outcome = RecentsOutcome.unknown
+        for _ in 0..<2 {
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            outcome = RecentsProbe.outcome(before: before, after: await snapshot())
+            if outcome != .unchanged { break }
         }
-        if before != after {
-            GRLog.note("recents", "187 changed window focus")
-            return true
+        GRLog.note("recents", "187 outcome: \(outcome)")
+        switch outcome {
+        case .opened: break
+        case .unchanged: status = "This box has no Recents screen · opened Apps instead"
+        case .changedUnrecognised: status = "Sent Recent Apps · the screen changed but I can't confirm it's Recents"
+        case .unknown: status = "Sent Recent Apps · couldn't check the result"
         }
-        GRLog.note("recents", "187 did not change window focus")
-        status = "This box has no Recents screen · opened Apps instead"
-        return false
+        return outcome
     }
 }
