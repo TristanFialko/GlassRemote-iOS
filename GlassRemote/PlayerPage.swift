@@ -5,8 +5,8 @@ import SwiftUI
 /// `RemoteModel.sendMedia`, which uses explicit Play / Pause and confirms against the session.
 ///
 /// Real data: title, optional subtitle, playback state, position (extrapolated between polls) and
-/// the actions the session advertises. NOT available from the box: artwork, duration, seeking
-/// to a position (see V0_4_NOTES.md). So there is no scrubber and no remaining time.
+/// the actions the session advertises. Artwork is looked up from Cinemeta by title. NOT available from the box: duration and
+/// seeking to a position. So there is no scrubber and no remaining time.
 struct PlayerPage: View {
     @EnvironmentObject private var remote: RemoteModel
     @ObservedObject private var artwork = PlayerArtworkStore.shared
@@ -38,6 +38,12 @@ struct PlayerPage: View {
         .background { ambientLight }
         .foregroundStyle(.white)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        // Stremio's session has no artwork: look the title up so playback started in Stremio itself
+        // (not just from Discover) still gets its poster.
+        .task(id: sessionTitle + "|" + media.subtitle) {
+            guard media.isActive, media.package == RemoteModel.stremioPackage, !sessionTitle.isEmpty else { return }
+            await artwork.resolve(sessionTitle: sessionTitle, subtitle: media.subtitle)
+        }
         .task(id: poster) {
             guard let poster, let image = await ArtworkCache.shared.image(for: poster) else {
                 withAnimation(.easeOut(duration: 0.4)) { ambient = nil }

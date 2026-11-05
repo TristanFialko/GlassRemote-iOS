@@ -43,51 +43,6 @@ struct LaunchTVAppIntent: AppIntent {
     }
 }
 
-/// A Quick Action as Shortcuts / Siri sees it, so the app offers a picker instead of free text.
-struct QuickActionEntity: AppEntity {
-    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Quick Action"
-    static let defaultQuery = QuickActionEntityQuery()
-
-    var id: String
-    var name: String
-
-    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)") }
-}
-
-struct QuickActionEntityQuery: EntityQuery {
-    @MainActor
-    func entities(for identifiers: [String]) async throws -> [QuickActionEntity] {
-        QuickActionStore.shared.actions
-            .filter { identifiers.contains($0.id.uuidString) }
-            .map { QuickActionEntity(id: $0.id.uuidString, name: $0.name) }
-    }
-
-    @MainActor
-    func suggestedEntities() async throws -> [QuickActionEntity] {
-        QuickActionStore.shared.actions.map { QuickActionEntity(id: $0.id.uuidString, name: $0.name) }
-    }
-}
-
-struct RunQuickActionIntent: AppIntent {
-    static let title: LocalizedStringResource = "Run Quick Action"
-    static let description = IntentDescription("Runs one of your Glass Remote Quick Actions.")
-    static let openAppWhenRun = true
-
-    @Parameter(title: "Quick Action") var action: QuickActionEntity
-
-    @MainActor
-    func perform() async throws -> some IntentResult {
-        let model = RemoteModel.shared
-        guard await model.waitUntilConnected(timeout: 20) else { return .result() }
-        if let match = QuickActionStore.shared.actions.first(where: { $0.id.uuidString == action.id }) {
-            model.runQuickAction(match)
-        } else {
-            model.status = "That Quick Action no longer exists"
-        }
-        return .result()
-    }
-}
-
 struct GlassRemoteShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
@@ -95,12 +50,6 @@ struct GlassRemoteShortcuts: AppShortcutsProvider {
             phrases: ["Open \(\.$app) with \(.applicationName)"],
             shortTitle: "Open TV App",
             systemImageName: "square.grid.2x2"
-        )
-        AppShortcut(
-            intent: RunQuickActionIntent(),
-            phrases: ["Run \(\.$action) in \(.applicationName)", "Run a Quick Action in \(.applicationName)"],
-            shortTitle: "Run Quick Action",
-            systemImageName: "bolt.fill"
         )
     }
 }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Turns relative finger movement into Samsung D-pad keys. This is NOT a pointer: the Samsung
-/// WebSocket remote API documents keys only (see V0_4_NOTES.md), so movement is translated into
+/// WebSocket remote API documents keys only, so movement is translated into
 /// Up / Down / Left / Right presses. Pure and unit tested; the view feeds it deltas.
 struct DirectionalTrackpad {
     /// 0.5 ... 3. Higher = fewer points of travel per key.

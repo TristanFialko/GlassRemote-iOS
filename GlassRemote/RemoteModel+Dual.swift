@@ -1,6 +1,6 @@
 import Foundation
 
-// Dual-device routing and the Android Recents control.
+// Dual-device routing.
 // Nothing here touches the helpers, the HID devices or connection recovery.
 
 extension RemoteModel {
@@ -44,31 +44,13 @@ extension RemoteModel {
         }
     }
 
-    /// KEYCODE_APP_SWITCH (187). Reports what could actually be observed (see RecentsProbe); only
-    /// `.unchanged` is treated as "the launcher ignored it". Samples twice, 0.9 s apart, in case the
-    /// overlay is slow. Task-level state (`dumpsys activity recents`) is not used: it is heavy and its
-    /// format varies by Android version, so detection stays best-effort.
-    func openRecents() async -> RecentsOutcome {
-        guard connected, appActive, let connection = adb else { status = "Not connected"; return .unknown }
-        let probe = ["sh", "-c", RecentsProbe.command]
-        func snapshot() async -> RecentsSnapshot {
-            RecentsProbe.parse((try? await runShell(connection, probe)) ?? "")
-        }
-        let before = await snapshot()
-        androidKey(187)
-        var outcome = RecentsOutcome.unknown
-        for _ in 0..<2 {
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            outcome = RecentsProbe.outcome(before: before, after: await snapshot())
-            if outcome != .unchanged { break }
-        }
-        GRLog.note("recents", "187 outcome: \(outcome)")
-        switch outcome {
-        case .opened: break
-        case .unchanged: status = "This box has no Recents screen · showing your apps instead"
-        case .changedUnrecognised: status = "Sent Recent Apps · the screen changed but I can't confirm it's Recents"
-        case .unknown: status = "Sent Recent Apps · couldn't check the result"
-        }
-        return outcome
+    /// One button for both Samsung keys. Unknown -> sends Play (idempotent); afterwards alternates.
+    /// The guess only advances when the key was actually handed to the socket (not proof the TV acted).
+    func samsungTogglePlayPause() {
+        let next: SamsungKey = samsungPlayPause == .sentPlay ? .pause : .play
+        if samsungKey(next) { samsungPlayPause = next == .play ? .sentPlay : .sentPause }
     }
 }
+
+/// Last Play/Pause key sent to the Samsung TV (a guess, not TV state).
+enum SamsungPlayPauseGuess: Equatable { case unknown, sentPlay, sentPause }

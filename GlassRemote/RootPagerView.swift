@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Hosts the four pages side by side and keeps ALL of them alive. Switching pages only moves an
+/// Hosts the three pages side by side and keeps ALL of them alive. Switching pages only moves an
 /// offset: nothing is torn down or recreated, so ADB, the HID helpers, media polling and the
 /// Remote page's touch state are never affected by navigation. Navigation sends no TV input.
 ///
@@ -63,7 +63,6 @@ struct RootPagerView: View {
         case .remote: RemoteView().padding(.bottom, DockMetrics.clearance)
         case .player: PlayerPage()
         case .discover: DiscoverPage()
-        case .play: GooglePlayPage()
         }
     }
 
@@ -109,7 +108,7 @@ struct PageDock: View {
                 Text(item.title).scaledFont(10, .semibold).lineLimit(1)
             }
             .foregroundStyle(selected ? Color.white : Color.white.opacity(0.62))
-            .accessibilityLabel(item.accessibilityName)
+            .accessibilityLabel(item.title)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Pages")

@@ -76,8 +76,10 @@ struct GlobalMenuButton: View {
                 ForEach(entries(.advanced), id: \.self) { entry in view(for: entry) }
             }
         } label: {
-            Image(systemName: "line.3.horizontal")
-                .scaledFont(17, .medium)
+            Image("BrandIcon")
+                .resizable().scaledToFill()
+                .frame(width: 30, height: 30)
+                .clipShape(Circle())
                 .frame(width: 44, height: 44)
                 .glassSurface(Circle(), interactive: true)
         }

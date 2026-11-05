@@ -1,8 +1,9 @@
 import SwiftUI
+import UIKit
 
-/// The four primary pages. Order here is the swipe order. Remote is the default landing page.
+/// The three primary pages. Order here is the swipe order. Remote is the default landing page.
 enum AppPage: Int, CaseIterable, Identifiable {
-    case remote, player, discover, play
+    case remote, player, discover
 
     var id: Int { rawValue }
     static let landing: AppPage = .remote
@@ -12,20 +13,24 @@ enum AppPage: Int, CaseIterable, Identifiable {
         case .remote: return "Remote"
         case .player: return "Player"
         case .discover: return "Discover"
-        case .play: return "Play"
         }
     }
+
+    /// `appletvremote.gen4` ships with SF Symbols 4 (iOS 16, this app's deployment target). The
+    /// runtime check keeps an unexpected OS from showing an empty icon: it falls back to gen2.
+    static let remoteSymbol: String = {
+        for name in ["appletvremote.gen4.fill", "appletvremote.gen4", "appletvremote.gen2.fill"]
+        where UIImage(systemName: name) != nil { return name }
+        return "dot.radiowaves.left.and.right"
+    }()
 
     var symbol: String {
         switch self {
-        case .remote: return "dot.radiowaves.left.and.right"
+        case .remote: return AppPage.remoteSymbol
         case .player: return "play.rectangle.fill"
         case .discover: return "magnifyingglass"
-        case .play: return "arrow.down.app.fill"
         }
     }
-
-    var accessibilityName: String { self == .play ? "Google Play" : title }
 
     /// Pure paging maths (unit tested). `translation` is the horizontal drag, `predicted` where it
     /// would coast to. A page changes on a deliberate drag past a third of the width or a flick.

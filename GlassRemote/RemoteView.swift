@@ -15,7 +15,6 @@ final class PointerBox {
 struct RemoteView: View {
     @EnvironmentObject private var remote: RemoteModel
     @EnvironmentObject private var navigator: PageNavigator
-    @ObservedObject private var quick = QuickActionStore.shared
 
     // Drag position lives in a reference box so updating it on every touch move does NOT invalidate
     // RemoteView's body (a plain @State CGPoint? did). Same values, same order, same behaviour.
@@ -28,7 +27,6 @@ struct RemoteView: View {
     @State private var scrollState = TwoFingerScrollState()
     @State private var appsExpanded = false
     @State private var showKeyboard = false
-    @State private var showQuickEditor = false
     @State private var pendingPower: PowerAction?
     @State private var didAutoConnect = false
     @State private var screenshotItem: ScreenshotItem?
@@ -37,6 +35,11 @@ struct RemoteView: View {
     @ObservedObject private var favourites = AppFavourites.shared
     @State private var volumeSliderValue: Double = 0.5
     @State private var externalVolumeEcho: Double?
+
+    /// The Apps grid belongs to the Android remote only. Everything that reacts to it (page height,
+    /// scrolling, pad dimming) reads this, so the Samsung remote never inherits the expanded layout.
+    /// `appsExpanded` itself is kept, so the state survives a round trip to Samsung and back.
+    private var androidExpanded: Bool { appsExpanded && remote.target == .android }
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
 
@@ -56,7 +59,7 @@ struct RemoteView: View {
                         // The pad is the point of this page: it takes every spare point and never shrinks
                         // below a comfortable size, while the buttons around it keep their full size.
                         controlSurface
-                            .frame(minHeight: 230, maxHeight: appsExpanded ? 230 : CGFloat.infinity)
+                            .frame(minHeight: 230, maxHeight: androidExpanded ? 230 : CGFloat.infinity)
                             .layoutPriority(1)
                         navRow
                     }
@@ -65,10 +68,10 @@ struct RemoteView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
                 .padding(.bottom, 8)
-                .frame(height: appsExpanded ? nil : proxy.size.height)
+                .frame(height: androidExpanded ? nil : proxy.size.height)
             }
             // The page only scrolls while the Apps grid pushes content below the fold.
-            .scrollDisabled(!appsExpanded)
+            .scrollDisabled(!androidExpanded)
         }
         .background { backdrop }
         .preferredColorScheme(.dark)
@@ -78,7 +81,6 @@ struct RemoteView: View {
         .sheet(isPresented: $showKeyboard) { KeyboardSheet().environmentObject(remote) }
         .sheet(item: $screenshotItem) { item in ScreenshotSheet(item: item) }
         .sheet(isPresented: $showDeviceInfo) { DeviceInfoSheet().environmentObject(remote) }
-        .sheet(isPresented: $showQuickEditor) { QuickActionEditor(store: quick) }
         .sheet(isPresented: $showPlayer) {
             NowPlayingSheet().environmentObject(remote)
                 .presentationDetents([.large])
@@ -367,37 +369,10 @@ struct RemoteView: View {
         .accessibilityLabel(label)
     }
 
-    // MARK: - Mode selector + Quick Actions (one compact row)
+    // MARK: - Mode selector
 
     private var modeRow: some View {
-        HStack(spacing: 8) {
-            ModeSelector(isMouse: $remote.isTrackpad, segmentHeight: 32)
-            quickActionsMenu
-        }
-    }
-
-    /// Quick Actions collapse into one button so they take no vertical space until needed.
-    private var quickActionsMenu: some View {
-        Menu {
-            if quick.actions.isEmpty {
-                Text("No Quick Actions yet")
-            }
-            ForEach(quick.actions) { action in
-                Button { remote.runQuickAction(action) } label: {
-                    Label(action.name, systemImage: remote.runningQuickActionID == action.id ? "hourglass" : "play.fill")
-                }
-                .disabled(!remote.connected)
-            }
-            Divider()
-            Button { showQuickEditor = true } label: { Label("Edit Quick Actions", systemImage: "slider.horizontal.3") }
-        } label: {
-            Image(systemName: "bolt.fill")
-                .scaledFont(15, .semibold)
-                .foregroundStyle(.white)
-                .frame(width: 48, height: 40)
-                .glassSurface(Capsule(), interactive: true)
-        }
-        .accessibilityLabel("Quick Actions")
+        ModeSelector(isMouse: $remote.isTrackpad, segmentHeight: 32)
     }
 
     // MARK: - Mouse / D-pad surface
@@ -548,8 +523,8 @@ struct RemoteView: View {
             .onChange(of: appsExpanded) { _ in cancelPointer() }
             .onDisappear { cancelPointer() }
             // While the Apps grid is open the page scrolls instead of moving the cursor.
-            .allowsHitTesting(!appsExpanded)
-            .opacity(appsExpanded ? 0.6 : 1)
+            .allowsHitTesting(!androidExpanded)
+            .opacity(androidExpanded ? 0.6 : 1)
     }
 
     private var dpadSurface: some View {
@@ -559,8 +534,20 @@ struct RemoteView: View {
             ZStack {
                 Color.clear.glassSurface(Circle(), elevated: true)
                     .frame(width: size, height: size)
-                    .overlay(Circle().stroke(Color.white.opacity(0.20), lineWidth: 1.5))
-                    .overlay(Circle().stroke(Color.black.opacity(0.55), lineWidth: 1).padding(1.5))
+                    // Depth: soft top light falling to a darker lower edge.
+                    .overlay(Circle().fill(RadialGradient(colors: [Color.white.opacity(0.10), .clear],
+                                                          center: .init(x: 0.5, y: 0.12), startRadius: 4, endRadius: size * 0.7))
+                        .allowsHitTesting(false))
+                    // Fine rim highlight (bright on top, dark underneath) plus a hairline inner edge.
+                    .overlay(Circle().strokeBorder(LinearGradient(colors: [Color.white.opacity(0.34), Color.white.opacity(0.06), Color.black.opacity(0.5)],
+                                                                  startPoint: .top, endPoint: .bottom), lineWidth: 1.2))
+                    .overlay(Circle().stroke(Color.black.opacity(0.45), lineWidth: 0.8).padding(1.8))
+                    // Directional separation: four hairline seams on the diagonals, stopping short of the centre.
+                    .overlay(DpadSeams().stroke(Color.white.opacity(0.10), lineWidth: 0.8).padding(size * 0.06)
+                        .allowsHitTesting(false))
+                    .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.8).frame(width: size * 0.36, height: size * 0.36)
+                        .allowsHitTesting(false))
+                    .shadow(color: .black.opacity(0.5), radius: 14, y: 8)
                 VStack(spacing: 0) {
                     HStack(spacing: 0) { Color.clear; dpadKey("chevron.up", "UP", "Up"); Color.clear }
                     HStack(spacing: 0) {
@@ -586,8 +573,8 @@ struct RemoteView: View {
                     remote.routedKey(name)
                 }
         )
-        .allowsHitTesting(!appsExpanded)
-        .opacity(appsExpanded ? 0.6 : 1)
+        .allowsHitTesting(!androidExpanded)
+        .opacity(androidExpanded ? 0.6 : 1)
     }
 
     private func dpadKey(_ icon: String, _ key: String, _ label: String, ok: Bool = false) -> some View {
@@ -598,7 +585,12 @@ struct RemoteView: View {
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background {
-                    if ok { Color.clear.glassSurface(Circle(), interactive: true, elevated: true, accent: true).padding(6) }
+                    if ok {
+                        Color.clear.glassSurface(Circle(), interactive: true, elevated: true, accent: true).padding(6)
+                            .overlay(Circle().strokeBorder(LinearGradient(colors: [Color.white.opacity(0.4), Color.white.opacity(0.05)],
+                                                                          startPoint: .top, endPoint: .bottom), lineWidth: 1).padding(6))
+                            .shadow(color: .black.opacity(0.4), radius: 5, y: 3)
+                    }
                 }
                 .contentShape(Rectangle())
         }
@@ -614,14 +606,9 @@ struct RemoteView: View {
             HStack(spacing: 10) {
                 RemoteKeyButton(symbol: "arrow.uturn.backward", label: "Back") { remote.routedKey("BACK") }
                 RemoteKeyButton(label: "Home", action: { remote.routedKey("HOME") }) { HomeGlyph() }
-                RemoteKeyButton(symbol: "rectangle.stack", label: "Recent apps") {
-                    Task { @MainActor in
-                        // A box with no Recents screen: show the launcher grid instead.
-                        if await remote.openRecents() == .unchanged {
-                            withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded = true }
-                        }
-                    }
-                }
+                // Opens the Samsung TV's own input/source menu (KEY_SOURCE) over the Samsung link. It is
+                // separate from the device selector. If the link is down the status line says so.
+                RemoteKeyButton(symbol: "cable.connector", label: "Sources") { remote.samsungKey(.source) }
                 RemoteKeyButton(symbol: "magnifyingglass", label: "Search") { navigator.openSearch() }
                 RemoteKeyButton(symbol: "keyboard", label: "Keyboard") { showKeyboard = true }
             }
@@ -645,5 +632,20 @@ struct RemoteView: View {
                 externalVolumeEcho = reading
                 volumeSliderValue = reading
             }
+    }
+}
+
+/// Four short diagonal seams between the D-pad's directional areas (visual only: hit areas are unchanged).
+private struct DpadSeams: Shape {
+    func path(in rect: CGRect) -> Path {
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        let r = min(rect.width, rect.height) / 2
+        var p = Path()
+        for angle in [45.0, 135.0, 225.0, 315.0] {
+            let a = angle * .pi / 180
+            p.move(to: CGPoint(x: c.x + cos(a) * r * 0.36, y: c.y + sin(a) * r * 0.36))
+            p.addLine(to: CGPoint(x: c.x + cos(a) * r * 0.98, y: c.y + sin(a) * r * 0.98))
+        }
+        return p
     }
 }

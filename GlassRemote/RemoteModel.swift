@@ -55,9 +55,8 @@ final class RemoteModel: ObservableObject {
         return .offline
     }
 
-    // Media, quick actions, volume routing (see RemoteModel+Features.swift)
+    // Media, volume routing (see RemoteModel+Features.swift)
     @Published var media = MediaState.idle
-    @Published var runningQuickActionID: UUID?
     @Published var samsungStatus = "Samsung TV: off"
     /// Samsung remote WebSocket (keys, pairing). Independent of the UPnP volume link below.
     @Published private(set) var samsungRemoteReady = false
@@ -168,15 +167,23 @@ final class RemoteModel: ObservableObject {
 
     // v0.4: dual-device remote
     @Published var target: RemoteTarget = RemoteTarget.restored(from: UserDefaults.standard.string(forKey: "glassRemote.target")) {
-        didSet { UserDefaults.standard.set(target.rawValue, forKey: "glassRemote.target") }
+        didSet {
+            UserDefaults.standard.set(target.rawValue, forKey: "glassRemote.target")
+            if target != oldValue { samsungPlayPause = .unknown }
+        }
     }
-    @Published private(set) var samsungState: SamsungLinkState = .off
+    @Published private(set) var samsungState: SamsungLinkState = .off {
+        didSet { if samsungState != .connected { samsungPlayPause = .unknown } }
+    }
+    /// What the Samsung Play/Pause button last SENT. The TV exposes no playback state over the
+    /// remote WebSocket, so this is never confirmed playback state; it resets to unknown whenever
+    /// the target changes or the TV link leaves `.connected`.
+    @Published var samsungPlayPause: SamsungPlayPauseGuess = .unknown
 
     // v0.4: volume range calibration and drag protection (see VolumeCalibration.swift)
     @Published var volumeCalibration = VolumeCalibration.loaded()
     var endpointLearner = EndpointLearner()
     var volumeDragActive = false
-    var quickActionTask: Task<Void, Never>?
     var rebootRecoveryTask: Task<Void, Never>?
     var appActive = true
     let tv = SamsungTV()
@@ -578,7 +585,7 @@ final class RemoteModel: ObservableObject {
 
         // Keep frequent navigation on persistent virtual HID. Only use ADB for
         // controls that are not currently routed through the verified HID path.
-        // Buttons give their own haptic on press (PressStyle); keys sent from Quick Actions stay silent.
+        // Buttons give their own haptic on press (PressStyle); keys sent programmatically stay silent.
         if keyboard.send(key) { return }
 
         guard let code = adbCodes[key] else {

@@ -11,8 +11,7 @@ enum SamsungRemoteLayout {
          Item(key: .home, title: "Home", symbol: "house"),
          Item(key: .mute, title: "Mute", symbol: "speaker.slash.fill")],
         [Item(key: .rewind, title: "Rewind", symbol: "backward.fill"),
-         Item(key: .play, title: "Play", symbol: "play.fill"),
-         Item(key: .pause, title: "Pause", symbol: "pause.fill"),
+         Item(key: .play, title: "Play/Pause", symbol: "playpause.fill"),   // one combined button (see keyRow)
          Item(key: .fastForward, title: "Fast forward", symbol: "forward.fill")]
     ]
 
@@ -24,6 +23,7 @@ enum SamsungRemoteLayout {
         Item(key: .menu, title: "TV menu", symbol: "line.3.horizontal"),
         Item(key: .channelUp, title: "Channel up", symbol: "chevron.up"),
         Item(key: .channelDown, title: "Channel down", symbol: "chevron.down"),
+        Item(key: .pause, title: "Pause", symbol: "pause.fill"),
         Item(key: .stop, title: "Stop", symbol: "stop.fill")
     ]
 
@@ -97,7 +97,9 @@ struct SamsungRemotePanel: View {
         GlassGroup(spacing: 10) {
             HStack(spacing: 10) {
                 ForEach(items, id: \.key) { item in
-                    if item.key == .home {
+                    if item.key == .play {
+                        playPauseButton
+                    } else if item.key == .home {
                         RemoteKeyButton(label: item.title, enabled: ready, action: { remote.samsungKey(item.key) }) { HomeGlyph() }
                     } else {
                         RemoteKeyButton(symbol: item.symbol, label: item.title, enabled: ready) { remote.samsungKey(item.key) }
@@ -105,5 +107,29 @@ struct SamsungRemotePanel: View {
                 }
             }
         }
+    }
+
+    /// Combined Play/Pause. Shows the generic play-pause glyph until a key has been sent; after that
+    /// the icon is the NEXT action (pause after Play was sent). It is a local guess and is labelled so.
+    private var playPauseButton: some View {
+        let guess = remote.samsungPlayPause
+        let symbol = guess == .sentPlay ? "pause.fill" : (guess == .sentPause ? "play.fill" : "playpause.fill")
+        let label = guess == .sentPlay ? "Pause (last sent: Play)" : (guess == .sentPause ? "Play (last sent: Pause)" : "Play or pause")
+        return RemoteKeyButton(label: label, enabled: ready, action: {
+            Haptics.light()
+            withAnimation(.easeInOut(duration: 0.2)) { remote.samsungTogglePlayPause() }
+        }) {
+            Image(systemName: symbol).scaledFont(19, .medium)
+                .modifier(SymbolReplace())
+                .id(symbol)
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
+        }
+    }
+}
+
+private struct SymbolReplace: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, *) { content.contentTransition(.symbolEffect(.replace)) }
+        else { content }
     }
 }

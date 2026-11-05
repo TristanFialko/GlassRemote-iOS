@@ -73,32 +73,117 @@ struct CachedArtwork<Placeholder: View>: View {
     }
 }
 
-/// Artwork the media session does NOT provide (`dumpsys media_session` prints no bitmap or URL).
-/// The only real poster the app can show is one it already knows: when the user launched a title
-/// from Discover and the session's title matches it, that poster is used. Otherwise the Player
-/// falls back to the app's own icon.
+/// Pure title matching for Player artwork (unit tested).
+enum PlayerArtworkMatcher {
+    struct Query: Equatable {
+        var names: [String]          // search candidates, best first
+        // A release year is split off only when it is clearly one: bracketed, or the last of two
+        // year-like numbers ("Blade Runner 2049 2017"). A lone "2012" or "Blade Runner 2049" stays in the name.
+        var year: String?
+        if let regex = try? NSRegularExpression(pattern: #"[\(\[]?\b(19|20)\d{2}\b[\)\]]?"#) {
+            let ns = title as NSString
+            let found = regex.matches(in: title, range: NSRange(location: 0, length: ns.length))
+            if let last = found.last, last.range.location > 1 {
+                let text = ns.substring(with: last.range)
+                let bracketed = text.hasPrefix("(") || text.hasPrefix("[")
+                if bracketed || found.count >= 2 {
+                    year = text.trimmingCharacters(in: CharacterSet(charactersIn: "()[] "))
+                    title = ns.substring(to: last.range.location)
+                }
+            }
+        }
+        var names: [String] = []
+        func add(_ value: String) {
+            let v = value.trimmingCharacters(in: CharacterSet(charactersIn: " -–—:·|,.")).trimmingCharacters(in: .whitespaces)
+            if v.count >= 2, !names.contains(where: { normalise($0) == normalise(v) }) { names.append(v) }
+        }
+        if let r = title.range(of: episodeMarker, options: .regularExpression) {
+            episodic = true
+            add(String(title[..<r.lowerBound]))           // "Show Name S01E05 Episode" -> "Show Name"
+        }
+        add(title)
+        for separator in [" - ", " – ", " — ", " | "] {
+            if let r = title.range(of: separator) { add(String(title[..<r.lowerBound])) }   // "Show - Episode title"
+        }
+        return Query(names: names, year: year, looksEpisodic: episodic)
+    }
+
+    /// Picks a catalogue title whose name equals one of the candidate names. Never a fuzzy guess: no
+    /// exact match means no poster (the Player then shows the app icon).
+    static func best(from titles: [StremioTitle], for query: Query) -> StremioTitle? {
+        for name in query.names {
+            let wanted = normalise(name)
+            let matches = titles.filter { normalise($0.name) == wanted && $0.posterURL != nil }
+            guard !matches.isEmpty else { continue }
+            if let year = query.year, let exact = matches.first(where: { $0.year.hasPrefix(year) }) { return exact }
+            // Episodic playback -> the series poster; otherwise a movie wins ties. Catalogue order
+            // (popularity) breaks the rest.
+            let preferred: StremioTitle.Kind = query.looksEpisodic ? .series : .movie
+            return matches.first(where: { $0.kind == preferred }) ?? matches.first
+        }
+        return nil
+    }
+}
+
+/// Poster for what the TV box is playing. Previously this only worked when playback had been
+/// started from Discover (a remembered hint); Stremio's media session carries no artwork, so for
+/// anything started in Stremio itself the poster is now looked up by the session's title in
+/// Cinemeta, matched by exact normalised name, and cached.
 @MainActor
 final class PlayerArtworkStore: ObservableObject {
     static let shared = PlayerArtworkStore()
 
     struct Hint: Equatable { var title: String; var posterURL: URL? }
     @Published private(set) var hint: Hint?
+    @Published private(set) var resolved: [String: URL] = [:]
+    private var misses: [String: Date] = [:]
+    private var inFlight: Set<String> = []
+    private static let cacheKey = "glassRemote.playerPosterCache.v1"
+    private static let cacheLimit = 120
 
-    func remember(title: String, posterURL: URL?) {
-        hint = Hint(title: title, posterURL: posterURL)
+    init() {
+        let stored = UserDefaults.standard.dictionary(forKey: Self.cacheKey) as? [String: String] ?? [:]
+        resolved = stored.compactMapValues { URL(string: $0) }.filter { $0.value.scheme == "https" }
     }
 
-    /// Poster for the current session, only when the session title really matches the hint.
+    func remember(title: String, posterURL: URL?) { hint = Hint(title: title, posterURL: posterURL) }
+
+    /// Poster for the current session: the Discover hint when it matches, else a resolved/cached one.
     func posterURL(forSessionTitle title: String) -> URL? {
-        guard let hint, let url = hint.posterURL else { return nil }
-        return Self.matches(session: title, hint: hint.title) ? url : nil
+        if let hint, let url = hint.posterURL, Self.matches(session: title, hint: hint.title) { return url }
+        return resolved[PlayerArtworkMatcher.normalise(title)]
+    }
+
+    /// Looks the title up (once; failures retry after five minutes). Safe to call on every change.
+    func resolve(sessionTitle: String, subtitle: String) async {
+        let key = PlayerArtworkMatcher.normalise(sessionTitle)
+        guard key.count >= 2, resolved[key] == nil else { return }
+        if let hint, let url = hint.posterURL, Self.matches(session: sessionTitle, hint: hint.title) { _ = url; return }
+        if let failed = misses[key], Date().timeIntervalSince(failed) < 300 { return }
+        guard !inFlight.contains(key) else { return }
+        inFlight.insert(key); defer { inFlight.remove(key) }
+
+        let query = PlayerArtworkMatcher.query(title: sessionTitle, subtitle: subtitle)
+        for name in query.names.prefix(3) {
+            guard let found = try? await StremioCatalog.search(name), !Task.isCancelled else { continue }
+            if let match = PlayerArtworkMatcher.best(from: found, for: query), let url = match.posterURL {
+                resolved[key] = url
+                persist()
+                return
+            }
+        }
+        misses[key] = Date()
+    }
+
+    private func persist() {
+        let trimmed = resolved.count > Self.cacheLimit ? Dictionary(uniqueKeysWithValues: Array(resolved).suffix(Self.cacheLimit)) : resolved
+        UserDefaults.standard.set(trimmed.mapValues(\.absoluteString), forKey: Self.cacheKey)
     }
 
     nonisolated static func matches(session: String, hint: String) -> Bool {
-        let a = session.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        let b = hint.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let a = PlayerArtworkMatcher.normalise(session), b = PlayerArtworkMatcher.normalise(hint)
         guard a.count >= 3, b.count >= 3 else { return false }
-        return a == b || a.hasPrefix(b) || b.hasPrefix(a)
+        return a == b || a.hasPrefix(b + " ") || b.hasPrefix(a + " ")
     }
 }
 

@@ -369,52 +369,6 @@ extension RemoteModel {
         }
     }
 
-    // MARK: - Quick Actions
-
-    func runQuickAction(named name: String) {
-        guard let action = QuickActionStore.shared.find(named: name) else {
-            status = "No Quick Action named “\(name)”"
-            return
-        }
-        runQuickAction(action)
-    }
-
-    func runQuickAction(_ action: QuickAction) {
-        guard connected else { status = "Quick Action failed · not connected"; return }
-        quickActionTask?.cancel()
-        runningQuickActionID = action.id
-        Haptics.medium()
-
-        quickActionTask = Task { [weak self] in
-            guard let self else { return }
-            for step in action.steps {
-                if Task.isCancelled { break }
-                switch step.kind {
-                case .launch:
-                    if let app = self.apps.first(where: { $0.package == step.package }) {
-                        await self.launchApp(app)
-                    }
-                case .key:
-                    // Removed keys (e.g. Android Menu) are skipped, never sent.
-                    if QuickActionStore.allowedKeys.contains(step.key) { self.key(step.key) }
-                case .delay:
-                    let seconds = max(0, min(30, step.seconds))
-                    try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                case .volume:
-                    guard step.key == "VOLUME_UP" || step.key == "VOLUME_DOWN" else { break }
-                    for _ in 0..<max(0, min(20, step.count)) {
-                        if Task.isCancelled { break }
-                        self.volume(step.key)
-                        try? await Task.sleep(nanoseconds: 180_000_000)
-                    }
-                }
-                // Small gap so Android can settle between steps.
-                try? await Task.sleep(nanoseconds: 250_000_000)
-            }
-            if self.runningQuickActionID == action.id { self.runningQuickActionID = nil }
-        }
-    }
-
     // MARK: - Helpers
 
     func waitUntilConnected(timeout: Double) async -> Bool {
