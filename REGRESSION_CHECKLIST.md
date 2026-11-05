@@ -48,3 +48,10 @@
 - A denied Samsung pairing prompt is not re-raised until Reconnect.
 - Recent Apps either works or opens the Apps page; the Remote Search button focuses Discover.
 - See V0_4_NOTES.md.
+
+## v0.4 review additions
+- Dock / selectors show no refraction artifacts; sliding a finger across them switches live.
+- Samsung remote works with the UPnP volume link down, and the reverse.
+- Reconnecting the remote does not restart the volume link (and vice versa).
+- Samsung limit learning needs two confirmed attempts before it is saved; reset works.
+- Recent Apps reports opened / unchanged / unknown honestly.

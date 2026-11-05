@@ -116,3 +116,85 @@ re-shown until Reconnect; confirm Auto never double-sends. 6. Recent Apps on the
 9. Switch pages repeatedly while Stremio plays; background and reopen; Stremio must not restart.
 10. Live typing, mouse, screenshots, Quick Actions, favourites, Samsung Keychain pairing.
 11. iOS 26 look vs the reference; iOS 16-25 fallback; Dynamic Type; VoiceOver on the dock.
+
+
+---
+# Review pass (v0.4-dev, second round)
+Still NOT compiled, tested or built: same caveat as above. CI now also triggers on pushes to `v0.4-dev`.
+
+## Glass artifacts (screenshot report)
+Cause: the dock / selector labels lived inside the same glass container as the bar and the bubble,
+so the glass sampled and refracted them (warped icon inside the bubble, mirrored ghost text at the
+bar's top and bottom edges). Fix: `GlassScrubSelector` keeps ONLY glass shapes in the container and
+draws labels above it. The Player transport bar had the same structure and got the same fix.
+New: slide a finger along the dock, device selector or Discover filter and the bubble follows live
+(grows slightly while touched); the page / segment switches as the bubble crosses it, with a haptic.
+Page swiping ignores a finger that is on a selector (`ScrubTouch`). Not seen on a device: check
+the refraction on iOS 26 again.
+
+## 1. Samsung capabilities split
+`samsungRemoteReady` (WebSocket) and `samsungVolumeReady` (UPnP, = `volumeLinkReady`) are separate.
+Routing, the Samsung panel and the header "TV" dot use the remote flag only, so the remote works
+with no volume link; volume UI and the diagnostics use the UPnP flag. `reconnectTV()` touches only
+the WebSocket; new `reconnectVolumeLink()` touches only UPnP (Connection sheet has both buttons).
+`volumeStateReset()` still runs when either flips, because it only resets the ADB step-count
+assumption, which depends on both; it never reconnects anything. Status strings no longer mix the
+two services.
+
+## 2. Samsung command feedback
+`sendKey` true = queued. Diagnostics now count queued / handed to the socket / socket errors and
+the last key, and say the TV does not confirm key presses (`SamsungCommandStats`). No acknowledgement
+or retry was added. A bug I introduced in v0.4 is fixed: on a socket failure the old code re-sent
+`KEY_VOLUP`-style names over ADB (unknown names, and navigation keys could have been re-sent to the
+wrong device). Only volume keys fall back to ADB now, using their app names.
+Press/Release: not proven. The Connection sheet has an experimental button (Right arrow, Press,
+0.8 s, Release; Release is always sent). Run it on your TV. Click-repeat stays everywhere until
+you report what it did.
+
+## 3. Safer volume learning
+Rules are in `EndpointLearner` (see the type's comment) and unit tested: an end was commanded,
+nothing newer happened, readings come after a 1 s settle delay and inside a 10 s window, the same
+value is read 3 times at least 0.7 s apart, within 6 of the command, plausible (>= 80 / <= 20).
+A dragging finger, any volume key, a mid-range command, an inconsistent or far reading discards
+the attempt. First result is TENTATIVE (this session only); the same value from a second
+independent attempt is CONFIRMED and only then saved. A reading outside the learned range resets
+to 0-100. Reset button kept. If the calibrated minimum is above 0, the slider shows a plain
+speaker (not the muted glyph), VoiceOver says "Minimum", and the Connection sheet says it is not
+mute. 0 and 100 stay reachable (1 % magnet, also for VoiceOver steps).
+
+## 4. Recent Apps detection
+`RecentsProbe` reads the focused window and the resumed activity (two samples, 0.9 s apart).
+Outcomes: opened (a Recents-like name appeared), unchanged (fallback to the Apps page), changed but
+unrecognised, unknown. Only "opened" is reported as success; the other two say so on screen.
+Task-level state was not used (heavy, version-dependent). Which launcher class the ARRIS box
+shows is unknown: test and send me the diagnostics log line `recents: 187 outcome`.
+
+## 5. Samsung trackpad (experimental)
+Investigation: Samsung's documented WebSocket remote interface is keys (Click / Press / Release);
+I found no documented pointer or mouse message for Tizen TVs, and Samsung's own pointer feature is
+tied to the 2015 air-pointer remote. So no pointer is attempted. `DirectionalTrackpad` (pure, tested)
+turns relative movement into Up / Down / Left / Right with sensitivity, optional acceleration, a
+10 pt dead zone, one direction at a time; tap = OK, two-finger tap = Back. A D-pad / Trackpad switch
+sits in the Samsung layout; tuning is in Connection settings. The Android mouse code is untouched.
+Genuine pointer support stays an open, unproven idea (a Bluetooth HID mouse would be a different
+project).
+
+## 6. Regression review (by reading code, not by running it)
+Target change only writes a UserDefaults value and swaps views; it starts no helper and reconnects
+nothing. Page navigation moves an offset (unchanged principle). No code path touched the Android
+mouse / keyboard / HID helpers, live typing, media polling, Keychain storage, Quick Actions,
+favourites, screenshots, discovery or the background / foreground handling, apart from the lines
+listed below. Not exercised: all of it needs the device run in the checklist.
+
+## Files changed in this round
+New: RecentsProbe, DirectionalTrackpad. Edited: GlassStyle, RootPagerView, PageNavigator,
+PlayerPage, RemoteView, RemoteRouting, RemoteModel, RemoteModel+Features, RemoteModel+Dual,
+SamsungTV, SamsungRemotePanel, GlassVolumeSlider, VolumeCalibration, ConnectionSheet, Tests,
+ios-build.yml (push trigger adds v0.4-dev), V0_4_NOTES.md, REGRESSION_CHECKLIST.md.
+
+## Added to the device checklist
+12. Dock / selectors: no warped labels or ghost edges; slide a finger across and watch the bubble.
+13. Samsung: reconnect remote only, then volume only; each must leave the other running.
+14. Samsung hold test result (one step or continuous?). 15. Samsung trackpad feel and Back tap.
+16. Drag volume to both ends 3 times; check the log says tentative before confirmed, and that a
+reading above the learned top resets it. 17. Recent Apps log line.
