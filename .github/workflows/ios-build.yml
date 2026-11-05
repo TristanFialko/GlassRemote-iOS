@@ -2,7 +2,7 @@ name: iOS build
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, v0.4-dev ]
 
 jobs:
   build:
@@ -80,6 +80,22 @@ jobs:
           file GlassRemote/glass_tcp_input_server
           test -s GlassRemote/glass_tcp_input_server
 
+      - name: Compile ARM64 variants of the helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/homebrew/share/android-commandlinetools}"
+          NDK_ROOT="$SDK_ROOT/ndk/27.2.12479018"
+          COMPILER="$(find "$NDK_ROOT/toolchains/llvm/prebuilt" -type f \
+            -name aarch64-linux-android23-clang -print -quit)"
+          test -n "$COMPILER"
+          for name in glass_uhid_keyboard glass_tcp_input_server; do
+            "$COMPILER" -O2 -Wall -Wextra -fPIE -pie \
+              "GlassRemote/${name}.c" -o "GlassRemote/${name}_arm64"
+            file "GlassRemote/${name}_arm64"
+            test -s "GlassRemote/${name}_arm64"
+          done
+
       - name: Generate Xcode project
         run: xcodegen generate
 
@@ -89,6 +105,16 @@ jobs:
             -project GlassRemote.xcodeproj \
             -scheme GlassRemote \
             -derivedDataPath build
+
+      - name: Record resolved SwiftADB commit
+        shell: bash
+        run: |
+          RESOLVED="$(find . -name Package.resolved -not -path './build/SourcePackages/checkouts/*' -print -quit)"
+          echo "### Resolved Swift packages" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RESOLVED" >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "Pin SwiftADB by putting its revision above into project.yml (revision: ...)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Locate SwiftADB source
         run: find build -name AdbConnection.swift -print
@@ -141,6 +167,17 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO build
 
+      - name: Run unit tests
+        shell: bash
+        run: |
+          DEVICE="$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [0-9A-Za-z ]+' | sed 's/ *$//')"
+          echo "Testing on: $DEVICE"
+          xcodebuild test -project GlassRemote.xcodeproj \
+            -scheme GlassRemote \
+            -destination "platform=iOS Simulator,name=$DEVICE" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
+
       - name: Build for physical iPhone
         run: |
           xcodebuild -project GlassRemote.xcodeproj \
@@ -160,6 +197,10 @@ jobs:
           chmod 755 "$APP_PATH/glass_uhid_keyboard"
           cp GlassRemote/glass_tcp_input_server "$APP_PATH/glass_tcp_input_server"
           chmod 755 "$APP_PATH/glass_tcp_input_server"
+          cp GlassRemote/glass_uhid_keyboard_arm64 "$APP_PATH/glass_uhid_keyboard_arm64"
+          chmod 755 "$APP_PATH/glass_uhid_keyboard_arm64"
+          cp GlassRemote/glass_tcp_input_server_arm64 "$APP_PATH/glass_tcp_input_server_arm64"
+          chmod 755 "$APP_PATH/glass_tcp_input_server_arm64"
           cp GlassRemote/glass_cursor_setter.jar "$APP_PATH/glass_cursor_setter.jar"
           cp GlassRemote/glass_cursor_white.png "$APP_PATH/glass_cursor_white.png"
           test -s "$APP_PATH/glass_cursor_setter.jar"
@@ -186,7 +227,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload build logs
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: glassremote-build-logs
