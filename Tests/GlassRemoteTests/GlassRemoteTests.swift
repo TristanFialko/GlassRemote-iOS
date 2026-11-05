@@ -134,7 +134,7 @@ final class LiveTypingToggleTests: XCTestCase {
 final class PagerMathTests: XCTestCase {
     func testLandingPageIsRemoteAndOrderIsStable() {
         XCTAssertEqual(AppPage.landing, .remote)
-        XCTAssertEqual(AppPage.allCases, [.remote, .player, .discover, .apps])
+        XCTAssertEqual(AppPage.allCases, [.remote, .player, .discover, .play])
     }
 
     func testTargetPageThresholdsAndClamping() {
@@ -142,13 +142,13 @@ final class PagerMathTests: XCTestCase {
         XCTAssertEqual(AppPage.target(from: .remote, translation: -40, predicted: -60, width: 390), .remote)   // too small
         XCTAssertEqual(AppPage.target(from: .remote, translation: -30, predicted: -300, width: 390), .player)  // flick
         XCTAssertEqual(AppPage.target(from: .remote, translation: 300, predicted: 400, width: 390), .remote)   // clamped at start
-        XCTAssertEqual(AppPage.target(from: .apps, translation: -300, predicted: -400, width: 390), .apps)     // clamped at end
+        XCTAssertEqual(AppPage.target(from: .play, translation: -300, predicted: -400, width: 390), .play)     // clamped at end
         XCTAssertEqual(AppPage.target(from: .discover, translation: 200, predicted: 260, width: 390), .player)
     }
 
     func testEdgeResistance() {
         XCTAssertEqual(AppPage.resisted(100, on: .remote), 25)
-        XCTAssertEqual(AppPage.resisted(-100, on: .apps), -25)
+        XCTAssertEqual(AppPage.resisted(-100, on: .play), -25)
         XCTAssertEqual(AppPage.resisted(100, on: .player), 100)
     }
 }
@@ -214,17 +214,47 @@ final class RemoteRoutingTests: XCTestCase {
         XCTAssertNil(RemoteRouting.device(for: .navigation, target: .android, androidConnected: false, samsungRemoteReady: true))
     }
 
-    func testAutoPrefersBoxForNavigationAndTVForTVOnlyCapabilities() {
-        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .auto, androidConnected: true, samsungRemoteReady: true), .android)
-        XCTAssertEqual(RemoteRouting.device(for: .media, target: .auto, androidConnected: true, samsungRemoteReady: true), .android)
-        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .auto, androidConnected: false, samsungRemoteReady: true), .samsung)
-        XCTAssertEqual(RemoteRouting.device(for: .source, target: .auto, androidConnected: true, samsungRemoteReady: true), .samsung)
-        XCTAssertNil(RemoteRouting.device(for: .channel, target: .auto, androidConnected: true, samsungRemoteReady: false))
+    func testThereAreExactlyTwoTargetsAndNoAuto() {
+        XCTAssertEqual(RemoteTarget.allCases, [.android, .samsung])
+        XCTAssertFalse(RemoteTarget.allCases.map(\.rawValue).contains("auto"))
+    }
+
+    func testLegacyAutoSelectionRestoresToAndroidAndLastExplicitChoiceIsKept() {
+        XCTAssertEqual(RemoteTarget.restored(from: "auto"), .android)   // saved by an older build
+        XCTAssertEqual(RemoteTarget.restored(from: nil), .android)
+        XCTAssertEqual(RemoteTarget.restored(from: "garbage"), .android)
+        XCTAssertEqual(RemoteTarget.restored(from: "samsung"), .samsung)
+        XCTAssertEqual(RemoteTarget.restored(from: "android"), .android)
+    }
+
+    func testDisconnectedSelectedDeviceNeverFallsBackToTheOther() {
+        // Samsung selected, TV down, box up: nothing is sent (no silent control of the box).
+        for kind in [RemoteCommandKind.navigation, .media, .volume, .power, .source, .channel, .guide] {
+            XCTAssertNil(RemoteRouting.device(for: kind, target: .samsung, androidConnected: true, samsungRemoteReady: false), "\(kind)")
+        }
+        // Android selected, box down, TV up: navigation/media/power are not redirected to the TV.
+        for kind in [RemoteCommandKind.navigation, .media, .power] {
+            XCTAssertNil(RemoteRouting.device(for: kind, target: .android, androidConnected: false, samsungRemoteReady: true), "\(kind)")
+        }
+    }
+
+    func testSamsungTargetSendsEveryKindToTheTV() {
+        for kind in [RemoteCommandKind.navigation, .media, .volume, .power, .source, .channel, .guide] {
+            XCTAssertEqual(RemoteRouting.device(for: kind, target: .samsung, androidConnected: true, samsungRemoteReady: true), .samsung, "\(kind)")
+        }
+    }
+
+    func testAndroidTargetHasNoTVOnlyCapabilities() {
+        for kind in [RemoteCommandKind.source, .channel, .guide] {
+            XCTAssertNil(RemoteRouting.device(for: kind, target: .android, androidConnected: true, samsungRemoteReady: true), "\(kind)")
+        }
+        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .android, androidConnected: true, samsungRemoteReady: true), .android)
     }
 
     func testVolumeKeepsExistingPreference() {
-        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .auto, androidConnected: true, samsungRemoteReady: true), .samsung)
-        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .auto, androidConnected: true, samsungRemoteReady: false), .android)
+        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .android, androidConnected: true, samsungRemoteReady: true), .samsung)
+        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .android, androidConnected: true, samsungRemoteReady: false), .android)
+        XCTAssertNil(RemoteRouting.device(for: .volume, target: .android, androidConnected: false, samsungRemoteReady: false))
     }
 }
 
@@ -496,5 +526,189 @@ final class SamsungDiagnosticsTests: XCTestCase {
     func testCapabilitiesAreIndependentInRouting() {
         // Remote works with no volume link: routing only looks at the remote WebSocket flag.
         XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .samsung, androidConnected: false, samsungRemoteReady: true), .samsung)
+    }
+}
+
+
+// MARK: - UI refactor
+
+final class SamsungRemoteLayoutTests: XCTestCase {
+    private var primary: [SamsungKey] { SamsungRemoteLayout.primaryRows.flatMap { $0.map(\.key) } }
+
+    func testNoDpadKeysOnTheSamsungSurface() {
+        for key in SamsungRemoteLayout.removedFromSurface {
+            XCTAssertFalse(primary.contains(key), "\(key) must not be a button; the trackpad replaces the D-pad")
+            XCTAssertFalse(SamsungRemoteLayout.menuKeys.map(\.key).contains(key))
+        }
+    }
+
+    func testPrimaryKeysAreTheShortSet() {
+        XCTAssertEqual(primary, [.back, .home, .mute, .rewind, .play, .pause, .fastForward])
+    }
+
+    func testNothingUsefulWasLost() {
+        // Everything the old 15-button layout had is still reachable from the surface, the menu or power.
+        let reachable = Set(primary + SamsungRemoteLayout.menuKeys.map(\.key) + SamsungRemoteLayout.powerMenuKeys)
+        let old: [SamsungKey] = [.back, .home, .menu, .info, .guide, .rewind, .play, .pause, .fastForward, .stop,
+                                 .channelUp, .channelDown, .mute, .source, .power]
+        for key in old { XCTAssertTrue(reachable.contains(key), "\(key) is no longer reachable") }
+    }
+
+    func testEveryMenuKeyIsAllowlisted() {
+        for item in SamsungRemoteLayout.menuKeys + SamsungRemoteLayout.primaryRows.flatMap({ $0 }) {
+            XCTAssertTrue(SamsungKey.allowlist.contains(item.key.rawValue))
+        }
+    }
+}
+
+final class MenuRoutingTests: XCTestCase {
+    func testPowerMenuListsEachActionOnceAndTVActionsNeedSamsung() {
+        let withTV = PowerMenu.items(samsungEnabled: true)
+        let without = PowerMenu.items(samsungEnabled: false)
+        XCTAssertEqual(Set(withTV).count, withTV.count)
+        XCTAssertTrue(withTV.contains(.tvPower) && withTV.contains(.turnOffBoth))
+        XCTAssertFalse(without.contains(.tvPower) || without.contains(.turnOffBoth))
+        XCTAssertEqual(withTV.last, .restartBox)   // destructive item last
+    }
+
+    func testPowerActionsThatNeedConfirmationMapToTheirDialogs() {
+        XCTAssertEqual(PowerMenu.powerAction(for: .standby), .standby)
+        XCTAssertEqual(PowerMenu.powerAction(for: .restartBox), .restartBox)
+        XCTAssertEqual(PowerMenu.powerAction(for: .turnOffBoth), .everythingOff)
+        XCTAssertEqual(PowerMenu.powerAction(for: .restartLauncher), .restartLauncher)
+        XCTAssertNil(PowerMenu.powerAction(for: .wake))
+        XCTAssertNil(PowerMenu.powerAction(for: .tvPower))
+    }
+
+    func testGlobalMenuNeverRepeatsPowerActions() {
+        // Power lives only in the power menu; the global menu has none of it.
+        var all: [GlobalMenuSpec.Entry] = []
+        for section in [GlobalMenuSpec.Section.device, .samsung, .advanced] {
+            all += GlobalMenuSpec.entries(in: section, boxOnline: false, samsungEnabled: true, samsungConnected: false)
+        }
+        XCTAssertEqual(Set(all).count, all.count, "an entry appears twice")
+    }
+
+    func testReconnectEntriesAppearOnlyWhenNeeded() {
+        let online = GlobalMenuSpec.entries(in: .device, boxOnline: true, samsungEnabled: true, samsungConnected: true)
+        XCTAssertEqual(online, [.connection])
+        let down = GlobalMenuSpec.entries(in: .device, boxOnline: false, samsungEnabled: true, samsungConnected: false)
+        XCTAssertEqual(down, [.connection, .reconnectBox, .reconnectSamsung])
+    }
+
+    func testSamsungSectionOffersSetupWhenDisabled() {
+        XCTAssertEqual(GlobalMenuSpec.entries(in: .samsung, boxOnline: true, samsungEnabled: false, samsungConnected: false), [.setUpSamsung])
+        XCTAssertEqual(GlobalMenuSpec.entries(in: .samsung, boxOnline: true, samsungEnabled: true, samsungConnected: true), [.samsungKeys, .routeVolume])
+    }
+
+    func testAdvancedHoldsScreenshotAndDeviceInfo() {
+        XCTAssertEqual(GlobalMenuSpec.entries(in: .advanced, boxOnline: true, samsungEnabled: false, samsungConnected: false), [.screenshot, .deviceInfo])
+    }
+}
+
+final class QuickActionMigrationTests: XCTestCase {
+    func testMenuKeyStepsAreRemovedAndTheRestIsKept() {
+        let saved = [QuickAction(name: "Mixed", steps: [.key("HOME"), .key("MENU"), .delay(1), .launch("com.stremio.one")]),
+                     QuickAction(name: "Clean", steps: [.key("BACK")])]
+        let result = QuickActionStore.migrate(saved)
+        XCTAssertEqual(result.affected, ["Mixed"])
+        XCTAssertEqual(result.actions[0].steps.map(\.kind), [.key, .delay, .launch])
+        XCTAssertEqual(result.actions[0].steps.first?.key, "HOME")
+        XCTAssertEqual(result.actions[1], saved[1])               // untouched action is identical
+    }
+
+    func testAnActionThatOnlyHadMenuIsKeptNotDeleted() {
+        let saved = [QuickAction(name: "Menu only", steps: [.key("MENU")])]
+        let result = QuickActionStore.migrate(saved)
+        XCTAssertEqual(result.actions.count, 1)
+        XCTAssertEqual(result.actions[0].name, "Menu only")
+        XCTAssertTrue(result.actions[0].steps.isEmpty)
+        XCTAssertEqual(result.affected, ["Menu only"])
+    }
+
+    func testMenuIsNoLongerAllowedOrTitled() {
+        XCTAssertFalse(QuickActionStore.allowedKeys.contains("MENU"))
+        XCTAssertNil(QuickActionStore.keyTitles["MENU"])
+        XCTAssertTrue(QuickActionStore.deprecatedKeys.contains("MENU"))
+    }
+
+    func testNoticeNamesTheAffectedActions() {
+        XCTAssertTrue(QuickActionStore.notice(for: ["A", "B"]).contains("A, B"))
+    }
+
+    @MainActor func testMenuHasNoRemoteKeyPath() {
+        XCTAssertNil(VirtualKeyboard.usages["MENU"])
+    }
+}
+
+final class GooglePlayTests: XCTestCase {
+    func testSearchLinkIsEncodedAndCannotInjectShell() {
+        let link = GooglePlay.searchLink(query: "spotify tv")
+        XCTAssertEqual(link, "market://search?q=spotify%20tv&c=apps")
+        let nasty = GooglePlay.searchLink(query: "a'; rm -rf /; echo '&x=$(id)")
+        XCTAssertNotNil(nasty)
+        let q = nasty!.replacingOccurrences(of: "market://search?q=", with: "").replacingOccurrences(of: "&c=apps", with: "")
+        XCTAssertFalse(q.contains("'") || q.contains(";") || q.contains("$") || q.contains(" ") || q.contains("&"))
+    }
+
+    func testQueryValidation() {
+        XCTAssertNil(GooglePlay.searchLink(query: ""))
+        XCTAssertNil(GooglePlay.searchLink(query: " a "))
+        XCTAssertNil(GooglePlay.searchLink(query: String(repeating: "x", count: 81)))
+        XCTAssertEqual(GooglePlay.normalisedQuery("  vlc   player \n"), "vlc player")
+    }
+
+    func testPackageValidation() {
+        XCTAssertTrue(GooglePlay.isValidPackage("com.netflix.ninja"))
+        XCTAssertFalse(GooglePlay.isValidPackage("netflix"))
+        XCTAssertFalse(GooglePlay.isValidPackage("com.x; reboot"))
+        XCTAssertFalse(GooglePlay.isValidPackage("com..x"))
+        XCTAssertEqual(GooglePlay.detailsLink(package: "org.videolan.vlc"), "market://details?id=org.videolan.vlc")
+        XCTAssertNil(GooglePlay.detailsLink(package: "bad id"))
+        XCTAssertEqual(GooglePlay.webURL(package: "org.videolan.vlc")?.host, "play.google.com")
+    }
+
+    func testIntentTargetsThePlayStoreOnly() {
+        let command = GooglePlay.intentCommand(link: "market://search?q=vlc&c=apps")
+        XCTAssertTrue(command.hasPrefix("am start -a android.intent.action.VIEW -d 'market://search?q=vlc&c=apps' -p com.android.vending"))
+        XCTAssertTrue(command.contains("GLASSREMOTE_INTENT_EXIT:$rc"))
+        XCTAssertFalse(command.contains("KEYEVENT") || command.lowercased().contains("keyevent"))   // no input keys sent
+    }
+
+    func testOutcomesDoNotOverclaim() {
+        XCTAssertEqual(GooglePlay.outcome(from: "Starting: Intent { act=android.intent.action.VIEW }\nGLASSREMOTE_INTENT_EXIT:0"), .accepted)
+        XCTAssertEqual(GooglePlay.outcome(from: "Warning: Activity not started, its current task has been brought to the front\nGLASSREMOTE_INTENT_EXIT:0"), .accepted)
+        XCTAssertEqual(GooglePlay.outcome(from: "Error: Activity not started, unable to resolve Intent\nGLASSREMOTE_INTENT_EXIT:1"), .storeUnavailable)
+        if case .rejected(let text) = GooglePlay.outcome(from: "Error: boom\nGLASSREMOTE_INTENT_EXIT:255") { XCTAssertTrue(text.contains("boom")) }
+        else { XCTFail("expected rejected") }
+        if case .rejected = GooglePlay.outcome(from: "") {} else { XCTFail("empty output is not success") }
+    }
+
+    func testSuggestionsAreValidUniqueAndSearchableLocally() {
+        let ids = GooglePlay.suggestions.map(\.package)
+        XCTAssertEqual(Set(ids).count, ids.count)
+        XCTAssertTrue(ids.allSatisfy(GooglePlay.isValidPackage))
+        XCTAssertEqual(GooglePlay.matches("netf").map(\.name), ["Netflix"])
+        XCTAssertEqual(GooglePlay.matches("").count, GooglePlay.suggestions.count)
+        XCTAssertTrue(GooglePlay.matches("zzzz-no-such-app").isEmpty)
+    }
+
+    func testFourthTabIsGooglePlay() {
+        XCTAssertEqual(AppPage.allCases.last, .play)
+        XCTAssertEqual(AppPage.play.accessibilityName, "Google Play")
+    }
+}
+
+final class DiscoverArtworkTests: XCTestCase {
+    func testFallbackPosterOnlyForRealImdbIds() {
+        let ok = StremioTitle(id: "tt0133093", kind: .movie, name: "X", year: "", posterURL: nil, rating: "")
+        XCTAssertEqual(ok.fallbackPosterURL?.scheme, "https")
+        let bad = StremioTitle(id: "kitsu:123", kind: .series, name: "X", year: "", posterURL: nil, rating: "")
+        XCTAssertNil(bad.fallbackPosterURL)
+    }
+
+    func testHttpPostersAreDropped() {
+        let json = #"{"metas":[{"id":"tt0133093","name":"A","poster":"http://x/p.jpg"}]}"#.data(using: .utf8)!
+        XCTAssertNil(StremioCatalog.parse(json, kind: .movie).first?.posterURL)
     }
 }
