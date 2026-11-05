@@ -77,6 +77,33 @@ struct CachedArtwork<Placeholder: View>: View {
 enum PlayerArtworkMatcher {
     struct Query: Equatable {
         var names: [String]          // search candidates, best first
+        var year: String?
+        var looksEpisodic: Bool
+    }
+
+    /// Lowercased, accent-folded, punctuation-free, without a leading article, so "The Matrix"
+    /// and "Matrix, The" style variants and punctuation differences still compare equal.
+    static func normalise(_ text: String) -> String {
+        var t = text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
+        t = t.replacingOccurrences(of: "&", with: " and ")
+        t = String(t.map { $0.isLetter || $0.isNumber ? $0 : " " })
+        var words = t.split(separator: " ").map(String.init)
+        if words.count > 1, ["the", "a", "an"].contains(words[0]) { words.removeFirst() }
+        return words.joined(separator: " ")
+    }
+
+    private static let episodeMarker = #"(?i)\b(s\d{1,2}\s*[:.\- ]?\s*e\d{1,3}|\d{1,2}x\d{1,3}|season\s*\d+|episode\s*\d+|ep\.?\s*\d+)\b"#
+    private static let releaseTokens = #"(?i)\b(2160p|1080p|720p|480p|4k|uhd|bluray|blu-ray|brrip|bdrip|webrip|web-dl|webdl|hdtv|x264|x265|h264|h265|hevc|hdr|remux)\b"#
+
+    static func query(title rawTitle: String, subtitle: String = "") -> Query {
+        var title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        var episodic = subtitle.range(of: episodeMarker, options: .regularExpression) != nil
+        // File-name style ("Some.Movie.2019.1080p.WEB-DL"): dots / underscores are spaces.
+        if !title.contains(" "), title.contains(".") || title.contains("_") {
+            title = title.replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: "_", with: " ")
+        }
+        if let r = title.range(of: releaseTokens, options: .regularExpression) { title = String(title[..<r.lowerBound]) }
+
         // A release year is split off only when it is clearly one: bracketed, or the last of two
         // year-like numbers ("Blade Runner 2049 2017"). A lone "2012" or "Blade Runner 2049" stays in the name.
         var year: String?
