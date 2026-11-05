@@ -208,23 +208,23 @@ final class FavouritesAndArtworkTests: XCTestCase {
 
 final class RemoteRoutingTests: XCTestCase {
     func testExplicitTargetsNeverCrossOver() {
-        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .android, androidConnected: true, samsungReady: true), .android)
-        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .samsung, androidConnected: true, samsungReady: true), .samsung)
-        XCTAssertNil(RemoteRouting.device(for: .navigation, target: .samsung, androidConnected: true, samsungReady: false))
-        XCTAssertNil(RemoteRouting.device(for: .navigation, target: .android, androidConnected: false, samsungReady: true))
+        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .android, androidConnected: true, samsungRemoteReady: true), .android)
+        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .samsung, androidConnected: true, samsungRemoteReady: true), .samsung)
+        XCTAssertNil(RemoteRouting.device(for: .navigation, target: .samsung, androidConnected: true, samsungRemoteReady: false))
+        XCTAssertNil(RemoteRouting.device(for: .navigation, target: .android, androidConnected: false, samsungRemoteReady: true))
     }
 
     func testAutoPrefersBoxForNavigationAndTVForTVOnlyCapabilities() {
-        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .auto, androidConnected: true, samsungReady: true), .android)
-        XCTAssertEqual(RemoteRouting.device(for: .media, target: .auto, androidConnected: true, samsungReady: true), .android)
-        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .auto, androidConnected: false, samsungReady: true), .samsung)
-        XCTAssertEqual(RemoteRouting.device(for: .source, target: .auto, androidConnected: true, samsungReady: true), .samsung)
-        XCTAssertNil(RemoteRouting.device(for: .channel, target: .auto, androidConnected: true, samsungReady: false))
+        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .auto, androidConnected: true, samsungRemoteReady: true), .android)
+        XCTAssertEqual(RemoteRouting.device(for: .media, target: .auto, androidConnected: true, samsungRemoteReady: true), .android)
+        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .auto, androidConnected: false, samsungRemoteReady: true), .samsung)
+        XCTAssertEqual(RemoteRouting.device(for: .source, target: .auto, androidConnected: true, samsungRemoteReady: true), .samsung)
+        XCTAssertNil(RemoteRouting.device(for: .channel, target: .auto, androidConnected: true, samsungRemoteReady: false))
     }
 
     func testVolumeKeepsExistingPreference() {
-        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .auto, androidConnected: true, samsungReady: true), .samsung)
-        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .auto, androidConnected: true, samsungReady: false), .android)
+        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .auto, androidConnected: true, samsungRemoteReady: true), .samsung)
+        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .auto, androidConnected: true, samsungRemoteReady: false), .android)
     }
 }
 
@@ -271,54 +271,84 @@ final class VolumeCalibrationTests: XCTestCase {
         XCTAssertEqual(VolumeCalibration.magnet(0.97), 0.97)
     }
 
-    func testMagnetIsSymmetricAtBothEnds() {
-        let m = VolumeCalibration.magnetMargin
-        for d in [0.0, 0.005, 0.01, m] {                       // inside or exactly on the zone
-            XCTAssertEqual(VolumeCalibration.magnet(d), 0, "low end, distance \(d)")
-            XCTAssertEqual(VolumeCalibration.magnet(1 - d), 1, "high end, distance \(d)")
-        }
-        for d in [m + 0.001, 0.02, 0.03] {                     // just outside the zone
-            XCTAssertEqual(VolumeCalibration.magnet(d), d, accuracy: 1e-12, "low end, distance \(d)")
-            XCTAssertEqual(VolumeCalibration.magnet(1 - d), 1 - d, accuracy: 1e-12, "high end, distance \(d)")
-        }
-    }
+    // --- EndpointLearner (v0.4 review: strict rules) ---
 
-    func testMagnetBoundariesAndOutOfRange() {
-        XCTAssertEqual(VolumeCalibration.magnet(0.015), 0)
-        XCTAssertEqual(VolumeCalibration.magnet(0.985), 1)
-        XCTAssertEqual(VolumeCalibration.magnet(0.016), 0.016, accuracy: 1e-12)
-        XCTAssertEqual(VolumeCalibration.magnet(0.984), 0.984, accuracy: 1e-12)
-        XCTAssertEqual(VolumeCalibration.magnet(-0.2), 0)
-        XCTAssertEqual(VolumeCalibration.magnet(1.2), 1)
-    }
+    private let t0 = Date(timeIntervalSinceReferenceDate: 1_000)
+    private func at(_ seconds: Double) -> Date { t0.addingTimeInterval(seconds) }
 
-    func testMagnetThenCalibrationReachesLearnedEnds() {
-        let c = VolumeCalibration(lo: 2, hi: 98)
-        XCTAssertEqual(c.raw(forFraction: VolumeCalibration.magnet(0.985)), 98)
-        XCTAssertEqual(c.raw(forFraction: VolumeCalibration.magnet(0.015)), 2)
-        XCTAssertEqual(c.raw(forFraction: VolumeCalibration.magnet(0.5)), 50)
-    }
-
-    func testLearnsLimitOnlyAfterTwoIdenticalSettledReadings() {
+    func testLearnsOnlyAfterSettleDelayAndThreeSpacedIdenticalReadings() {
         var learner = EndpointLearner()
         let cal = VolumeCalibration.standard
-        learner.commandSent(raw: 100, isMax: true)
-        XCTAssertNil(learner.reading(98, calibration: cal))            // one reading proves nothing
-        let learned = learner.reading(98, calibration: cal)
-        XCTAssertEqual(learned?.hi, 98)
-        XCTAssertEqual(learned?.lo, 0)
+        learner.commandSent(raw: 100, isMax: true, at: t0)
+        XCTAssertEqual(learner.reading(98, at: at(0.4), dragging: false, calibration: cal), .none)   // TV not settled
+        XCTAssertEqual(learner.reading(98, at: at(1.2), dragging: false, calibration: cal), .none)   // 1st counted
+        XCTAssertEqual(learner.reading(98, at: at(1.4), dragging: false, calibration: cal), .none)   // too soon after the last
+        XCTAssertEqual(learner.reading(98, at: at(2.0), dragging: false, calibration: cal), .none)   // 2nd
+        let outcome = learner.reading(98, at: at(2.8), dragging: false, calibration: cal)             // 3rd
+        XCTAssertEqual(outcome, .tentative(VolumeCalibration(lo: 0, hi: 98)))
     }
 
-    func testDoesNotLearnWhenTVHonoursOrIsFarOrMoving() {
+    func testSecondIndependentAttemptConfirmsAndOnlyThenPersists() {
         var learner = EndpointLearner()
         let cal = VolumeCalibration.standard
-        learner.commandSent(raw: 0, isMax: false)
-        XCTAssertNil(learner.reading(0, calibration: cal))             // honoured
-        learner.commandSent(raw: 100, isMax: true)
-        XCTAssertNil(learner.reading(60, calibration: cal))            // far from the command: not an end
-        learner.commandSent(raw: 100, isMax: true)
-        XCTAssertNil(learner.reading(97, calibration: cal))
-        XCTAssertNil(learner.reading(98, calibration: cal))            // still moving
+        func attempt(from start: Double) -> EndpointLearner.Outcome {
+            learner.commandSent(raw: 100, isMax: true, at: at(start))
+            _ = learner.reading(98, at: at(start + 1.2), dragging: false, calibration: cal)
+            _ = learner.reading(98, at: at(start + 2.0), dragging: false, calibration: cal)
+            return learner.reading(98, at: at(start + 2.8), dragging: false, calibration: cal)
+        }
+        XCTAssertEqual(attempt(from: 0), .tentative(VolumeCalibration(lo: 0, hi: 98)))
+        XCTAssertEqual(attempt(from: 20), .confirmed(VolumeCalibration(lo: 0, hi: 98)))
+    }
+
+    func testDifferentValueOnSecondAttemptStaysTentative() {
+        var learner = EndpointLearner()
+        let cal = VolumeCalibration.standard
+        learner.commandSent(raw: 100, isMax: true, at: t0)
+        _ = learner.reading(98, at: at(1.2), dragging: false, calibration: cal)
+        _ = learner.reading(98, at: at(2.0), dragging: false, calibration: cal)
+        _ = learner.reading(98, at: at(2.8), dragging: false, calibration: cal)
+        learner.commandSent(raw: 100, isMax: true, at: at(20))
+        _ = learner.reading(97, at: at(21.2), dragging: false, calibration: cal)
+        _ = learner.reading(97, at: at(22.0), dragging: false, calibration: cal)
+        XCTAssertEqual(learner.reading(97, at: at(22.8), dragging: false, calibration: cal),
+                       .tentative(VolumeCalibration(lo: 0, hi: 97)))
+    }
+
+    func testDiscardsDraggingStaleNewerCommandInconsistentAndHonoured() {
+        let cal = VolumeCalibration.standard
+        var learner = EndpointLearner()
+
+        learner.commandSent(raw: 100, isMax: true, at: t0)                 // user is dragging
+        XCTAssertEqual(learner.reading(98, at: at(1.5), dragging: true, calibration: cal), .none)
+        XCTAssertFalse(learner.isArmed)
+
+        learner.commandSent(raw: 100, isMax: true, at: t0)                 // stale: window expired
+        XCTAssertEqual(learner.reading(98, at: at(30), dragging: false, calibration: cal), .none)
+        XCTAssertFalse(learner.isArmed)
+
+        learner.commandSent(raw: 100, isMax: true, at: t0)                 // newer command issued
+        learner.invalidate()
+        XCTAssertEqual(learner.reading(98, at: at(1.5), dragging: false, calibration: cal), .none)
+
+        learner.commandSent(raw: 100, isMax: true, at: t0)                 // far from the command
+        XCTAssertEqual(learner.reading(60, at: at(1.5), dragging: false, calibration: cal), .none)
+        XCTAssertFalse(learner.isArmed)
+
+        learner.commandSent(raw: 100, isMax: true, at: t0)                 // inconsistent readings
+        _ = learner.reading(98, at: at(1.2), dragging: false, calibration: cal)
+        _ = learner.reading(97, at: at(2.0), dragging: false, calibration: cal)
+        XCTAssertEqual(learner.reading(98, at: at(2.8), dragging: false, calibration: cal), .none)
+
+        learner.commandSent(raw: 0, isMax: false, at: t0)                  // TV honoured the command
+        XCTAssertEqual(learner.reading(0, at: at(1.5), dragging: false, calibration: cal), .none)
+        XCTAssertFalse(learner.isArmed)
+    }
+
+    func testImplausibleValuesAreNeverLearned() {
+        var learner = EndpointLearner()
+        learner.commandSent(raw: 100, isMax: true, at: t0)
+        XCTAssertEqual(learner.reading(70, at: at(1.5), dragging: false, calibration: .standard), .none)   // not near a top
     }
 }
 
@@ -351,5 +381,85 @@ final class RecentSearchesTests: XCTestCase {
         XCTAssertEqual(list, ["alien", "MATRIX", "Dune"])
         for i in 0..<20 { list = RecentSearches.adding(list, "title \(i)") }
         XCTAssertEqual(list.count, RecentSearches.limit)
+    }
+}
+
+
+final class RecentsProbeTests: XCTestCase {
+    private func snap(_ w: String, _ a: String = "act") -> RecentsSnapshot { RecentsSnapshot(window: w, activity: a) }
+
+    func testParseSplitsWindowAndActivity() {
+        let out = "  mCurrentFocus=Window{1 u0 com.stremio.one/Main}\n---\n topResumedActivity=ActivityRecord{x com.stremio.one/.Main}"
+        let parsed = RecentsProbe.parse(out)
+        XCTAssertTrue(parsed.window.contains("com.stremio.one"))
+        XCTAssertTrue(parsed.activity.contains("topResumedActivity"))
+    }
+
+    func testOutcomesNeverOverclaim() {
+        let a = snap("mCurrentFocus=Window{com.stremio.one/Main}")
+        XCTAssertEqual(RecentsProbe.outcome(before: a, after: a), .unchanged)
+        XCTAssertEqual(RecentsProbe.outcome(before: a, after: snap("mCurrentFocus=Window{com.android.systemui/.recents.RecentsActivity}")), .opened)
+        XCTAssertEqual(RecentsProbe.outcome(before: a, after: snap("mCurrentFocus=Window{com.android.tv.launcher/Home}")), .changedUnrecognised)
+        XCTAssertEqual(RecentsProbe.outcome(before: a, after: RecentsSnapshot(window: "", activity: "")), .unknown)
+        XCTAssertEqual(RecentsProbe.outcome(before: RecentsSnapshot(window: "", activity: ""), after: a), .unknown)
+    }
+}
+
+final class DirectionalTrackpadTests: XCTestCase {
+    func testDeadZoneProducesNoKeysAndMarksTap() {
+        var pad = DirectionalTrackpad()
+        pad.begin()
+        XCTAssertTrue(pad.move(dx: 3, dy: 2).isEmpty)
+        XCTAssertFalse(pad.didMove)
+    }
+
+    func testDirectionsAndSingleAxisBias() {
+        var pad = DirectionalTrackpad(); pad.acceleration = false; pad.begin()
+        XCTAssertEqual(pad.move(dx: 40, dy: 5), [.right])
+        pad.begin()
+        XCTAssertEqual(pad.move(dx: -40, dy: 5), [.left])
+        pad.begin()
+        XCTAssertEqual(pad.move(dx: 4, dy: 40), [.down])
+        pad.begin()
+        XCTAssertEqual(pad.move(dx: 4, dy: -40), [.up])
+    }
+
+    func testSensitivityAndAcceleration() {
+        func count(_ sensitivity: Double, _ accel: Bool, speedStep: CGFloat) -> Int {
+            var pad = DirectionalTrackpad()
+            pad.sensitivity = sensitivity; pad.acceleration = accel; pad.maxKeysPerEvent = 10; pad.begin()
+            var n = 0
+            for _ in 0..<10 { n += pad.move(dx: speedStep, dy: 0).count }
+            return n
+        }
+        XCTAssertGreaterThan(count(3, false, speedStep: 8), count(0.5, false, speedStep: 8))
+        XCTAssertGreaterThan(count(1.5, true, speedStep: 20), count(1.5, false, speedStep: 20))
+    }
+
+    func testKeysPerEventAreCapped() {
+        var pad = DirectionalTrackpad(); pad.acceleration = false; pad.begin()
+        XCTAssertEqual(pad.move(dx: 400, dy: 0).count, pad.maxKeysPerEvent)
+    }
+}
+
+final class SamsungDiagnosticsTests: XCTestCase {
+    func testSummaryDoesNotClaimConfirmation() {
+        var stats = SamsungCommandStats()
+        XCTAssertEqual(stats.summary, "No Samsung keys sent yet")
+        stats.queued = 3; stats.written = 3; stats.lastKey = "KEY_UP"; stats.lastCommand = "Click"
+        XCTAssertTrue(stats.summary.contains("handed to the TV connection 3 of 3"))
+        XCTAssertTrue(stats.summary.contains("does not confirm"))
+    }
+
+    func testOnlyVolumeKeysHaveAFallbackName() {
+        XCTAssertEqual(SamsungKey.volUp.legacyVolumeName, "VOLUME_UP")
+        XCTAssertEqual(SamsungKey.mute.legacyVolumeName, "MUTE")
+        XCTAssertNil(SamsungKey.up.legacyVolumeName)
+        XCTAssertNil(SamsungKey.enter.legacyVolumeName)
+    }
+
+    func testCapabilitiesAreIndependentInRouting() {
+        // Remote works with no volume link: routing only looks at the remote WebSocket flag.
+        XCTAssertEqual(RemoteRouting.device(for: .navigation, target: .samsung, androidConnected: false, samsungRemoteReady: true), .samsung)
     }
 }
