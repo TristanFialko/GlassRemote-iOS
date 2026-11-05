@@ -69,7 +69,7 @@ struct GlassVolumeSlider: View {
                         if dragStart == nil { dragStart = value; onDragChange(true) }
                         let start = dragStart ?? value
                         let proposed = start + Double(drag.translation.width / width)
-                        // Within ~1 % of an end counts as the end, so 0 % and 100 % are always reachable.
+                        // Within 1.5 % of an end counts as the end, so 0 % and 100 % are always reachable.
                         value = VolumeCalibration.magnet(min(max(proposed, 0), 1))
                     }
                     .onEnded { _ in dragStart = nil; onDragChange(false) }
