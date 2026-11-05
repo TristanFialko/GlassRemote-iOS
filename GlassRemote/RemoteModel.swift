@@ -167,7 +167,7 @@ final class RemoteModel: ObservableObject {
     @Published var mediaCommandPending = false
 
     // v0.4: dual-device remote
-    @Published var target: RemoteTarget = RemoteTarget(rawValue: UserDefaults.standard.string(forKey: "glassRemote.target") ?? "") ?? .auto {
+    @Published var target: RemoteTarget = RemoteTarget.restored(from: UserDefaults.standard.string(forKey: "glassRemote.target")) {
         didSet { UserDefaults.standard.set(target.rawValue, forKey: "glassRemote.target") }
     }
     @Published private(set) var samsungState: SamsungLinkState = .off
@@ -567,7 +567,7 @@ final class RemoteModel: ObservableObject {
         }
         let adbCodes: [String: String] = [
             "UP": "19", "DOWN": "20", "LEFT": "21", "RIGHT": "22",
-            "OK": "23", "BACK": "4", "HOME": "3", "MENU": "82",
+            "OK": "23", "BACK": "4", "HOME": "3",
             "VOLUME_DOWN": "25", "MUTE": "164", "VOLUME_UP": "24"
         ]
 
@@ -589,7 +589,7 @@ final class RemoteModel: ObservableObject {
         // ADB fallback is deliberately limited to system/media controls. D-pad and
         // OK never fall back to ADB, avoiding extra shell input traffic during playback.
         let adbOnlyControls: Set<String> = [
-            "BACK", "HOME", "MENU", "VOLUME_UP", "VOLUME_DOWN", "MUTE"
+            "BACK", "HOME", "VOLUME_UP", "VOLUME_DOWN", "MUTE"
         ]
         guard adbOnlyControls.contains(key) else {
             status = "Virtual keyboard unavailable · reconnect to restore navigation"

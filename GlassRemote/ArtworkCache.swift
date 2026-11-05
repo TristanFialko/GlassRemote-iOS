@@ -44,6 +44,8 @@ final class ArtworkCache {
 /// AsyncImage-like view backed by `ArtworkCache`. Shows `placeholder` until (or unless) it loads.
 struct CachedArtwork<Placeholder: View>: View {
     let url: URL?
+    /// Tried only when `url` is missing or fails to load.
+    var fallbackURL: URL? = nil
     var contentMode: ContentMode = .fill
     @ViewBuilder var placeholder: () -> Placeholder
     @State private var image: UIImage?
@@ -57,12 +59,16 @@ struct CachedArtwork<Placeholder: View>: View {
                 placeholder()
             }
         }
-        .task(id: url) {
-            guard let url else { image = nil; return }
-            if let hit = ArtworkCache.shared.cached(url) { image = hit; return }
+        .task(id: [url, fallbackURL]) {
             image = nil
-            let loaded = await ArtworkCache.shared.image(for: url)
-            withAnimation(.easeOut(duration: 0.25)) { image = loaded }
+            for candidate in [url, fallbackURL].compactMap({ $0 }) {
+                if let hit = ArtworkCache.shared.cached(candidate) { image = hit; return }
+                if let loaded = await ArtworkCache.shared.image(for: candidate) {
+                    if Task.isCancelled { return }
+                    withAnimation(.easeOut(duration: 0.25)) { image = loaded }
+                    return
+                }
+            }
         }
     }
 }

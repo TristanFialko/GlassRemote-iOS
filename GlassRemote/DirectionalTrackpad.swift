@@ -69,7 +69,7 @@ struct SamsungTrackpad: View {
             .glassSurface(shape, elevated: true)
             .overlay(alignment: .bottom) {
                 Text("Slide to move focus · tap to select · two-finger tap for Back")
-                    .scaledFont(12).foregroundStyle(.white.opacity(0.7))
+                    .scaledFont(12).foregroundStyle(.white.opacity(0.42))
                     .padding(.bottom, 16).allowsHitTesting(false)
             }
             .contentShape(shape)

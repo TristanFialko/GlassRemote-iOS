@@ -165,8 +165,8 @@ struct DiscoverPage: View {
 
     private func poster(_ item: StremioTitle) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            CachedArtwork(url: item.posterURL, contentMode: .fill) {
-                Color.white.opacity(0.06).overlay(Image(systemName: "film").foregroundStyle(.white.opacity(0.3)))
+            CachedArtwork(url: item.posterURL, fallbackURL: item.fallbackPosterURL, contentMode: .fill) {
+                posterPlaceholder(item)
             }
             .aspectRatio(2.0 / 3.0, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -174,6 +174,20 @@ struct DiscoverPage: View {
             .shadow(color: .black.opacity(0.45), radius: 8, y: 5)
             Text(item.name).scaledFont(13, .semibold).lineLimit(2).multilineTextAlignment(.leading)
             if !item.year.isEmpty { Text(item.year).scaledFont(11).foregroundStyle(.white.opacity(0.55)) }
+        }
+    }
+
+    /// Shown while artwork loads or when none exists: same shape and glass edge as a real poster.
+    private func posterPlaceholder(_ item: StremioTitle) -> some View {
+        ZStack {
+            LinearGradient(colors: [Color.white.opacity(0.09), Color.white.opacity(0.03)],
+                           startPoint: .top, endPoint: .bottom)
+            VStack(spacing: 6) {
+                Image(systemName: item.kind == .movie ? "film" : "tv").scaledFont(24, .light)
+                Text(item.name).scaledFont(11, .medium).lineLimit(3).multilineTextAlignment(.center)
+                    .padding(.horizontal, 8)
+            }
+            .foregroundStyle(.white.opacity(0.4))
         }
     }
 
@@ -196,7 +210,7 @@ struct DiscoverPage: View {
 
     private func detail(_ title: StremioTitle) -> some View {
         VStack(spacing: 14) {
-            CachedArtwork(url: title.posterURL, contentMode: .fit) { Color.clear }
+            CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fit) { Color.clear }
                 .frame(maxHeight: 300)
                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 .shadow(color: .black.opacity(0.5), radius: 16, y: 10)

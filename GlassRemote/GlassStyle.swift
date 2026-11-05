@@ -285,6 +285,8 @@ struct PressStyle: ButtonStyle {
 /// Full-width Mouse / D-pad selector. The shell and selected segment are both glass.
 struct ModeSelector: View {
     @Binding var isMouse: Bool
+    /// Height of each segment. The Android remote uses a compact value so the pad gets the room.
+    var segmentHeight: CGFloat = 38
     @Namespace private var pill
 
     var body: some View {
@@ -313,7 +315,7 @@ struct ModeSelector: View {
             }
             .foregroundStyle(selected ? Color.white : Color.white.opacity(0.72))
             .frame(maxWidth: .infinity)
-            .frame(height: 38)
+            .frame(height: segmentHeight)
             .background {
                 if selected {
                     Capsule()
@@ -364,5 +366,41 @@ struct AmbientBackdrop: View {
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
+    }
+}
+
+
+/// The one button used for every key on both remotes (Android navigation, Samsung keys), so the
+/// two remotes share icon size, weight, height and glass treatment.
+struct RemoteKeyButton<Icon: View>: View {
+    let label: String
+    var enabled = true
+    let action: () -> Void
+    @ViewBuilder let icon: () -> Icon
+
+    static var height: CGFloat { 48 }
+
+    var body: some View {
+        Button(action: action) {
+            icon()
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: Self.height)
+                .glassSurface(Capsule(), interactive: enabled)
+        }
+        .buttonStyle(PressStyle())
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+        .accessibilityLabel(label)
+    }
+}
+
+extension RemoteKeyButton where Icon == AnyView {
+    /// SF Symbol key at the shared size and weight.
+    init(symbol: String, label: String, enabled: Bool = true, action: @escaping () -> Void) {
+        self.label = label
+        self.enabled = enabled
+        self.action = action
+        self.icon = { AnyView(Image(systemName: symbol).scaledFont(19, .medium)) }
     }
 }

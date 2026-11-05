@@ -46,11 +46,15 @@ final class QuickActionStore: ObservableObject {
     static let shared = QuickActionStore()
 
     /// Keys a macro may press. Volume is a separate step kind; power keys are never allowed.
-    static let allowedKeys = ["HOME", "BACK", "MENU", "UP", "DOWN", "LEFT", "RIGHT", "OK", "MUTE", "TV_SOURCE"]
+    static let allowedKeys = ["HOME", "BACK", "UP", "DOWN", "LEFT", "RIGHT", "OK", "MUTE", "TV_SOURCE"]
     static let keyTitles: [String: String] = [
-        "HOME": "Home", "BACK": "Back", "MENU": "Menu", "UP": "Up", "DOWN": "Down",
+        "HOME": "Home", "BACK": "Back", "UP": "Up", "DOWN": "Down",
         "LEFT": "Left", "RIGHT": "Right", "OK": "Select", "MUTE": "Mute", "TV_SOURCE": "TV input menu"
     ]
+
+    /// Keys that used to be allowed and no longer exist on the remote. A saved action that still
+    /// contains one is migrated rather than left to fail silently.
+    nonisolated static let deprecatedKeys: Set<String> = ["MENU"]
 
     private let defaultsKey = "glassRemote.quickActions.v1"
 
@@ -58,13 +62,42 @@ final class QuickActionStore: ObservableObject {
         didSet { persist() }
     }
 
+    /// Set when a saved action contained a removed key. Shown once in the Quick Action editor.
+    @Published var migrationNotice: String?
+
     init() {
         if let data = UserDefaults.standard.data(forKey: defaultsKey),
            let saved = try? JSONDecoder().decode([QuickAction].self, from: data) {
-            actions = saved
+            let result = Self.migrate(saved)
+            actions = result.actions
+            if !result.affected.isEmpty {
+                migrationNotice = Self.notice(for: result.affected)
+                persist()   // `didSet` does not run for assignments made inside `init`
+            }
         } else {
             actions = Self.defaults
         }
+    }
+
+    /// Pure migration (unit tested). The removed Android Menu key steps are dropped from every
+    /// action; the rest of each action is kept exactly as saved. Returns the names of the actions
+    /// that changed so the user can be told. An action is never deleted, even if it ends up empty.
+    nonisolated static func migrate(_ saved: [QuickAction]) -> (actions: [QuickAction], affected: [String]) {
+        var affected: [String] = []
+        let migrated = saved.map { action -> QuickAction in
+            let kept = action.steps.filter { !($0.kind == .key && deprecatedKeys.contains($0.key)) }
+            guard kept.count != action.steps.count else { return action }
+            var copy = action
+            copy.steps = kept
+            affected.append(action.name)
+            return copy
+        }
+        return (migrated, affected)
+    }
+
+    nonisolated static func notice(for names: [String]) -> String {
+        let list = names.joined(separator: ", ")
+        return "The Android Menu key was removed from the remote, so its step was taken out of: \(list). Check that \(names.count == 1 ? "it still does" : "they still do") what you expect."
     }
 
     /// Starter examples. Edit or delete them freely; they are ordinary Quick Actions.

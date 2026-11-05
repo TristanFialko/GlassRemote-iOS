@@ -395,6 +395,7 @@ extension RemoteModel {
                         await self.launchApp(app)
                     }
                 case .key:
+                    // Removed keys (e.g. Android Menu) are skipped, never sent.
                     if QuickActionStore.allowedKeys.contains(step.key) { self.key(step.key) }
                 case .delay:
                     let seconds = max(0, min(30, step.seconds))

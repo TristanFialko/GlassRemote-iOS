@@ -9,6 +9,14 @@ struct QuickActionEditor: View {
     var body: some View {
         NavigationStack(path: $path) {
             List {
+                if let notice = store.migrationNotice {
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(notice, systemImage: "info.circle").font(.footnote)
+                            Button("Dismiss") { store.migrationNotice = nil }.font(.footnote.weight(.semibold))
+                        }
+                    }
+                }
                 ForEach($store.actions) { $action in
                     NavigationLink(value: action.id) {
                         VStack(alignment: .leading, spacing: 3) {

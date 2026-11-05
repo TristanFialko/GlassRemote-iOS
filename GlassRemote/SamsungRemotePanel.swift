@@ -1,31 +1,56 @@
 import SwiftUI
 
-/// Samsung TV layout for the Remote page. Uses only allowlisted `SamsungKey`s over the existing
-/// Samsung WebSocket (no second connection). Arrow keys repeat with `Click`; every control is
-/// disabled while the TV link is down, and the banner says exactly why.
+/// What the Samsung remote shows and where everything else went (pure, unit tested).
+enum SamsungRemoteLayout {
+    struct Item: Equatable { let key: SamsungKey; let title: String; let symbol: String }
+
+    /// Always visible, in two rows. The trackpad (permanent) replaces the old D-pad, so no arrow
+    /// or select key appears here.
+    static let primaryRows: [[Item]] = [
+        [Item(key: .back, title: "Back", symbol: "arrow.uturn.backward"),
+         Item(key: .home, title: "Home", symbol: "house"),
+         Item(key: .mute, title: "Mute", symbol: "speaker.slash.fill")],
+        [Item(key: .rewind, title: "Rewind", symbol: "backward.fill"),
+         Item(key: .play, title: "Play", symbol: "play.fill"),
+         Item(key: .pause, title: "Pause", symbol: "pause.fill"),
+         Item(key: .fastForward, title: "Fast forward", symbol: "forward.fill")]
+    ]
+
+    /// Less frequent keys, reachable from the global menu (Samsung TV ▸ TV keys).
+    static let menuKeys: [Item] = [
+        Item(key: .source, title: "Input menu", symbol: "rectangle.on.rectangle"),
+        Item(key: .guide, title: "Guide", symbol: "list.bullet.rectangle"),
+        Item(key: .info, title: "Info", symbol: "info.circle"),
+        Item(key: .menu, title: "TV menu", symbol: "line.3.horizontal"),
+        Item(key: .channelUp, title: "Channel up", symbol: "chevron.up"),
+        Item(key: .channelDown, title: "Channel down", symbol: "chevron.down"),
+        Item(key: .stop, title: "Stop", symbol: "stop.fill")
+    ]
+
+    /// TV power is in the header's power menu.
+    static let powerMenuKeys: [SamsungKey] = [.power]
+
+    static let removedFromSurface: Set<SamsungKey> = [.up, .down, .left, .right, .enter]
+}
+
+/// Samsung TV layout for the Remote page: a large, permanent trackpad and a short key set. Uses
+/// only allowlisted `SamsungKey`s over the existing Samsung WebSocket (no second connection).
+/// Every control is disabled while the TV link is down, and the banner says exactly why.
 struct SamsungRemotePanel: View {
     @EnvironmentObject private var remote: RemoteModel
 
     private var ready: Bool { remote.samsungRemoteReady }
-    @AppStorage("glassRemote.samsungPadMode") private var padMode = "dpad"
 
     var body: some View {
         VStack(spacing: 10) {
             banner
-            GlassSegmented(
-                items: [GlassSegmented<String>.Item(value: "dpad", title: "D-pad", symbol: "circle.grid.cross"),
-                        GlassSegmented<String>.Item(value: "trackpad", title: "Trackpad", symbol: "hand.point.up.left")],
-                selection: $padMode, height: 34)
-            Group {
-                if padMode == "trackpad" { SamsungTrackpad().disabled(!ready) } else { dpad }
+            SamsungTrackpad()
+                .disabled(!ready)
+                .frame(minHeight: 220, maxHeight: .infinity)
+                .layoutPriority(1)
+            ForEach(Array(SamsungRemoteLayout.primaryRows.enumerated()), id: \.offset) { _, row in
+                keyRow(row)
             }
-            .frame(minHeight: 170, maxHeight: .infinity)
-            keyRow([("arrow.uturn.backward", "Back", .back), ("house", "Home", .home),
-                    ("line.3.horizontal", "Menu", .menu), ("info.circle", "Info", .info), ("list.bullet.rectangle", "Guide", .guide)])
-            keyRow([("backward.fill", "Rewind", .rewind), ("play.fill", "Play", .play),
-                    ("pause.fill", "Pause", .pause), ("forward.fill", "Fast forward", .fastForward), ("stop.fill", "Stop", .stop)])
-            keyRow([("chevron.up", "Channel up", .channelUp), ("chevron.down", "Channel down", .channelDown),
-                    ("speaker.slash.fill", "Mute", .mute), ("rectangle.on.rectangle", "Source", .source), ("power", "TV power", .power)])
         }
         .opacity(ready ? 1 : 0.92)
     }
@@ -66,66 +91,17 @@ struct SamsungRemotePanel: View {
         .accessibilityElement(children: .combine)
     }
 
-    // MARK: D-pad
+    // MARK: Key rows (one glass group per row, same buttons as the Android remote)
 
-    private var dpad: some View {
-        GeometryReader { geo in
-            let size = max(150, min(250, min(geo.size.width, geo.size.height) - 12))
-            ZStack {
-                Color.clear.glassSurface(Circle(), elevated: true)
-                    .frame(width: size, height: size)
-                    .overlay(Circle().stroke(Color.white.opacity(0.20), lineWidth: 1.2))
-                VStack(spacing: 0) {
-                    HStack(spacing: 0) { Color.clear; arrow("chevron.up", .up, "Up"); Color.clear }
-                    HStack(spacing: 0) {
-                        arrow("chevron.left", .left, "Left")
-                        arrow("circle.fill", .enter, "Select", ok: true)
-                        arrow("chevron.right", .right, "Right")
+    private func keyRow(_ items: [SamsungRemoteLayout.Item]) -> some View {
+        GlassGroup(spacing: 10) {
+            HStack(spacing: 10) {
+                ForEach(items, id: \.key) { item in
+                    if item.key == .home {
+                        RemoteKeyButton(label: item.title, enabled: ready, action: { remote.samsungKey(item.key) }) { HomeGlyph() }
+                    } else {
+                        RemoteKeyButton(symbol: item.symbol, label: item.title, enabled: ready) { remote.samsungKey(item.key) }
                     }
-                    HStack(spacing: 0) { Color.clear; arrow("chevron.down", .down, "Down"); Color.clear }
-                }
-                .padding(10)
-                .frame(width: size, height: size)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .disabled(!ready)
-    }
-
-    private func arrow(_ icon: String, _ key: SamsungKey, _ label: String, ok: Bool = false) -> some View {
-        // Tap = one Click; hold = repeated Clicks (arrows only, so OK never double-selects).
-        RepeatKey(onFire: { remote.samsungKey(key) }) {
-            Image(systemName: icon)
-                .scaledFont(ok ? 12 : 22, .medium)
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background {
-                    if ok { Color.clear.glassSurface(Circle(), interactive: true, elevated: true, accent: true).padding(6) }
-                }
-                .contentShape(Rectangle())
-        }
-        .accessibilityLabel(label)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { remote.samsungKey(key) }
-    }
-
-    // MARK: Key rows (one glass group per row)
-
-    private func keyRow(_ items: [(String, String, SamsungKey)]) -> some View {
-        GlassGroup(spacing: 8) {
-            HStack(spacing: 8) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    Button { remote.samsungKey(item.2) } label: {
-                        Image(systemName: item.0)
-                            .scaledFont(17, .medium)
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 44)
-                            .glassSurface(Capsule(), interactive: ready)
-                    }
-                    .buttonStyle(PressStyle())
-                    .disabled(!ready)
-                    .accessibilityLabel(item.1)
                 }
             }
         }

@@ -21,7 +21,6 @@ final class VirtualKeyboard {
         "OK": .key(0x28),                       // Enter
         "BACK": .consumer(0x224),               // AC Back
         "HOME": .consumer(0x223),               // AC Home
-        "MENU": .consumer(0x40),                // Menu
         "VOLUME_UP": .consumer(0xE9),
         "VOLUME_DOWN": .consumer(0xEA),
         "MUTE": .consumer(0xE2)

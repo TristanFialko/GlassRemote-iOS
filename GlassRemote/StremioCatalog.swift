@@ -9,6 +9,14 @@ struct StremioTitle: Identifiable, Hashable {
     let year: String
     let posterURL: URL?
     let rating: String
+
+    /// Used only when Cinemeta supplies no poster. Metahub is the image host Stremio's own
+    /// catalogue uses for these ids. Not verified from this build environment (no network); if it
+    /// has no image either, the placeholder is shown.
+    var fallbackPosterURL: URL? {
+        guard id.range(of: #"^tt[0-9]{5,10}$"#, options: .regularExpression) != nil else { return nil }
+        return URL(string: "https://images.metahub.space/poster/medium/\(id)/img")
+    }
 }
 
 /// Search against Cinemeta, Stremio's public official metadata addon

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The four primary pages. Order here is the swipe order. Remote is the default landing page.
 enum AppPage: Int, CaseIterable, Identifiable {
-    case remote, player, discover, apps
+    case remote, player, discover, play
 
     var id: Int { rawValue }
     static let landing: AppPage = .remote
@@ -12,7 +12,7 @@ enum AppPage: Int, CaseIterable, Identifiable {
         case .remote: return "Remote"
         case .player: return "Player"
         case .discover: return "Discover"
-        case .apps: return "Apps"
+        case .play: return "Play"
         }
     }
 
@@ -21,11 +21,11 @@ enum AppPage: Int, CaseIterable, Identifiable {
         case .remote: return "dot.radiowaves.left.and.right"
         case .player: return "play.rectangle.fill"
         case .discover: return "magnifyingglass"
-        case .apps: return "square.grid.2x2.fill"
+        case .play: return "arrow.down.app.fill"
         }
     }
 
-    var accessibilityName: String { self == .apps ? "Apps and Controls" : title }
+    var accessibilityName: String { self == .play ? "Google Play" : title }
 
     /// Pure paging maths (unit tested). `translation` is the horizontal drag, `predicted` where it
     /// would coast to. A page changes on a deliberate drag past a third of the width or a flick.

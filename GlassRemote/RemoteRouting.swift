@@ -1,38 +1,33 @@
 import Foundation
 
 /// Which TV a command is aimed at. Persisted by `RemoteModel.target`.
+/// There is no automatic mode: every command goes to the device the user explicitly selected.
 enum RemoteTarget: String, CaseIterable, Identifiable {
-    case auto, android, samsung
+    case android, samsung
     var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .auto: return "Auto"
-        case .android: return "Android TV"
-        case .samsung: return "Samsung TV"
-        }
-    }
-    var shortTitle: String { self == .android ? "Android" : (self == .samsung ? "Samsung" : "Auto") }
-    var symbol: String {
-        switch self {
-        case .auto: return "sparkles.tv"
-        case .android: return "tv.and.mediabox"
-        case .samsung: return "tv"
-        }
+    var title: String { self == .android ? "Android TV" : "Samsung TV" }
+    var shortTitle: String { self == .android ? "Android" : "Samsung" }
+    var symbol: String { self == .android ? "tv.and.mediabox" : "tv" }
+
+    /// Restores the last explicitly selected device. A value saved by an older build ("auto") or
+    /// anything unrecognised resolves to Android TV, the box this app was built around.
+    static func restored(from stored: String?) -> RemoteTarget {
+        stored.flatMap(RemoteTarget.init(rawValue:)) ?? .android
     }
 }
 
 enum RemoteDevice: Equatable { case android, samsung }
 
-/// What kind of command is being sent. Capability decides routing in Auto mode.
+/// What kind of command is being sent.
 enum RemoteCommandKind { case navigation, media, volume, power, source, channel, guide }
 
-/// Pure routing rules (unit tested). A command is only ever sent to ONE device.
+/// Pure routing rules (unit tested). A command is only ever sent to ONE device, and never to a
+/// device other than the selected one: when the selected device is down the result is `nil` and
+/// the UI shows its connection state instead of silently controlling the other TV.
 ///
-/// - Android TV target: navigation and media go to the box. Volume keeps its existing routing
-///   (Samsung if linked, otherwise ADB). TV-only kinds are not available.
+/// - Android TV target: navigation, media and power go to the box. Volume keeps its existing
+///   routing (Samsung if linked, otherwise ADB). TV-only kinds are not available.
 /// - Samsung TV target: everything goes to the TV (nil when the TV link is down).
-/// - Auto: navigation and media go to the box while ADB is up, otherwise to the TV if linked.
-///   Capabilities only the TV has (source, channel, guide) always go to the TV.
 enum RemoteRouting {
     static func device(for kind: RemoteCommandKind, target: RemoteTarget,
                        androidConnected: Bool, samsungRemoteReady samsungReady: Bool) -> RemoteDevice? {
@@ -45,14 +40,6 @@ enum RemoteRouting {
             }
         case .samsung:
             return samsungReady ? .samsung : nil
-        case .auto:
-            switch kind {
-            case .source, .channel, .guide: return samsungReady ? .samsung : nil
-            case .volume: return samsungReady ? .samsung : (androidConnected ? .android : nil)
-            case .navigation, .media, .power:
-                if androidConnected { return .android }
-                return samsungReady ? .samsung : nil
-            }
         }
     }
 }

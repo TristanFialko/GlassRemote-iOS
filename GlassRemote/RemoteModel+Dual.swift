@@ -65,7 +65,7 @@ extension RemoteModel {
         GRLog.note("recents", "187 outcome: \(outcome)")
         switch outcome {
         case .opened: break
-        case .unchanged: status = "This box has no Recents screen · opened Apps instead"
+        case .unchanged: status = "This box has no Recents screen · showing your apps instead"
         case .changedUnrecognised: status = "Sent Recent Apps · the screen changed but I can't confirm it's Recents"
         case .unknown: status = "Sent Recent Apps · couldn't check the result"
         }

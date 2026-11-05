@@ -63,7 +63,7 @@ struct RootPagerView: View {
         case .remote: RemoteView().padding(.bottom, DockMetrics.clearance)
         case .player: PlayerPage()
         case .discover: DiscoverPage()
-        case .apps: AppsControlsPage()
+        case .play: GooglePlayPage()
         }
     }
 
