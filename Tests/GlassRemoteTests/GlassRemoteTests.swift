@@ -271,6 +271,34 @@ final class VolumeCalibrationTests: XCTestCase {
         XCTAssertEqual(VolumeCalibration.magnet(0.97), 0.97)
     }
 
+    func testMagnetIsSymmetricAtBothEnds() {
+        let m = VolumeCalibration.magnetMargin
+        for d in [0.0, 0.005, 0.01, m] {                       // inside or exactly on the zone
+            XCTAssertEqual(VolumeCalibration.magnet(d), 0, "low end, distance \(d)")
+            XCTAssertEqual(VolumeCalibration.magnet(1 - d), 1, "high end, distance \(d)")
+        }
+        for d in [m + 0.001, 0.02, 0.03] {                     // just outside the zone
+            XCTAssertEqual(VolumeCalibration.magnet(d), d, accuracy: 1e-12, "low end, distance \(d)")
+            XCTAssertEqual(VolumeCalibration.magnet(1 - d), 1 - d, accuracy: 1e-12, "high end, distance \(d)")
+        }
+    }
+
+    func testMagnetBoundariesAndOutOfRange() {
+        XCTAssertEqual(VolumeCalibration.magnet(0.015), 0)
+        XCTAssertEqual(VolumeCalibration.magnet(0.985), 1)
+        XCTAssertEqual(VolumeCalibration.magnet(0.016), 0.016, accuracy: 1e-12)
+        XCTAssertEqual(VolumeCalibration.magnet(0.984), 0.984, accuracy: 1e-12)
+        XCTAssertEqual(VolumeCalibration.magnet(-0.2), 0)
+        XCTAssertEqual(VolumeCalibration.magnet(1.2), 1)
+    }
+
+    func testMagnetThenCalibrationReachesLearnedEnds() {
+        let c = VolumeCalibration(lo: 2, hi: 98)
+        XCTAssertEqual(c.raw(forFraction: VolumeCalibration.magnet(0.985)), 98)
+        XCTAssertEqual(c.raw(forFraction: VolumeCalibration.magnet(0.015)), 2)
+        XCTAssertEqual(c.raw(forFraction: VolumeCalibration.magnet(0.5)), 50)
+    }
+
     func testLearnsLimitOnlyAfterTwoIdenticalSettledReadings() {
         var learner = EndpointLearner()
         let cal = VolumeCalibration.standard
