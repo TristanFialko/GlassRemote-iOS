@@ -80,6 +80,15 @@ struct ConnectionSheet: View {
                             .onSubmit { remote.reconnectTV() }
                         Button("Connect to Samsung TV") { remote.reconnectTV() }
                         Text(remote.samsungStatus).font(.footnote).foregroundStyle(.secondary)
+                        Text("Link: \(remote.samsungState.label)").font(.footnote).foregroundStyle(.secondary)
+                        Text("TV volume range used by the slider: \(remote.volumeCalibration.lo)–\(remote.volumeCalibration.hi) (default 0–100; narrowed only if the TV repeatedly stops short of a commanded end)")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        if remote.volumeCalibration != .standard {
+                            Button("Reset volume range to 0–100") {
+                                remote.volumeCalibration = .standard
+                                VolumeCalibration.standard.save()
+                            }
+                        }
                         Text(remote.volumeStatus).font(.footnote).textSelection(.enabled)
                         Stepper("Soundbar max volume: \(remote.tvVolumeMax)", value: $remote.tvVolumeMax, in: 5...200)
                         Text("Set this to the highest number your soundbar shows. The slider spans this whole range, so full slider = soundbar maximum.")

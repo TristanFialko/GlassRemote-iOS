@@ -15,7 +15,9 @@ extension RemoteModel {
     /// Strict validation so nothing arbitrary can reach the shell.
     nonisolated static func stremioDetailLink(kind: StremioTitle.Kind, id: String) -> String? {
         guard id.range(of: #"^tt[0-9]{5,10}$"#, options: .regularExpression) != nil else { return nil }
-        return "stremio:///detail/\(kind.rawValue)/\(id)"
+        // Documented form: stremio:///detail/{type}/{id}/{videoId}. For a movie the videoId is the id;
+        // for a series no episode is chosen, so the show page opens.
+        return kind == .movie ? "stremio:///detail/movie/\(id)/\(id)" : "stremio:///detail/series/\(id)"
     }
 
     nonisolated static func stremioIntentCommand(link: String) -> String {

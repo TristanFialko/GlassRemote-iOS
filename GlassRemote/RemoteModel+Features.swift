@@ -116,8 +116,16 @@ extension RemoteModel {
         }
         volumeLink.onVolume = { [weak self] value in
             guard let self else { return }
-            self.volumeStatus = "TV volume: \(value) / 100 (read from the TV)"
-            self.tvVolumeFraction = Double(min(max(value, 0), 100)) / 100.0
+            // Learn where this TV really stops (only after an end was commanded and the TV
+            // repeatedly settles just short of it), then map through the calibration.
+            if let learned = self.endpointLearner.reading(value, calibration: self.volumeCalibration) {
+                self.volumeCalibration = learned
+                learned.save()
+                GRLog.note("volume", "learned TV volume limits \(learned.lo)...\(learned.hi)")
+            }
+            let cal = self.volumeCalibration
+            self.volumeStatus = "TV volume: \(value) (range \(cal.lo)–\(cal.hi), read from the TV)"
+            self.tvVolumeFraction = cal.fraction(forRaw: value)
         }
         if tvVolumeEnabled { volumeLink.start(host: samsungHost) }
     }
@@ -133,8 +141,10 @@ extension RemoteModel {
 
     /// False for a moment after the user touches the slider, so a reading that was already in
     /// flight cannot yank it back.
+    /// Readings from the TV never move the slider while a finger is on it, nor for 2 s after the
+    /// last change (the TV can lag behind a command, and a stale reading would pull the thumb back).
     var volumeSliderAcceptsExternal: Bool {
-        Date().timeIntervalSince(lastUserVolumeInput) > 1.2
+        !volumeDragActive && Date().timeIntervalSince(lastUserVolumeInput) > 2.0
     }
 
     // MARK: - Slider -> volume mapping
@@ -158,7 +168,12 @@ extension RemoteModel {
         // Preferred: the TV reports its real level, so set it absolutely (0...100). The slider's
         // full travel is then exactly the TV's full range and nothing is assumed.
         if tvVolumeEnabled, volumeLinkReady {
-            volumeLink.setVolume(Int((min(max(fraction, 0), 1) * 100).rounded()))
+            let cal = volumeCalibration
+            let raw = cal.raw(forFraction: fraction)
+            if fraction <= 0 { endpointLearner.commandSent(raw: raw, isMax: false) }
+            else if fraction >= 1 { endpointLearner.commandSent(raw: raw, isMax: true) }
+            else { endpointLearner.clear() }   // a mid-range command can never teach an end
+            volumeLink.setVolume(raw)
             return
         }
         let levels = volumeLevels
@@ -208,7 +223,7 @@ extension RemoteModel {
             volumeLink.start(host: samsungHost)   // idempotent; also re-reads when the app resumes
             volumeLink.refresh()
             // Never replace an attempt that is already in flight (that created duplicates).
-            if !tvVolumeReady, !tv.isAttempting { tv.connect(host: samsungHost) }
+            if !tvVolumeReady, !tv.isAttempting, !tv.pairingBlocked { tv.connect(host: samsungHost) }
         } else {
             volumeLink.stop()
             tv.stop(report: false)
@@ -229,7 +244,7 @@ extension RemoteModel {
                     && !self.samsungHost.trimmingCharacters(in: .whitespaces).isEmpty
                     && self.appActive
 
-                if !wanted || self.tv.isReady {
+                if !wanted || self.tv.isReady || self.tv.pairingBlocked {
                     if self.tv.isReady { delay = 2 }
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                 } else if self.tv.isAttempting {
@@ -246,7 +261,12 @@ extension RemoteModel {
 
     func reconnectTV() {
         tv.stop(report: false)
-        applyTVSettings()
+        if tvVolumeEnabled, !samsungHost.trimmingCharacters(in: .whitespaces).isEmpty {
+            volumeLink.start(host: samsungHost)
+            tv.connect(host: samsungHost, userInitiated: true)   // explicit: may ask for approval again
+        } else {
+            applyTVSettings()
+        }
     }
 
     // MARK: - Power and device

@@ -158,6 +158,20 @@ final class RemoteModel: ObservableObject {
     var connectingSession: Int?
     private var recoveryTask: Task<Void, Never>?
     var mediaTask: Task<Void, Never>?
+    // v0.4: transport command in flight (see RemoteModel+Playback.swift)
+    var mediaCommandTask: Task<Void, Never>?
+    @Published var mediaCommandPending = false
+
+    // v0.4: dual-device remote
+    @Published var target: RemoteTarget = RemoteTarget(rawValue: UserDefaults.standard.string(forKey: "glassRemote.target") ?? "") ?? .auto {
+        didSet { UserDefaults.standard.set(target.rawValue, forKey: "glassRemote.target") }
+    }
+    @Published private(set) var samsungState: SamsungLinkState = .off
+
+    // v0.4: volume range calibration and drag protection (see VolumeCalibration.swift)
+    @Published var volumeCalibration = VolumeCalibration.loaded()
+    var endpointLearner = EndpointLearner()
+    var volumeDragActive = false
     var quickActionTask: Task<Void, Never>?
     var rebootRecoveryTask: Task<Void, Never>?
     var appActive = true
@@ -177,6 +191,7 @@ final class RemoteModel: ObservableObject {
         keyboard.onStopped = { [weak self] in self?.keyboardStopped() }
 
         tv.onStatus = { [weak self] text in self?.samsungStatus = text }
+        tv.onState = { [weak self] state in self?.samsungState = state }
         // A volume key accepted by the TV connection that then failed is re-sent over ADB.
         tv.onSendFailed = { [weak self] name in self?.key(name) }
         tv.onReadyChanged = { [weak self] ready in

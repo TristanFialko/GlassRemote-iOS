@@ -38,15 +38,15 @@ struct NowPlayingSheet: View {
                 HStack(spacing: 26) {
                     if media.canPrevious || media.canRewind {
                         control(media.canPrevious ? "backward.end.fill" : "backward.fill", media.canPrevious ? "Previous" : "Rewind", 56) {
-                            remote.mediaKey(media.canPrevious ? 88 : 89)
+                            remote.sendMedia(media.canPrevious ? .previous : .rewind)
                         }
                     }
                     control(media.isPlaying ? "pause.fill" : "play.fill", media.isPlaying ? "Pause" : "Play", 76, enabled: media.isActive && media.canPlayPause, elevated: true) {
-                        remote.mediaKey(85)
+                        remote.sendMedia(media.isPlaying ? .pause : .play)
                     }
                     if media.canNext || media.canFastForward {
                         control(media.canNext ? "forward.end.fill" : "forward.fill", media.canNext ? "Next" : "Fast forward", 56) {
-                            remote.mediaKey(media.canNext ? 87 : 90)
+                            remote.sendMedia(media.canNext ? .next : .fastForward)
                         }
                     }
                 }

@@ -4,6 +4,7 @@ import SwiftUI
 /// the Connection sheet's device scan). Adds only favourites, which are local UserDefaults.
 struct AppsControlsPage: View {
     @EnvironmentObject private var remote: RemoteModel
+    @EnvironmentObject private var navigator: PageNavigator
     @ObservedObject private var quick = QuickActionStore.shared
     @ObservedObject private var favourites = AppFavourites.shared
     @State private var showQuickEditor = false
@@ -30,7 +31,7 @@ struct AppsControlsPage: View {
                 section("Samsung TV") { samsung }
                 section("Device") { device }
             }
-            .padding(.horizontal, 18).padding(.top, 10).padding(.bottom, 24)
+            .padding(.horizontal, 18).padding(.top, 10).padding(.bottom, DockMetrics.clearance + 16)
         }
         .foregroundStyle(.white)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
@@ -62,7 +63,7 @@ struct AppsControlsPage: View {
         LazyVGrid(columns: columns, spacing: 12) {
             ForEach(apps) { app in
                 Button { remote.launch(app) } label: {
-                    Image("\(app.asset)_dark").resizable().scaledToFit()
+                    AppIconImage(asset: "\(app.asset)_dark")
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
                         .shadow(color: .black.opacity(0.34), radius: 6, y: 3)
@@ -88,7 +89,8 @@ struct AppsControlsPage: View {
     }
 
     private var quickActions: some View {
-        VStack(spacing: 8) {
+        GlassGroup(spacing: 8) {
+          VStack(spacing: 8) {
             if quick.actions.isEmpty {
                 Text("No Quick Actions yet.").scaledFont(14).foregroundStyle(.white.opacity(0.6))
             }
@@ -110,6 +112,7 @@ struct AppsControlsPage: View {
                 .buttonStyle(PressStyle())
                 .disabled(!remote.connected)
             }
+          }
         }
     }
 
@@ -125,7 +128,11 @@ struct AppsControlsPage: View {
             Toggle("Route volume through Samsung TV", isOn: $remote.tvVolumeEnabled)
                 .scaledFont(14).padding(.horizontal, 16).frame(minHeight: 48)
                 .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            Text(remote.samsungStatus).scaledFont(12).foregroundStyle(.white.opacity(0.55))
+            pill("Open Samsung remote", "tv") { remote.target = .samsung; navigator.go(.remote) }
+            if remote.tvVolumeEnabled, remote.samsungState == .denied || remote.samsungState == .unreachable || remote.samsungState == .off {
+                pill("Reconnect Samsung TV", "arrow.clockwise") { remote.reconnectTV() }
+            }
+            Text("\(remote.samsungState.label) · \(remote.samsungStatus)").scaledFont(12).foregroundStyle(.white.opacity(0.55))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -143,7 +150,8 @@ struct AppsControlsPage: View {
         VStack(alignment: .leading, spacing: 8) {
             row("Android TV box", "\(remote.host):\(remote.port)")
             row("Link", remote.connected ? "Connected" : "Not connected")
-            row("Samsung TV", remote.tvVolumeEnabled ? remote.samsungHost : "Off")
+            row("Samsung TV", remote.tvVolumeEnabled ? "\(remote.samsungHost) · \(remote.samsungState.label)" : "Off")
+            row("Volume range", "\(remote.volumeCalibration.lo)–\(remote.volumeCalibration.hi)")
             row("Keyboard helper", remote.keyboardStatus)
             row("Pointer helper", remote.cursorStatus)
             HStack(spacing: 8) {

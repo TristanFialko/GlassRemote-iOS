@@ -10,6 +10,8 @@ import SwiftUI
 /// own never jumps the volume. Value is 0...1; callers map it to remote commands.
 struct GlassVolumeSlider: View {
     @Binding var value: Double
+    /// Tells the model a finger is on the slider, so TV readings never move the thumb mid-drag.
+    var onDragChange: (Bool) -> Void = { _ in }
 
     @State private var dragStart: Double?
 
@@ -20,8 +22,9 @@ struct GlassVolumeSlider: View {
 
     /// Icon follows the quantised 20-step value, so it can't flicker between frames.
     private var symbolName: String {
+        if value <= 0 { return "speaker.slash.fill" }
         switch step {
-        case 0: return "speaker.slash.fill"
+        case 0: return "speaker.fill"
         case 1...6: return "speaker.wave.1.fill"
         case 7...13: return "speaker.wave.2.fill"
         default: return "speaker.wave.3.fill"
@@ -63,12 +66,13 @@ struct GlassVolumeSlider: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
-                        if dragStart == nil { dragStart = value }
+                        if dragStart == nil { dragStart = value; onDragChange(true) }
                         let start = dragStart ?? value
                         let proposed = start + Double(drag.translation.width / width)
-                        value = min(max(proposed, 0), 1)
+                        // Within ~1 % of an end counts as the end, so 0 % and 100 % are always reachable.
+                        value = VolumeCalibration.magnet(min(max(proposed, 0), 1))
                     }
-                    .onEnded { _ in dragStart = nil }
+                    .onEnded { _ in dragStart = nil; onDragChange(false) }
             )
         }
         .frame(height: height)

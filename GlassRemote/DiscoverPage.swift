@@ -1,91 +1,159 @@
 import SwiftUI
 
-/// Page 3: Stremio-oriented discovery. Search uses Stremio's public Cinemeta catalog from the
-/// phone. Dictation: tap the microphone on the iOS keyboard (system dictation; the app needs no
-/// extra permission). Launching is an experimental, user-enabled deep link (see
-/// RemoteModel+Stremio.swift); until it is verified on the device the UI says so.
+/// Page 3: Stremio discovery. Search uses Stremio's public Cinemeta catalogue from the phone
+/// (unchanged backend). Dictation is the keyboard's microphone. Opening a title in Stremio is an
+/// experimental deep link the user must switch on; a catalogue result never means a stream exists.
 struct DiscoverPage: View {
     @EnvironmentObject private var remote: RemoteModel
+    @EnvironmentObject private var navigator: PageNavigator
     @StateObject private var model = DiscoverModel()
     @FocusState private var searching: Bool
     @AppStorage(RemoteModel.deepLinkDefaultsKey) private var deepLinkTest = false
     @State private var selected: StremioTitle?
     @State private var result = ""
 
-    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 12, alignment: .top)]
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 16) {
                 searchField
+                GlassSegmented(
+                    items: [GlassSegmented<DiscoverModel.Filter>.Item(value: .all, title: "All", symbol: nil),
+                            GlassSegmented<DiscoverModel.Filter>.Item(value: .movies, title: "Movies", symbol: "film"),
+                            GlassSegmented<DiscoverModel.Filter>.Item(value: .series, title: "Series", symbol: "tv")],
+                    selection: $model.filter, height: 38)
                 content
-                Toggle(isOn: $deepLinkTest) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Try opening titles in Stremio").scaledFont(14, .semibold)
-                        Text("Experimental. Sends a Stremio detail link to the TV. Not yet confirmed to work on your box.")
-                            .scaledFont(12).foregroundStyle(.white.opacity(0.55))
-                    }
-                }
-                .padding(14)
-                .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                launchToggle
             }
-            .padding(.horizontal, 18).padding(.top, 10).padding(.bottom, 24)
+            .padding(.horizontal, 16).padding(.top, 10)
+            .padding(.bottom, DockMetrics.clearance + 16)
         }
-        .scrollDismissesKeyboardIfAvailable()
+        .scrollDismissesKeyboard(.interactively)
         .foregroundStyle(.white)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .sheet(item: $selected) { title in detail(title) }
+        // Search shortcut from the Remote page: wait for the page slide, then bring up the keyboard.
+        .onChange(of: navigator.searchFocusToken) { _ in
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                searching = true
+            }
+        }
     }
+
+    // MARK: Search field
 
     private var searchField: some View {
         HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.white.opacity(0.6))
+            Image(systemName: "magnifyingglass").scaledFont(16, .medium).foregroundStyle(.white.opacity(0.65))
             TextField("Search movies and series", text: $model.query)
                 .focused($searching)
                 .submitLabel(.search)
                 .autocorrectionDisabled()
+                .textInputAutocapitalization(.words)
                 .onChange(of: model.query) { _ in model.queryChanged() }
+                .onSubmit { searching = false }
             if !model.query.isEmpty {
-                Button { model.query = ""; model.queryChanged() } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.5))
-                }.accessibilityLabel("Clear search")
+                Button { model.query = ""; model.queryChanged(); searching = true } label: {
+                    Image(systemName: "xmark.circle.fill").scaledFont(17).foregroundStyle(.white.opacity(0.55))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
         .scaledFont(16)
-        .padding(.horizontal, 16).frame(height: 48)
-        .glassSurface(Capsule(), interactive: true)
+        .padding(.horizontal, 16).frame(height: 52)
+        .glassBar(Capsule())
     }
+
+    // MARK: Content states
 
     @ViewBuilder
     private var content: some View {
         switch model.phase {
         case .idle:
-            note("search", "Search Stremio's catalogue. Use the keyboard's microphone to dictate.")
+            if model.recents.isEmpty {
+                note("sparkle.magnifyingglass", "Find something to watch",
+                     "Search Stremio's catalogue. Tap the keyboard's microphone to dictate.")
+            } else {
+                recentsList
+            }
         case .searching:
-            HStack { Spacer(); ProgressView().tint(.white); Spacer() }.padding(.top, 30)
+            skeleton
         case .empty:
-            note("film.stack", "No movies or series found.")
+            note("film.stack", "No results", "Nothing in the catalogue matches “\(model.query)”.")
         case .failed(let message):
-            note("wifi.exclamationmark", message)
+            note("wifi.exclamationmark", "Can't reach the catalogue", message)
         case .results:
-            shelf("Movies", model.movies)
-            shelf("Series", model.series)
+            if model.visibleMovies.isEmpty && model.visibleSeries.isEmpty {
+                note(model.filter == .movies ? "film" : "tv", model.filter == .movies ? "No movies" : "No series",
+                     "Try “All” to see everything that matched.")
+            } else {
+                shelf("Movies", model.visibleMovies)
+                shelf("Series", model.visibleSeries)
+            }
         }
     }
 
-    private func note(_ symbol: String, _ text: String) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: symbol).scaledFont(30).foregroundStyle(.white.opacity(0.4))
-            Text(text).scaledFont(14).foregroundStyle(.white.opacity(0.6)).multilineTextAlignment(.center)
+    private func note(_ symbol: String, _ title: String, _ text: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: symbol).scaledFont(32, .light).foregroundStyle(.white.opacity(0.45))
+            Text(title).scaledFont(17, .semibold)
+            Text(text).scaledFont(13).foregroundStyle(.white.opacity(0.58)).multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity).padding(.top, 36)
+        .frame(maxWidth: .infinity).padding(.top, 40).padding(.horizontal, 12)
     }
+
+    private var recentsList: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Recent").scaledFont(16, .bold)
+                Spacer()
+                Button("Clear") { model.clearRecents() }.scaledFont(13, .semibold).foregroundStyle(.white.opacity(0.7))
+            }
+            GlassGroup(spacing: 8) {
+                VStack(spacing: 8) {
+                    ForEach(model.recents, id: \.self) { text in
+                        Button { model.useRecent(text) } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "clock.arrow.circlepath").foregroundStyle(.white.opacity(0.55))
+                                Text(text).scaledFont(15).lineLimit(1)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16).frame(height: 46)
+                            .glassSurface(Capsule(), interactive: true)
+                        }
+                        .buttonStyle(PressStyle())
+                    }
+                }
+            }
+        }
+    }
+
+    private var skeleton: some View {
+        LazyVGrid(columns: columns, spacing: 14) {
+            ForEach(0..<6, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+                    .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                    .overlay(ProgressView().tint(.white.opacity(0.6)))
+            }
+        }
+        .accessibilityLabel("Searching")
+    }
+
+    // MARK: Results
 
     @ViewBuilder
     private func shelf(_ title: String, _ items: [StremioTitle]) -> some View {
         if !items.isEmpty {
-            Text(title).scaledFont(18, .bold)
-            LazyVGrid(columns: columns, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).scaledFont(20, .bold)
+                Text("\(items.count)").scaledFont(13).foregroundStyle(.white.opacity(0.5))
+            }
+            .padding(.top, 4)
+            LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(items) { item in
                     Button { searching = false; result = ""; selected = item } label: { poster(item) }
                         .buttonStyle(PressStyle())
@@ -96,56 +164,80 @@ struct DiscoverPage: View {
     }
 
     private func poster(_ item: StremioTitle) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             CachedArtwork(url: item.posterURL, contentMode: .fill) {
                 Color.white.opacity(0.06).overlay(Image(systemName: "film").foregroundStyle(.white.opacity(0.3)))
             }
             .aspectRatio(2.0 / 3.0, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.16)))
-            Text(item.name).scaledFont(12, .semibold).lineLimit(2).multilineTextAlignment(.leading)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 0.8))
+            .shadow(color: .black.opacity(0.45), radius: 8, y: 5)
+            Text(item.name).scaledFont(13, .semibold).lineLimit(2).multilineTextAlignment(.leading)
             if !item.year.isEmpty { Text(item.year).scaledFont(11).foregroundStyle(.white.opacity(0.55)) }
         }
     }
 
+    // MARK: Launch toggle
+
+    private var launchToggle: some View {
+        Toggle(isOn: $deepLinkTest) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Open titles in Stremio").scaledFont(14, .semibold)
+                Text("Experimental. Sends a Stremio detail link to the TV box. Not yet confirmed on your box.")
+                    .scaledFont(12).foregroundStyle(.white.opacity(0.55))
+            }
+        }
+        .padding(14)
+        .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(.top, 6)
+    }
+
+    // MARK: Detail sheet
+
     private func detail(_ title: StremioTitle) -> some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             CachedArtwork(url: title.posterURL, contentMode: .fit) { Color.clear }
-                .frame(maxHeight: 280).clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            Text(title.name).scaledFont(22, .bold).multilineTextAlignment(.center)
-            Text([title.kind == .movie ? "Movie" : "Series", title.year, title.rating.isEmpty ? "" : "IMDb \(title.rating)"]
-                .filter { !$0.isEmpty }.joined(separator: " · "))
-                .scaledFont(14).foregroundStyle(.white.opacity(0.6))
+                .frame(maxHeight: 300)
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .shadow(color: .black.opacity(0.5), radius: 16, y: 10)
+                .padding(.top, 24)
+            Text(title.name).scaledFont(24, .bold).multilineTextAlignment(.center)
+            HStack(spacing: 8) {
+                chip(title.kind == .movie ? "Movie" : "Series", "film")
+                if !title.year.isEmpty { chip(title.year, "calendar") }
+                if !title.rating.isEmpty { chip(title.rating, "star.fill") }
+            }
             if deepLinkTest {
                 Button {
                     PlayerArtworkStore.shared.remember(title: title.name, posterURL: title.posterURL)
                     Task { result = await remote.openInStremio(title) }
                 } label: {
                     Label("Open in Stremio", systemImage: "play.fill").scaledFont(16, .semibold)
-                        .frame(maxWidth: .infinity).frame(height: 50)
-                        .glassSurface(Capsule(), interactive: true, elevated: true)
+                        .frame(maxWidth: .infinity).frame(height: 52)
+                        .glassBar(Capsule())
                 }
-                .buttonStyle(PressStyle()).disabled(!remote.connected)
+                .buttonStyle(PressStyle()).disabled(!remote.connected).opacity(remote.connected ? 1 : 0.5)
             } else {
-                Text("Turn on “Try opening titles in Stremio” on the Discover page to test launching.")
-                    .scaledFont(13).foregroundStyle(.white.opacity(0.55)).multilineTextAlignment(.center)
+                Text("Turn on “Open titles in Stremio” on the Discover page to try launching from here.")
+                    .scaledFont(13).foregroundStyle(.white.opacity(0.58)).multilineTextAlignment(.center)
             }
-            if !result.isEmpty { Text(result).scaledFont(13).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center) }
+            if !result.isEmpty { Text(result).scaledFont(13).foregroundStyle(.white.opacity(0.75)).multilineTextAlignment(.center) }
+            Text("This is a catalogue listing. It doesn't mean a stream is available for it.")
+                .scaledFont(11).foregroundStyle(.white.opacity(0.4)).multilineTextAlignment(.center)
             Spacer(minLength: 0)
         }
         .foregroundStyle(.white)
-        .padding(24)
+        .padding(.horizontal, 24).padding(.bottom, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background { AmbientBackdrop() }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
         .preferredColorScheme(.dark)
     }
-}
 
-private extension View {
-    /// `scrollDismissesKeyboard` is iOS 16+, matching the deployment target; kept behind a helper
-    /// so it is one place to change.
-    @ViewBuilder func scrollDismissesKeyboardIfAvailable() -> some View {
-        if #available(iOS 16.0, *) { self.scrollDismissesKeyboard(.interactively) } else { self }
+    private func chip(_ text: String, _ symbol: String) -> some View {
+        Label(text, systemImage: symbol).scaledFont(12, .semibold)
+            .padding(.horizontal, 12).frame(height: 28)
+            .glassSurface(Capsule())
     }
 }

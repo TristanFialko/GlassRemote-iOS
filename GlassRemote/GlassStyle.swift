@@ -16,8 +16,8 @@ extension View {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             let smoke = Glass.regular.tint(
-                Color(white: elevated ? 0.10 : 0.075)
-                    .opacity(elevated ? 0.22 : 0.32)
+                Color(white: elevated ? 0.12 : 0.09)
+                    .opacity(elevated ? 0.12 : 0.20)
             )
             self.glassEffect(interactive ? smoke.interactive() : smoke, in: shape)
         } else {
@@ -63,6 +63,132 @@ extension View {
                 )
             }
             .shadow(color: .black.opacity(0.40), radius: elevated ? 12 : 8, y: elevated ? 7 : 4)
+    }
+}
+
+// MARK: - v0.4 glass helpers
+
+extension View {
+    /// Large floating bars (the page dock, transport bar). Untinted regular glass on iOS 26 so
+    /// refraction and the specular edge carry the look; heavier material fallback before that.
+    @ViewBuilder
+    func glassBar<S: Shape>(_ shape: S, interactive: Bool = true) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self.glassEffect(interactive ? Glass.regular.interactive() : Glass.regular, in: shape)
+        } else {
+            self.legacyBar(shape)
+        }
+        #else
+        self.legacyBar(shape)
+        #endif
+    }
+
+    /// The selected-item "lens" inside a bar: clear, lightly lifted glass.
+    @ViewBuilder
+    func glassLens<S: Shape>(_ shape: S) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self.glassEffect(Glass.clear.tint(Color.white.opacity(0.10)).interactive(), in: shape)
+        } else {
+            self.legacyLens(shape)
+        }
+        #else
+        self.legacyLens(shape)
+        #endif
+    }
+
+    /// Lets two glass shapes in one `GlassGroup` morph into each other on iOS 26. No-op earlier.
+    @ViewBuilder
+    func glassMorph(_ id: String, in namespace: Namespace.ID) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self.glassEffectID(id, in: namespace)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
+    fileprivate func legacyBar<S: Shape>(_ shape: S) -> some View {
+        self
+            .background {
+                ZStack {
+                    shape.fill(.thinMaterial)
+                    shape.fill(Color.black.opacity(0.18))
+                    shape.fill(LinearGradient(colors: [Color.white.opacity(0.22), Color.white.opacity(0.03), Color.white.opacity(0.10)],
+                                              startPoint: .top, endPoint: .bottom))
+                }
+            }
+            .overlay { shape.stroke(LinearGradient(colors: [Color.white.opacity(0.55), Color.white.opacity(0.08), Color.white.opacity(0.30)],
+                                                   startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1) }
+            .shadow(color: .black.opacity(0.45), radius: 16, y: 9)
+    }
+
+    fileprivate func legacyLens<S: Shape>(_ shape: S) -> some View {
+        self
+            .background {
+                ZStack {
+                    shape.fill(Color.white.opacity(0.16))
+                    shape.fill(LinearGradient(colors: [Color.white.opacity(0.30), Color.white.opacity(0.04)], startPoint: .top, endPoint: .bottom))
+                }
+            }
+            .overlay { shape.stroke(Color.white.opacity(0.45), lineWidth: 0.8) }
+    }
+}
+
+/// Glass segmented control (Device selector, Discover filter). One bar, one sliding lens.
+/// Equal-width segments so the lens position is exact; both are glass inside one `GlassGroup`.
+struct GlassSegmented<Value: Hashable>: View {
+    struct Item { let value: Value; let title: String; let symbol: String? }
+    let items: [Item]
+    @Binding var selection: Value
+    var height: CGFloat = 40
+    @Namespace private var ns
+
+    private var index: Int { items.firstIndex { $0.value == selection } ?? 0 }
+
+    var body: some View {
+        GlassGroup(spacing: 8) {
+            GeometryReader { geo in
+                let inner = geo.size.width - 8
+                let seg = inner / CGFloat(max(items.count, 1))
+                ZStack(alignment: .leading) {
+                    Color.clear.glassBar(Capsule()).glassMorph("bar", in: ns)
+                    Color.clear
+                        .frame(width: seg, height: height - 8)
+                        .glassLens(Capsule())
+                        .glassMorph("lens", in: ns)
+                        .offset(x: 4 + seg * CGFloat(index))
+                        .animation(.spring(response: 0.36, dampingFraction: 0.82), value: index)
+                    HStack(spacing: 0) {
+                        ForEach(items, id: \.value) { item in
+                            Button {
+                                guard item.value != selection else { return }
+                                Haptics.soft()
+                                selection = item.value
+                            } label: {
+                                HStack(spacing: 5) {
+                                    if let symbol = item.symbol { Image(systemName: symbol).scaledFont(13, .semibold) }
+                                    Text(item.title).scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
+                                }
+                                .foregroundStyle(item.value == selection ? Color.white : Color.white.opacity(0.68))
+                                .frame(width: seg, height: height)
+                                .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(item.title)
+                            .accessibilityAddTraits(item.value == selection ? .isSelected : [])
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+            }
+            .frame(height: height)
+        }
+        .frame(height: height)
     }
 }
 

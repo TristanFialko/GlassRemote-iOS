@@ -14,6 +14,7 @@ final class PointerBox {
 
 struct RemoteView: View {
     @EnvironmentObject private var remote: RemoteModel
+    @EnvironmentObject private var navigator: PageNavigator
     @ObservedObject private var quick = QuickActionStore.shared
 
     // Drag position lives in a reference box so updating it on every touch move does NOT invalidate
@@ -42,13 +43,19 @@ struct RemoteView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 10) {
                     header
-                    appsSection
-                    nowPlaying
-                    quickActionsRow
-                    ModeSelector(isMouse: $remote.isTrackpad)
-                    controlSurface
-                        .frame(minHeight: 150, maxHeight: appsExpanded ? 210 : CGFloat.infinity)
-                    navRow
+                    deviceSelector
+                    if remote.target == .samsung {
+                        // Samsung mode: the Samsung key layout replaces the Android-only controls.
+                        SamsungRemotePanel()
+                    } else {
+                        appsSection
+                        nowPlaying
+                        quickActionsRow
+                        ModeSelector(isMouse: $remote.isTrackpad)
+                        controlSurface
+                            .frame(minHeight: 150, maxHeight: appsExpanded ? 210 : CGFloat.infinity)
+                        navRow
+                    }
                     volumeBar
                 }
                 .padding(.horizontal, 16)
@@ -110,63 +117,106 @@ struct RemoteView: View {
         }
     }
 
+    private var androidOK: Bool { remote.connected && !remote.requiresUserReconnect }
+
+    private var samsungDotColor: Color {
+        switch remote.samsungState {
+        case .connected: return .green
+        case .connecting, .pairing: return .yellow
+        case .denied, .unreachable: return .orange
+        case .off: return Color.white.opacity(0.35)
+        }
+    }
+
     private var header: some View {
         HStack(spacing: 10) {
-            Button { remote.showConnection = true } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .scaledFont(17, .medium)
-                    .frame(width: 44, height: 44)
-                    .glassSurface(Circle(), interactive: true)
-            }
-            .buttonStyle(PressStyle())
-            .accessibilityLabel("Connection settings")
+            // Brand: the app icon, no wordmark.
+            Image("BrandIcon")
+                .resizable().scaledToFit()
+                .frame(width: 44, height: 44)
+                .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
+                .accessibilityHidden(true)
 
-            Spacer(minLength: 0)
-
-            Button { if !remote.connected || remote.requiresUserReconnect { remote.connect() } } label: {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(remote.connected && !remote.requiresUserReconnect ? Color.green : Color.orange)
-                        .frame(width: 8, height: 8)
-                        .shadow(color: (remote.connected && !remote.requiresUserReconnect ? Color.green : Color.orange).opacity(0.35), radius: 2)
-                    Text(statusLabel).scaledFont(13, .semibold)
+            Button {
+                if !androidOK { remote.connect() }
+                else if remote.tvVolumeEnabled && (remote.samsungState == .denied || remote.samsungState == .unreachable) { remote.reconnectTV() }
+                else { remote.showConnection = true }
+            } label: {
+                HStack(spacing: 10) {
+                    HStack(spacing: 6) {
+                        Circle().fill(androidOK ? Color.green : Color.orange).frame(width: 8, height: 8)
+                        Text("Box").scaledFont(12, .semibold)
+                    }
+                    if remote.tvVolumeEnabled {
+                        HStack(spacing: 6) {
+                            Circle().fill(samsungDotColor).frame(width: 8, height: 8)
+                            Text("TV").scaledFont(12, .semibold)
+                        }
+                    }
                 }
-                .foregroundStyle(Color.white.opacity(0.85))
-                .padding(.horizontal, 16)
+                .foregroundStyle(Color.white.opacity(0.88))
+                .padding(.horizontal, 14)
                 .frame(height: 36)
                 .glassSurface(Capsule(), interactive: true)
             }
             .buttonStyle(PressStyle())
-            .accessibilityLabel(remote.requiresUserReconnect ? "Reconnect required" : (remote.connected ? "Connected" : "Reconnect"))
+            .accessibilityLabel("Connection: box \(statusLabel)" + (remote.tvVolumeEnabled ? ", Samsung \(remote.samsungState.label)" : ""))
+            .accessibilityHint("Opens connection details or reconnects")
 
             Spacer(minLength: 0)
 
-            Menu {
-                Button { pendingPower = .standby } label: { Label("Standby", systemImage: "moon.zzz") }
-                Button { remote.wake() } label: { Label("Wake", systemImage: "sun.max") }
-                Button { pendingPower = .restartLauncher } label: { Label("Restart launcher", systemImage: "arrow.clockwise") }
-                Button {
-                    Task {
-                        if let image = await remote.captureScreenshot() { screenshotItem = ScreenshotItem(image: image) }
+            GlassGroup(spacing: 8) {
+                HStack(spacing: 8) {
+                    Button { remote.showConnection = true } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .scaledFont(17, .medium)
+                            .frame(width: 44, height: 44)
+                            .glassSurface(Circle(), interactive: true)
                     }
-                } label: { Label("TV screenshot", systemImage: "camera.viewfinder") }
-                if remote.tvVolumeEnabled {
-                    Divider()
-                    Button { remote.tvKey("TV_POWER") } label: { Label("TV power", systemImage: "tv") }
-                    Button { remote.tvKey("TV_SOURCE") } label: { Label("TV input menu", systemImage: "rectangle.on.rectangle") }
-                    Button { pendingPower = .everythingOff } label: { Label("Turn off box and TV", systemImage: "power.circle") }
-                    Divider()
+                    .buttonStyle(PressStyle())
+                    .accessibilityLabel("Connection settings")
+
+                    powerMenu
                 }
-                Button(role: .destructive) { pendingPower = .restartBox } label: { Label("Restart TV box", systemImage: "power") }
-            } label: {
-                Image(systemName: "power")
-                    .scaledFont(17, .medium)
-                    .frame(width: 44, height: 44)
-                    .glassSurface(Circle(), interactive: true)
             }
-            .accessibilityLabel("Power and device")
         }
         .foregroundStyle(.white)
+    }
+
+    private var powerMenu: some View {
+        Menu {
+            Button { pendingPower = .standby } label: { Label("Standby", systemImage: "moon.zzz") }
+            Button { remote.wake() } label: { Label("Wake", systemImage: "sun.max") }
+            Button { pendingPower = .restartLauncher } label: { Label("Restart launcher", systemImage: "arrow.clockwise") }
+            Button {
+                Task {
+                    if let image = await remote.captureScreenshot() { screenshotItem = ScreenshotItem(image: image) }
+                }
+            } label: { Label("TV screenshot", systemImage: "camera.viewfinder") }
+            Button { remote.key("MENU") } label: { Label("Android menu key", systemImage: "line.3.horizontal") }
+            if remote.tvVolumeEnabled {
+                Divider()
+                Button { remote.tvKey("TV_POWER") } label: { Label("TV power", systemImage: "tv") }
+                Button { remote.tvKey("TV_SOURCE") } label: { Label("TV input menu", systemImage: "rectangle.on.rectangle") }
+                Button { pendingPower = .everythingOff } label: { Label("Turn off box and TV", systemImage: "power.circle") }
+                Divider()
+            }
+            Button(role: .destructive) { pendingPower = .restartBox } label: { Label("Restart TV box", systemImage: "power") }
+        } label: {
+            Image(systemName: "power")
+                .scaledFont(17, .medium)
+                .frame(width: 44, height: 44)
+                .glassSurface(Circle(), interactive: true)
+        }
+        .accessibilityLabel("Power and device")
+    }
+
+    private var deviceSelector: some View {
+        GlassSegmented(
+            items: RemoteTarget.allCases.map { GlassSegmented<RemoteTarget>.Item(value: $0, title: $0.title, symbol: $0.symbol) },
+            selection: $remote.target,
+            height: 40
+        )
     }
 
     private func perform(_ action: PowerAction) {
@@ -206,13 +256,13 @@ struct RemoteView: View {
 
             if appsExpanded {
                 appGrid
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                    .transition(.opacity)
             }
         }
         .padding(.horizontal, appsExpanded ? 8 : 0)
         .padding(.bottom, appsExpanded ? 10 : 0)
         .frame(maxWidth: .infinity)
-        .glassSurface(RoundedRectangle(cornerRadius: appsExpanded ? 34 : 27, style: .continuous), interactive: !appsExpanded)
+        .glassSurface(RoundedRectangle(cornerRadius: 30, style: .continuous), interactive: !appsExpanded)
     }
 
     // Same artwork, order and tile construction as before; only the surrounding panel is new.
@@ -223,9 +273,7 @@ struct RemoteView: View {
                     remote.launch(app)
                     withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded = false }
                 } label: {
-                    Image("\(app.asset)_dark")
-                        .resizable()
-                        .scaledToFit()
+                    AppIconImage(asset: "\(app.asset)_dark")
                         .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
                         .overlay {
                             RoundedRectangle(cornerRadius: 17, style: .continuous)
@@ -289,20 +337,20 @@ struct RemoteView: View {
                 icon: media.canPrevious ? "backward.end.fill" : "backward.fill",
                 label: media.canPrevious ? "Previous" : "Rewind",
                 enabled: media.canPrevious || media.canRewind
-            ) { remote.mediaKey(media.canPrevious ? 88 : 89) }
+            ) { remote.sendMedia(media.canPrevious ? .previous : .rewind) }
 
             mediaButton(
                 icon: media.isPlaying ? "pause.fill" : "play.fill",
                 label: media.isPlaying ? "Pause" : "Play",
-                enabled: media.isActive && media.canPlayPause,
+                enabled: media.isActive && media.canPlayPause && !remote.mediaCommandPending,
                 prominent: true
-            ) { remote.mediaKey(85) }
+            ) { remote.sendMedia(media.isPlaying ? .pause : .play) }
 
             mediaButton(
                 icon: media.canNext ? "forward.end.fill" : "forward.fill",
                 label: media.canNext ? "Next" : "Fast forward",
                 enabled: media.canNext || media.canFastForward
-            ) { remote.mediaKey(media.canNext ? 87 : 90) }
+            ) { remote.sendMedia(media.canNext ? .next : .fastForward) }
         }
         .padding(12)
         // The whole card opens the expanded player. The tap target sits BEHIND the content, so the
@@ -563,7 +611,7 @@ struct RemoteView: View {
                     let w = value.translation.width, h = value.translation.height
                     let name = abs(w) > abs(h) ? (w > 0 ? "RIGHT" : "LEFT") : (h > 0 ? "DOWN" : "UP")
                     Haptics.soft()
-                    remote.key(name)
+                    remote.routedKey(name)
                 }
         )
         .allowsHitTesting(!appsExpanded)
@@ -572,7 +620,7 @@ struct RemoteView: View {
 
     private func dpadKey(_ icon: String, _ key: String, _ label: String, ok: Bool = false) -> some View {
         // Tap = one press; hold = auto-repeat (arrows only, so OK never repeats into a double-select).
-        RepeatKey(onFire: { remote.key(key) }) {
+        RepeatKey(onFire: { remote.routedKey(key) }) {
             Image(systemName: icon)
                 .scaledFont(ok ? 12 : 22, .medium)
                 .foregroundStyle(.white)
@@ -584,7 +632,7 @@ struct RemoteView: View {
         }
         .accessibilityLabel(label)
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction { remote.key(key) }
+        .accessibilityAction { remote.routedKey(key) }
     }
 
     // MARK: - Navigation and volume
@@ -592,9 +640,12 @@ struct RemoteView: View {
     private var navRow: some View {
         GlassGroup(spacing: 10) {
             HStack(spacing: 10) {
-                navButton("arrow.uturn.backward", "Back") { remote.key("BACK") }
-                navButton("Home", action: { remote.key("HOME") }) { HomeGlyph() }
-                navButton("line.3.horizontal", "Menu") { remote.key("MENU") }
+                navButton("arrow.uturn.backward", "Back") { remote.routedKey("BACK") }
+                navButton("Home", action: { remote.routedKey("HOME") }) { HomeGlyph() }
+                navButton("rectangle.stack", "Recent apps") {
+                    Task { @MainActor in if await remote.openRecents() == false { navigator.go(.apps) } }
+                }
+                navButton("magnifyingglass", "Search") { navigator.openSearch() }
                 navButton("keyboard", "Keyboard") { showKeyboard = true }
             }
         }
@@ -620,7 +671,7 @@ struct RemoteView: View {
 
 
     private var volumeBar: some View {
-        GlassVolumeSlider(value: $volumeSliderValue)
+        GlassVolumeSlider(value: $volumeSliderValue, onDragChange: { remote.volumeDragActive = $0 })
             .onChange(of: volumeSliderValue) { newValue in
                 // A value we just applied from the TV's own reading must not be sent back to it.
                 if let echo = externalVolumeEcho, abs(newValue - echo) < 0.0001 {

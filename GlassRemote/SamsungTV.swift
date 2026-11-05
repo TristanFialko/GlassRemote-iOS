@@ -35,6 +35,8 @@ final class SamsungTV {
     static let tvOnlyKeys: Set<String> = ["TV_POWER", "TV_SOURCE", "TV_HDMI"]
 
     var onStatus: ((String) -> Void)?
+    /// Structured connection state for the UI (pairing / denied / unreachable ...).
+    var onState: ((SamsungLinkState) -> Void)?
     var onReadyChanged: ((Bool) -> Void)?
     /// A key accepted for sending failed afterwards; the caller re-sends it over ADB.
     var onSendFailed: ((String) -> Void)?
@@ -43,6 +45,12 @@ final class SamsungTV {
     /// True from connect() until the attempt succeeds, fails, times out or is stopped.
     /// Lets the auto-connect supervisor avoid creating a duplicate connection.
     private(set) var isAttempting = false
+    /// Set when the TV refused or never answered the approval prompt. The auto-connect supervisor
+    /// leaves the TV alone until the user asks to reconnect, so the prompt is not re-shown over
+    /// and over. Cleared by an explicit `connect(host:userInitiated: true)`.
+    private(set) var pairingBlocked = false
+    var hasStoredToken: Bool { !(storedToken() ?? "").isEmpty }
+    private(set) var state: SamsungLinkState = .off
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
     private var receiveTask: Task<Void, Never>?
@@ -50,8 +58,9 @@ final class SamsungTV {
     private var generation = 0
     private let tokenKey = "glassRemote.samsungToken"
 
-    func connect(host rawHost: String) {
-        stop(report: false)
+    func connect(host rawHost: String, userInitiated: Bool = false) {
+        if userInitiated { pairingBlocked = false }
+        stop(report: false, keepState: true)
         let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { report("Samsung TV: enter the TV's IP address"); return }
 
@@ -76,7 +85,9 @@ final class SamsungTV {
         task = socket
         isAttempting = true
         socket.resume()
-        report("Samsung TV: connecting… approve Glass Remote on the TV if it asks")
+        let firstPairing = !hasStoredToken
+        setState(firstPairing ? .pairing : .connecting)
+        report(firstPairing ? "Samsung TV: approve Glass Remote on the TV" : "Samsung TV: connecting…")
 
         receiveTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -88,6 +99,7 @@ final class SamsungTV {
                     guard let self, self.generation == gen else { return }
                     self.isAttempting = false
                     self.setReady(false)
+                    if !self.pairingBlocked { self.setState(.unreachable) }
                     self.report("Samsung TV: not connected · using ADB volume (retrying)")
                     return
                 }
@@ -97,12 +109,16 @@ final class SamsungTV {
         timeoutTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 45_000_000_000)
             guard let self, self.generation == gen, !self.isReady else { return }
-            self.report("Samsung TV: no response · using ADB volume (retrying)")
-            self.stop(report: false)
+            // No answer at all while a first pairing prompt was showing: treat it as declined so the
+            // prompt is not re-raised every few seconds.
+            if self.state == .pairing { self.pairingBlocked = true; self.setState(.denied) }
+            else { self.setState(.unreachable) }
+            self.report("Samsung TV: no response · using ADB volume")
+            self.stop(report: false, keepState: true)
         }
     }
 
-    func stop(report shouldReport: Bool = true) {
+    func stop(report shouldReport: Bool = true, keepState: Bool = false) {
         generation += 1
         receiveTask?.cancel(); receiveTask = nil
         timeoutTask?.cancel(); timeoutTask = nil
@@ -110,20 +126,40 @@ final class SamsungTV {
         session?.invalidateAndCancel(); session = nil
         isAttempting = false
         setReady(false)
+        if !keepState { setState(.off) }
         if shouldReport { report("Samsung TV: off") }
     }
 
-    /// Returns true if the key was queued on the TV connection.
+    enum Command: String { case click = "Click", press = "Press", release = "Release" }
+
+    /// Legacy entry point: the app's own key names (VOLUME_UP, TV_POWER ...).
     func send(_ name: String) -> Bool {
-        guard isReady, let task, let tvKey = Self.keyNames[name] else { return false }
-        let payload = #"{"method":"ms.remote.control","params":{"Cmd":"Click","DataOfCmd":"\#(tvKey)","Option":"false","TypeOfRemote":"SendRemoteKey"}}"#
+        guard let key = SamsungKey.forAppKey(name) else { return false }
+        return sendKey(key)
+    }
+
+    /// Returns true if the key was queued on the TV connection. Only allowlisted key names are
+    /// ever put on the wire. `Click` is a full press+release. `Press`/`Release` exist in the
+    /// protocol for holding a key; the app repeats `Click` instead, which every model accepts.
+    @discardableResult
+    func sendKey(_ key: SamsungKey, command: Command = .click) -> Bool {
+        guard isReady, let task, SamsungKey.allowlist.contains(key.rawValue) else { return false }
+        let object: [String: Any] = [
+            "method": "ms.remote.control",
+            "params": ["Cmd": command.rawValue, "DataOfCmd": key.rawValue,
+                       "Option": "false", "TypeOfRemote": "SendRemoteKey"]
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object),
+              let payload = String(data: data, encoding: .utf8) else { return false }
         let gen = generation
+        let name = key.rawValue
         Task { [weak self] in
             do {
                 try await task.send(.string(payload))
             } catch {
                 guard let self, self.generation == gen else { return }
                 self.setReady(false)
+                self.setState(.unreachable)
                 self.report("Samsung TV: send failed · using ADB volume")
                 self.onSendFailed?(name)
             }
@@ -150,12 +186,18 @@ final class SamsungTV {
             }
             timeoutTask?.cancel()
             isAttempting = false
+            pairingBlocked = false
+            setState(.connected)
             setReady(true)
             report("Samsung TV: connected · volume routed through the TV to the soundbar")
         case "ms.channel.unauthorized":
-            report("Samsung TV: not allowed · accept Glass Remote on the TV")
+            pairingBlocked = true
+            setState(.denied)
+            report("Samsung TV: not allowed · allow Glass Remote on the TV, then tap Reconnect")
         case "ms.channel.timeout":
-            report("Samsung TV: approval timed out")
+            pairingBlocked = true
+            setState(.denied)
+            report("Samsung TV: approval timed out · tap Reconnect to try again")
         default:
             break
         }
@@ -177,6 +219,12 @@ final class SamsungTV {
         guard isReady != ready else { return }
         isReady = ready
         onReadyChanged?(ready)
+    }
+
+    private func setState(_ new: SamsungLinkState) {
+        guard state != new else { return }
+        state = new
+        onState?(new)
     }
 
     private func report(_ text: String) { onStatus?(text) }

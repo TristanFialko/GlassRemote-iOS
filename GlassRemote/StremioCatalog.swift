@@ -64,9 +64,31 @@ enum StremioCatalog {
     }
 }
 
+/// Last few searches (local only). Pure helper so ordering and limits are testable.
+enum RecentSearches {
+    static let key = "glassRemote.recentSearches.v1"
+    static let limit = 8
+
+    static func adding(_ list: [String], _ query: String) -> [String] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2 else { return list }
+        return Array(([q] + list.filter { $0.caseInsensitiveCompare(q) != .orderedSame }).prefix(limit))
+    }
+}
+
 @MainActor
 final class DiscoverModel: ObservableObject {
     enum Phase: Equatable { case idle, searching, results, empty, failed(String) }
+    enum Filter: String, CaseIterable { case all, movies, series }
+
+    /// Filtering is local: changing it never re-requests the catalogue.
+    @Published var filter: Filter = .all
+    @Published private(set) var recents: [String] = UserDefaults.standard.stringArray(forKey: RecentSearches.key) ?? []
+    var visibleMovies: [StremioTitle] { filter == .series ? [] : movies }
+    var visibleSeries: [StremioTitle] { filter == .movies ? [] : series }
+
+    func useRecent(_ text: String) { query = text; queryChanged() }
+    func clearRecents() { recents = []; UserDefaults.standard.removeObject(forKey: RecentSearches.key) }
 
     @Published var query = ""
     @Published private(set) var phase: Phase = .idle
@@ -94,6 +116,10 @@ final class DiscoverModel: ObservableObject {
             movies = found.filter { $0.kind == .movie }
             series = found.filter { $0.kind == .series }
             phase = found.isEmpty ? .empty : .results
+            if !found.isEmpty {
+                recents = RecentSearches.adding(recents, text)
+                UserDefaults.standard.set(recents, forKey: RecentSearches.key)
+            }
         } catch {
             guard !Task.isCancelled, (error as? URLError)?.code != .cancelled else { return }
             phase = .failed("Couldn't reach the Stremio catalog. Check your internet connection.")
