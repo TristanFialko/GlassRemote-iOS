@@ -133,27 +133,27 @@ final class PagerMathTests: XCTestCase {
     }
 }
 
-final class StremioCatalogTests: XCTestCase {
+final class CinemetaCatalogTests: XCTestCase {
     func testSearchURLEncodesQuery() {
-        let url = StremioCatalog.searchURL(kind: .movie, query: "The Matrix: Reloaded/x")
+        let url = CinemetaCatalog.searchURL(kind: .movie, query: "The Matrix: Reloaded/x")
         XCTAssertEqual(url?.absoluteString, "https://v3-cinemeta.strem.io/catalog/movie/top/search=The%20Matrix%3A%20Reloaded%2Fx.json")
-        XCTAssertNil(StremioCatalog.searchURL(kind: .series, query: "   "))
+        XCTAssertNil(CinemetaCatalog.searchURL(kind: .series, query: "   "))
     }
 
     func testParseToleratesMissingFields() {
         let json = #"{"metas":[{"id":"tt0133093","name":"The Matrix","poster":"https://example.com/p.jpg","releaseInfo":"1999","imdbRating":"8.7"},{"name":"No id"},{"id":"tt1","poster":"http://insecure/x.jpg","name":"Insecure poster"}]}"#
-        let items = StremioCatalog.parse(Data(json.utf8), kind: .movie)
+        let items = CinemetaCatalog.parse(Data(json.utf8), kind: .movie)
         XCTAssertEqual(items.map(\.name), ["The Matrix", "Insecure poster"])
         XCTAssertNotNil(items[0].posterURL)
         XCTAssertNil(items[1].posterURL)            // non-https artwork is dropped
-        XCTAssertTrue(StremioCatalog.parse(Data("garbage".utf8), kind: .series).isEmpty)
+        XCTAssertTrue(CinemetaCatalog.parse(Data("garbage".utf8), kind: .series).isEmpty)
     }
 
     func testDeepLinkValidationRejectsUnsafeIds() {
-        XCTAssertEqual(RemoteModel.stremioDetailLink(kind: .movie, id: "tt0133093"), "stremio:///detail/movie/tt0133093/tt0133093")
-        XCTAssertEqual(RemoteModel.stremioDetailLink(kind: .series, id: "tt0903747"), "stremio:///detail/series/tt0903747")
-        XCTAssertNil(RemoteModel.stremioDetailLink(kind: .movie, id: "tt0133093'; reboot; '"))
-        XCTAssertNil(RemoteModel.stremioDetailLink(kind: .series, id: "kitsu:1"))
+        XCTAssertEqual(RemoteModel.nuvioDetailLink(kind: .movie, id: "tt0133093"), "nuvio://detail/movie/tt0133093")
+        XCTAssertEqual(RemoteModel.nuvioDetailLink(kind: .series, id: "tt0903747"), "nuvio://detail/series/tt0903747")
+        XCTAssertNil(RemoteModel.nuvioDetailLink(kind: .movie, id: "tt0133093'; reboot; '"))
+        XCTAssertNil(RemoteModel.nuvioDetailLink(kind: .series, id: "kitsu:1"))
     }
 }
 
@@ -568,15 +568,15 @@ final class MenuRoutingTests: XCTestCase {
 
 final class DiscoverArtworkTests: XCTestCase {
     func testFallbackPosterOnlyForRealImdbIds() {
-        let ok = StremioTitle(id: "tt0133093", kind: .movie, name: "X", year: "", posterURL: nil, rating: "")
+        let ok = MediaTitle(id: "tt0133093", kind: .movie, name: "X", year: "", posterURL: nil, rating: "")
         XCTAssertEqual(ok.fallbackPosterURL?.scheme, "https")
-        let bad = StremioTitle(id: "kitsu:123", kind: .series, name: "X", year: "", posterURL: nil, rating: "")
+        let bad = MediaTitle(id: "kitsu:123", kind: .series, name: "X", year: "", posterURL: nil, rating: "")
         XCTAssertNil(bad.fallbackPosterURL)
     }
 
     func testHttpPostersAreDropped() {
         let json = #"{"metas":[{"id":"tt0133093","name":"A","poster":"http://x/p.jpg"}]}"#.data(using: .utf8)!
-        XCTAssertNil(StremioCatalog.parse(json, kind: .movie).first?.posterURL)
+        XCTAssertNil(CinemetaCatalog.parse(json, kind: .movie).first?.posterURL)
     }
 }
 
@@ -590,69 +590,9 @@ final class ThreeTabTests: XCTestCase {
     }
 }
 
-final class StremioAccountParsingTests: XCTestCase {
-    func testLoginReturnsAuthKeyOrThrowsAPIError() throws {
-        XCTAssertEqual(try StremioAccountParser.parseLogin(#"{"result":{"authKey":"abc","user":{}}}"#.data(using: .utf8)!), "abc")
-        XCTAssertThrowsError(try StremioAccountParser.parseLogin(#"{"error":{"message":"Wrong passphrase","code":2}}"#.data(using: .utf8)!)) { error in
-            XCTAssertEqual(error as? StremioError, .api(message: "Wrong passphrase", code: 2))
-        }
-        XCTAssertThrowsError(try StremioAccountParser.parseLogin(Data("nope".utf8)))
-    }
-
-    func testLibraryProgressAndContinueWatching() throws {
-        let json = #"""
-        {"result":[
-         {"_id":"tt0903747","name":"Breaking Bad","type":"series","poster":"https://x/p.jpg","removed":false,"temp":false,
-          "state":{"lastWatched":"2026-10-01T20:00:00.000Z","timeOffset":1200000,"duration":2700000,"video_id":"tt0903747:2:3","timesWatched":0,"flaggedWatched":0}},
-         {"_id":"tt0133093","name":"The Matrix","type":"movie","removed":true,"state":{"timeOffset":100,"duration":200}},
-         {"_id":"tt0111161","name":"Done","type":"movie","state":{"timeOffset":1900,"duration":2000}},
-         {"_id":"tt1","name":"Never started","type":"movie","state":{"timeOffset":0,"duration":0}},
-         {"name":"No id"}]}
-        """#.data(using: .utf8)!
-        let items = try StremioAccountParser.parseLibrary(json)
-        XCTAssertEqual(items.count, 4)
-        let bb = try XCTUnwrap(items.first { $0.id == "tt0903747" })
-        XCTAssertTrue(bb.isContinueWatching)
-        XCTAssertEqual(bb.progress, 1200000.0 / 2700000.0, accuracy: 0.0001)
-        XCTAssertEqual(bb.episode?.season, 2); XCTAssertEqual(bb.episode?.episode, 3)
-        XCTAssertNotNil(bb.lastWatched)
-        XCTAssertFalse(items.first { $0.id == "tt0133093" }!.isInLibrary)       // removed
-        XCTAssertFalse(items.first { $0.id == "tt0111161" }!.isContinueWatching) // 95 %+ is finished
-        XCTAssertFalse(items.first { $0.id == "tt1" }!.isContinueWatching)
-    }
-
-    func testExpiredSessionDetectionIsConservative() {
-        XCTAssertTrue(StremioError.looksLikeExpiredSession(message: "Session does not exist", code: 1))
-        XCTAssertFalse(StremioError.looksLikeExpiredSession(message: "Internal error", code: 500))
-    }
-}
-
-final class StremioLinkTests: XCTestCase {
-    func testDetailLinksFollowTheDocumentedShapes() {
-        XCTAssertEqual(RemoteModel.stremioDetailLink(kind: .series, id: "tt0903747", videoID: "tt0903747:1:2"), "stremio:///detail/series/tt0903747/tt0903747:1:2")
-        XCTAssertEqual(RemoteModel.stremioDetailLink(kind: .series, id: "tt0903747", videoID: "tt0903747:1:2", autoPlay: true), "stremio:///detail/series/tt0903747/tt0903747:1:2?autoPlay=true")
-        XCTAssertNil(RemoteModel.stremioDetailLink(kind: .series, id: "tt0903747", videoID: "tt9999999:1:2"))   // id mismatch
-        XCTAssertNil(RemoteModel.stremioDetailLink(kind: .series, id: "tt0903747", videoID: "x';reboot;'"))
-    }
-
-    func testSearchLinkIsEncodedAndBounded() {
-        XCTAssertEqual(RemoteModel.stremioSearchLink(query: "the matrix"), "stremio:///search?search=the%20matrix")
-        let nasty = RemoteModel.stremioSearchLink(query: "a'; rm -rf /; echo '")!
-        XCTAssertFalse(nasty.contains("'") || nasty.contains(";") || nasty.contains(" "))
-        XCTAssertNil(RemoteModel.stremioSearchLink(query: "a"))
-        XCTAssertNil(RemoteModel.stremioSearchLink(query: String(repeating: "x", count: 81)))
-    }
-
-    func testIntentOutcomeNeedsExitZeroAndNoError() {
-        XCTAssertTrue(RemoteModel.intentAccepted("Starting: Intent\nGLASSREMOTE_INTENT_EXIT:0"))
-        XCTAssertFalse(RemoteModel.intentAccepted("Error: Activity not started\nGLASSREMOTE_INTENT_EXIT:0"))
-        XCTAssertFalse(RemoteModel.intentAccepted(""))
-    }
-}
-
 final class PlayerArtworkMatcherTests: XCTestCase {
-    private func t(_ name: String, _ kind: StremioTitle.Kind, year: String = "") -> StremioTitle {
-        StremioTitle(id: "tt1234567", kind: kind, name: name, year: year, posterURL: URL(string: "https://x/\(name).jpg"), rating: "")
+    private func t(_ name: String, _ kind: MediaTitle.Kind, year: String = "") -> MediaTitle {
+        MediaTitle(id: "tt1234567", kind: kind, name: name, year: year, posterURL: URL(string: "https://x/\(name).jpg"), rating: "")
     }
 
     func testNormalisationIgnoresCasePunctuationAndLeadingArticle() {
@@ -685,36 +625,6 @@ final class PlayerArtworkMatcherTests: XCTestCase {
     }
 }
 
-
-final class StremioAggregationTests: XCTestCase {
-    /// Regression for the Phase 3 bug: a title that was only WATCHED (not saved) is stored with
-    /// `temp` + `removed`. It has progress and belongs in Continue Watching, but is not a library item.
-    func testWatchOnlyItemIsContinueWatchingButNotLibrary() throws {
-        let json = #"""
-        {"result":[
-         {"_id":"tt0384766","name":"Desperate Housewives","type":"series","removed":true,"temp":true,
-          "state":{"lastWatched":"2026-11-01T20:00:00.000Z","timeOffset":1380000,"duration":3000000,"video_id":"tt0384766:5:11"}},
-         {"_id":"tt0903747","name":"Breaking Bad","type":"series","removed":false,"temp":false,
-          "state":{"timeOffset":0,"duration":0}},
-         {"_id":"tt0133093","name":"Removed on purpose","type":"movie","removed":true,"temp":false,
-          "state":{"timeOffset":100,"duration":200}}
-        ]}
-        """#.data(using: .utf8)!
-        let items = try StremioAccountParser.parseLibrary(json)
-        let dh = try XCTUnwrap(items.first { $0.id == "tt0384766" })
-        XCTAssertTrue(dh.isContinueWatching)
-        XCTAssertFalse(dh.isInLibrary)
-        XCTAssertTrue(dh.hasWatchHistory)
-        XCTAssertEqual(dh.progress, 0.46, accuracy: 0.001)
-        XCTAssertEqual(dh.episode?.season, 5); XCTAssertEqual(dh.episode?.episode, 11)
-        // Saved but never watched: library yes, history no, continue no.
-        let bb = try XCTUnwrap(items.first { $0.id == "tt0903747" })
-        XCTAssertTrue(bb.isInLibrary); XCTAssertFalse(bb.hasWatchHistory); XCTAssertFalse(bb.isContinueWatching)
-        // Deliberately removed: never continues, even with progress.
-        let gone = try XCTUnwrap(items.first { $0.id == "tt0133093" })
-        XCTAssertFalse(gone.isContinueWatching); XCTAssertFalse(gone.isInLibrary)
-    }
-}
 
 final class ThemeSystemTests: XCTestCase {
     func testElevenThemesAndAutoDoesNotMeanAdaptive() {
@@ -765,12 +675,12 @@ final class CatalogPagingTests: XCTestCase {
     }
 
     func testBrowseURLsUseAddonExtrasInThePath() {
-        XCTAssertEqual(StremioCatalog.browseURL(kind: .movie, catalog: "top")?.absoluteString, "https://v3-cinemeta.strem.io/catalog/movie/top.json")
-        XCTAssertEqual(StremioCatalog.browseURL(kind: .series, catalog: "year", skip: 100)?.absoluteString, "https://v3-cinemeta.strem.io/catalog/series/year/skip=100.json")
-        XCTAssertEqual(StremioCatalog.browseURL(kind: .movie, catalog: "top", genre: "Sci-Fi", skip: 50)?.absoluteString,
+        XCTAssertEqual(CinemetaCatalog.browseURL(kind: .movie, catalog: "top")?.absoluteString, "https://v3-cinemeta.strem.io/catalog/movie/top.json")
+        XCTAssertEqual(CinemetaCatalog.browseURL(kind: .series, catalog: "year", skip: 100)?.absoluteString, "https://v3-cinemeta.strem.io/catalog/series/year/skip=100.json")
+        XCTAssertEqual(CinemetaCatalog.browseURL(kind: .movie, catalog: "top", genre: "Sci-Fi", skip: 50)?.absoluteString,
                        "https://v3-cinemeta.strem.io/catalog/movie/top/genre=Sci-Fi&skip=50.json")
-        XCTAssertNil(StremioCatalog.browseURL(kind: .movie, catalog: "top/../x"))
-        XCTAssertNil(StremioCatalog.browseURL(kind: .movie, catalog: "top", skip: -1))
+        XCTAssertNil(CinemetaCatalog.browseURL(kind: .movie, catalog: "top/../x"))
+        XCTAssertNil(CinemetaCatalog.browseURL(kind: .movie, catalog: "top", skip: -1))
     }
 
     @MainActor
@@ -779,7 +689,7 @@ final class CatalogPagingTests: XCTestCase {
         XCTAssertEqual(Set(rows.map(\.id)).count, rows.count)
         XCTAssertEqual(rows.prefix(6).map(\.source.catalog), ["top", "top", "imdbRating", "imdbRating", "year", "year"])
         XCTAssertTrue(rows.dropFirst(6).allSatisfy { $0.source.genre != nil })
-        XCTAssertEqual(rows.count, 6 + StremioCatalog.genres.count * 2)
+        XCTAssertEqual(rows.count, 6 + CinemetaCatalog.genres.count * 2)
     }
 
     // MARK: Phase 4.1
@@ -799,7 +709,8 @@ final class CatalogPagingTests: XCTestCase {
     }
 
     func testCatalogueEligibilityOnlyForFilmApps() {
-        XCTAssertTrue(PlayerArtworkStore.usesCatalogue(package: "com.stremio.one"))
+        XCTAssertTrue(PlayerArtworkStore.usesCatalogue(package: "com.nuvio.app"))
+        XCTAssertFalse(PlayerArtworkStore.usesCatalogue(package: "com.stremio.one"))
         XCTAssertFalse(PlayerArtworkStore.usesCatalogue(package: "com.google.android.youtube.tv"))
     }
 }
