@@ -5,15 +5,15 @@ import SwiftUI
 struct CollectionRequest: Identifiable {
     let id = UUID()
     var title: String
-    var kind: StremioTitle.Kind = .movie
+    var kind: MediaTitle.Kind = .movie
     var catalog: String = "top"
     var genre: String? = nil
-    var local: [StremioTitle]? = nil
+    var local: [MediaTitle]? = nil
 
-    init(title: String, kind: StremioTitle.Kind, catalog: String, genre: String?) {
+    init(title: String, kind: MediaTitle.Kind, catalog: String, genre: String?) {
         self.title = title; self.kind = kind; self.catalog = catalog; self.genre = genre
     }
-    init(title: String, local: [StremioTitle]) { self.title = title; self.local = local }
+    init(title: String, local: [MediaTitle]) { self.title = title; self.local = local }
 }
 
 /// The single reusable See All page. One implementation serves every category: only the source differs.
@@ -25,10 +25,10 @@ struct CollectionView: View {
 
     enum Phase: Equatable { case loading, loaded, empty, failed }
 
-    @State private var kind: StremioTitle.Kind
+    @State private var kind: MediaTitle.Kind
     @State private var catalog: String
     @State private var genre: String?
-    @State private var items: [StremioTitle] = []
+    @State private var items: [MediaTitle] = []
     @State private var phase: Phase = .loading
     @State private var loadingMore = false
     @State private var reachedEnd = false
@@ -83,19 +83,19 @@ struct CollectionView: View {
     private var controls: some View {
         VStack(spacing: 10) {
             GlassSegmented(
-                items: [GlassSegmented<StremioTitle.Kind>.Item(value: .movie, title: "Movies", symbol: "film"),
-                        GlassSegmented<StremioTitle.Kind>.Item(value: .series, title: "Series", symbol: "tv")],
+                items: [GlassSegmented<MediaTitle.Kind>.Item(value: .movie, title: "Movies", symbol: "film"),
+                        GlassSegmented<MediaTitle.Kind>.Item(value: .series, title: "Series", symbol: "tv")],
                 selection: $kind, height: 36)
             HStack(spacing: 10) {
                 Menu {
                     Picker("Sort", selection: $catalog) {
-                        ForEach(StremioCatalog.sortCatalogs, id: \.id) { Text($0.title).tag($0.id) }
+                        ForEach(CinemetaCatalog.sortCatalogs, id: \.id) { Text($0.title).tag($0.id) }
                     }
-                } label: { chip("arrow.up.arrow.down", StremioCatalog.sortCatalogs.first { $0.id == catalog }?.title ?? "Popular") }
+                } label: { chip("arrow.up.arrow.down", CinemetaCatalog.sortCatalogs.first { $0.id == catalog }?.title ?? "Popular") }
                 Menu {
                     Picker("Genre", selection: $genre) {
                         Text("All genres").tag(String?.none)
-                        ForEach(StremioCatalog.genres, id: \.self) { Text($0).tag(String?.some($0)) }
+                        ForEach(CinemetaCatalog.genres, id: \.self) { Text($0).tag(String?.some($0)) }
                     }
                 } label: { chip("line.3.horizontal.decrease", genre ?? "All genres") }
                 Spacer()
@@ -135,7 +135,7 @@ struct CollectionView: View {
         case .loaded:
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(items) { item in
-                    Button { target = DetailTarget(title: item, libraryItem: StremioAccount.shared.item(id: item.id)) } label: {
+                    Button { target = DetailTarget(title: item, libraryItem: NuvioAccount.shared.item(id: item.id)) } label: {
                         PosterCard(title: item, fixedWidth: false)
                     }
                     .buttonStyle(PosterButtonStyle())
@@ -167,7 +167,7 @@ struct CollectionView: View {
         }
         phase = .loading; items = []
         do {
-            let page = try await StremioCatalog.browse(kind: kind, catalog: catalog, genre: genre)
+            let page = try await CinemetaCatalog.browse(kind: kind, catalog: catalog, genre: genre)
             guard mine == generation else { return }
             items = dedup(page)
             phase = items.isEmpty ? .empty : .loaded
@@ -183,14 +183,14 @@ struct CollectionView: View {
         loadingMore = true
         let mine = generation
         defer { if mine == generation { loadingMore = false } }
-        guard let page = try? await StremioCatalog.browse(kind: kind, catalog: catalog, genre: genre, skip: items.count), mine == generation else { return }
+        guard let page = try? await CinemetaCatalog.browse(kind: kind, catalog: catalog, genre: genre, skip: items.count), mine == generation else { return }
         let known = Set(items.map(\.id))
         let fresh = dedup(page).filter { !known.contains($0.id) }
         // A page with nothing new means the catalogue is exhausted: stop asking.
         if fresh.isEmpty { reachedEnd = true } else { items += fresh }
     }
 
-    private func dedup(_ list: [StremioTitle]) -> [StremioTitle] {
+    private func dedup(_ list: [MediaTitle]) -> [MediaTitle] {
         var seen = Set<String>()
         return list.filter { seen.insert($0.id).inserted }
     }

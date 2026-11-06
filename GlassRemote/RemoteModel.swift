@@ -115,7 +115,7 @@ final class RemoteModel: ObservableObject {
     let apps: [TVApp] = [
         .init(name: "Netflix", package: "com.netflix.ninja", asset: "netflix"),
         .init(name: "YouTube", package: "com.google.android.youtube.tv", asset: "youtube"),
-        .init(name: "Stremio", package: "com.stremio.one", asset: "stremio"),
+        .init(name: "Nuvio", package: "com.nuvio.app", asset: "nuvio"),
         .init(name: "RetroArch", package: "com.retroarch", asset: "retroarch"),
         .init(name: "Prime Video", package: "com.amazon.amazonvideo.livingroom", asset: "prime-video"),
         .init(name: "Disney+", package: "com.disney.disneyplus", asset: "disney"),
@@ -527,7 +527,7 @@ final class RemoteModel: ObservableObject {
               if [ -f /data/local/tmp/$n.log ]; then tail -n 22 /data/local/tmp/$n.log; else echo 'helper-log=missing'; fi
             done
             echo '=== RECENT PLAYBACK / INPUT / ACTIVITY LOG ==='
-            logcat -d -v threadtime -t 1400 2>&1 | grep -i -E 'stremio|InputReader|InputDispatcher|InputManager|ActivityTaskManager|ActivityManager|WindowManager|MediaSession|am_proc_died|Start proc|Displayed|Configuration' | tail -n 220
+            logcat -d -v threadtime -t 1400 2>&1 | grep -i -E 'nuvio|InputReader|InputDispatcher|InputManager|ActivityTaskManager|ActivityManager|WindowManager|MediaSession|am_proc_died|Start proc|Displayed|Configuration' | tail -n 220
             """
             do {
                 let output = try await runShell(connection, ["sh", "-c", command])

@@ -18,17 +18,20 @@ struct PlayerPage: View {
         let media = remote.media
         let app = remote.apps.first(where: { $0.package == media.package })
         let sessionTitle = media.headline.isEmpty ? media.title : media.headline
-        let poster = media.isActive ? artwork.posterURL(forSessionTitle: sessionTitle) : nil
+        let portraitURL = media.isActive ? artwork.posterURL(forSessionTitle: sessionTitle) : nil
+        let landscapeURL = (media.isActive && portraitURL == nil) ? artwork.landscapeURL(forSessionTitle: sessionTitle) : nil
+        let poster = portraitURL ?? landscapeURL
+        let isLandscape = portraitURL == nil && landscapeURL != nil
 
         GeometryReader { proxy in
-            // The poster takes roughly 38 % of the height on tall phones (31 % on small ones), between
-            // 160 and 320 pt: bigger than Phase 4 (0.33, max 280), well short of the oversized Phase 3.
+            // Phase 4.3: modestly larger than Phase 4.2 (0.38 / 0.31, max 320): 42 % of the height on tall
+            // phones (34 % on small ones), between 170 and 350 pt.
             // The transport bar is pinned just above the dock so nothing can sit under it.
-            let posterHeight = min(max(proxy.size.height * (proxy.size.height < 700 ? 0.31 : 0.38), 160), 320)
+            let posterHeight = min(max(proxy.size.height * (proxy.size.height < 700 ? 0.34 : 0.42), 170), 350)
             VStack(spacing: 0) {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 12) {
-                        artworkCard(app: app, media: media, poster: poster, height: posterHeight)
+                        artworkCard(app: app, media: media, poster: poster, height: posterHeight, landscape: isLandscape, maxWidth: proxy.size.width - 48)
                             .padding(.top, 4)
                         Group {
                             titleBlock(app: app, media: media)
@@ -51,10 +54,10 @@ struct PlayerPage: View {
         .background { ambientLight }
         .foregroundStyle(Color.ink)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-        // Stremio's session has no artwork: look the title up so playback started in Stremio itself
+        // Nuvio's media session is not known to carry artwork: look the title up so playback started in Nuvio itself
         // (not just from Discover) still gets its poster.
         .task(id: sessionTitle + "|" + media.subtitle) {
-            guard media.isActive, media.package == RemoteModel.stremioPackage, !sessionTitle.isEmpty else { return }
+            guard media.isActive, PlayerArtworkStore.usesCatalogue(package: media.package), !sessionTitle.isEmpty else { return }
             await artwork.resolve(sessionTitle: sessionTitle, subtitle: media.subtitle)
         }
         // Adaptive theme: this page only reports its artwork; the shared palette decides the colours.
@@ -73,7 +76,7 @@ struct PlayerPage: View {
 
     // MARK: Artwork
 
-    private func artworkCard(app: TVApp?, media: MediaState, poster: URL?, height: CGFloat) -> some View {
+    private func artworkCard(app: TVApp?, media: MediaState, poster: URL?, height: CGFloat, landscape: Bool, maxWidth: CGFloat) -> some View {
         let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
         let portrait = poster != nil
         return ZStack {
@@ -84,20 +87,22 @@ struct PlayerPage: View {
                 fallbackIcon(app: app, media: media)
             }
         }
-        // Portrait 2:3 for posters; a smaller square for app artwork (no stretching either way).
-        .frame(width: portrait ? height * 2 / 3 : height * 0.72, height: portrait ? height : height * 0.72)
+        // Portrait 2:3 posters, 16:9 for landscape artwork (width-limited to the screen), a smaller square for
+        // app artwork. Each source gets its own frame, so nothing is stretched.
+        .frame(width: landscape ? min(maxWidth, height * 16 / 9 * 0.8) : (portrait ? height * 2 / 3 : height * 0.72),
+               height: landscape ? min(maxWidth, height * 16 / 9 * 0.8) * 9 / 16 : (portrait ? height : height * 0.72))
         .clipShape(shape)
         .overlay(shape.stroke(Color.ink.opacity(0.22), lineWidth: 0.8))
         .shadow(color: (portrait ? theme.accent : Color.black).opacity(portrait ? 0.35 : 0.5), radius: 22, y: 12)
         .animation(.spring(response: 0.5, dampingFraction: 0.86), value: poster)
-        .accessibilityLabel(portrait ? "Poster" : "App artwork")
+        .accessibilityLabel(portrait ? (landscape ? "Artwork" : "Poster") : "App artwork")
     }
 
     @ViewBuilder
     private func fallbackIcon(app: TVApp?, media: MediaState) -> some View {
         if let app {
-            Image(app.asset == "stremio" ? "stremio_nowplaying" : "\(app.asset)_dark")
-                .resizable().scaledToFit().padding(app.asset == "stremio" ? 64 : 36)
+            Image(app.asset == "nuvio" ? "nuvio_nowplaying" : "\(app.asset)_dark")
+                .resizable().scaledToFit().padding(app.asset == "nuvio" ? 64 : 36)
         } else {
             Image(systemName: media.isActive ? AppPage.playerSymbolOutline : "tv")
                 .scaledFont(56, .light).foregroundStyle(Color.ink.opacity(0.4))
@@ -246,7 +251,7 @@ struct PlayerPage: View {
     }
 
     private var emptyHint: some View {
-        Text(remote.connected ? "Start something in Stremio and it appears here." : "Connect to your TV box to see what's playing.")
+        Text(remote.connected ? "Start something in Nuvio and it appears here." : "Connect to your TV box to see what's playing.")
             .scaledFont(14).foregroundStyle(Color.inkAlpha(0.55)).multilineTextAlignment(.center)
     }
 }

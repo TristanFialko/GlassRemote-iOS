@@ -5,12 +5,12 @@ import AppIntents
 // behaviour and Siri phrases need on-device testing.
 
 enum TVAppChoice: String, AppEnum {
-    case netflix, youtube, stremio, retroarch, primeVideo, disney, sunshine, spotify, rhenium
+    case netflix, youtube, nuvio, retroarch, primeVideo, disney, sunshine, spotify, rhenium
 
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "TV App"
 
     static let caseDisplayRepresentations: [TVAppChoice: DisplayRepresentation] = [
-        .netflix: "Netflix", .youtube: "YouTube", .stremio: "Stremio", .retroarch: "RetroArch",
+        .netflix: "Netflix", .youtube: "YouTube", .nuvio: "Nuvio", .retroarch: "RetroArch",
         .primeVideo: "Prime Video", .disney: "Disney+", .sunshine: "Sunshine", .spotify: "Spotify",
         .rhenium: "Rhenium"
     ]

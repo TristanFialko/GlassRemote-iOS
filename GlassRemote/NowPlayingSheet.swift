@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Expanded Now Playing player. Shows only what the active media session really reports.
 /// There is no scrubber unless a genuine duration exists (`MediaState.durationMs`), because the
-/// box's media session exposes none for Stremio and Android has no ADB command to seek to a position.
+/// box's media session exposes none for Nuvio and Android has no ADB command to seek to a position.
 struct NowPlayingSheet: View {
     @EnvironmentObject private var remote: RemoteModel
     @Environment(\.dismiss) private var dismiss
@@ -64,8 +64,8 @@ struct NowPlayingSheet: View {
             RoundedRectangle(cornerRadius: 34, style: .continuous).fill(Color.black.opacity(0.6))
             if let app {
                 // No poster is exposed by the media session, so the app artwork is shown, centred, uncropped.
-                Image(app.asset == "stremio" ? "stremio_nowplaying" : "\(app.asset)_dark")
-                    .resizable().scaledToFit().padding(app.asset == "stremio" ? 70 : 40)
+                Image(app.asset == "nuvio" ? "nuvio_nowplaying" : "\(app.asset)_dark")
+                    .resizable().scaledToFit().padding(app.asset == "nuvio" ? 70 : 40)
             } else {
                 Image(systemName: "play.rectangle").scaledFont(60).foregroundStyle(Color.ink.opacity(0.4))
             }

@@ -159,7 +159,7 @@ enum PlayerArtworkMatcher {
 
     /// Picks a catalogue title whose name equals one of the candidate names. Never a fuzzy guess: no
     /// exact match means no poster (the Player then shows the app icon).
-    static func best(from titles: [StremioTitle], for query: Query) -> StremioTitle? {
+    static func best(from titles: [MediaTitle], for query: Query) -> MediaTitle? {
         for name in query.names {
             let wanted = normalise(name)
             let matches = titles.filter { normalise($0.name) == wanted && $0.posterURL != nil }
@@ -167,7 +167,7 @@ enum PlayerArtworkMatcher {
             if let year = query.year, let exact = matches.first(where: { $0.year.hasPrefix(year) }) { return exact }
             // Episodic playback -> the series poster; otherwise a movie wins ties. Catalogue order
             // (popularity) breaks the rest.
-            let preferred: StremioTitle.Kind = query.looksEpisodic ? .series : .movie
+            let preferred: MediaTitle.Kind = query.looksEpisodic ? .series : .movie
             return matches.first(where: { $0.kind == preferred }) ?? matches.first
         }
         return nil
@@ -175,22 +175,22 @@ enum PlayerArtworkMatcher {
 }
 
 /// Poster for what the TV box is playing. Previously this only worked when playback had been
-/// started from Discover (a remembered hint); Stremio's media session carries no artwork, so for
-/// anything started in Stremio itself the poster is now looked up by the session's title in
+/// started from Discover (a remembered hint); Nuvio's media session is not known to expose artwork, so for
+/// anything started in Nuvio itself the poster is now looked up by the session's title in
 /// Cinemeta, matched by exact normalised name, and cached.
 @MainActor
 final class PlayerArtworkStore: ObservableObject {
-    /// Only Stremio playback titles are eligible for Cinemeta catalogue poster lookup.
+    /// Only Nuvio playback titles are eligible for Cinemeta catalogue poster lookup.
     /// Other TV apps may expose arbitrary media/session labels, so they should keep their app icon.
     nonisolated static func usesCatalogue(package: String) -> Bool {
         package.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-            .hasPrefix("com.stremio.")
+            .hasPrefix(RemoteModel.nuvioPackagePrefix)
     }
 
     static let shared = PlayerArtworkStore()
 
-    struct Hint: Equatable { var title: String; var posterURL: URL? }
+    struct Hint: Equatable { var title: String; var posterURL: URL?; var landscapeURL: URL? = nil }
     @Published private(set) var hint: Hint?
     @Published private(set) var resolved: [String: URL] = [:]
 
@@ -205,8 +205,14 @@ final class PlayerArtworkStore: ObservableObject {
     }
 
     /// Remember artwork selected from Discover so Player can use it immediately.
-    func remember(title: String, posterURL: URL?) {
-        hint = Hint(title: title, posterURL: posterURL)
+    func remember(title: String, posterURL: URL?, landscapeURL: URL? = nil) {
+        hint = Hint(title: title, posterURL: posterURL, landscapeURL: landscapeURL)
+    }
+
+    /// Landscape artwork remembered from Discover for the same title, used only when there is no poster.
+    func landscapeURL(forSessionTitle title: String) -> URL? {
+        guard let hint, let url = hint.landscapeURL, Self.matches(session: title, hint: hint.title) else { return nil }
+        return url
     }
 
     /// Returns a matching Discover hint first, then a previously resolved Cinemeta poster.
@@ -230,7 +236,7 @@ final class PlayerArtworkStore: ObservableObject {
 
         for name in query.names.prefix(3) {
             guard !Task.isCancelled else { return }
-            guard let found = try? await StremioCatalog.search(name) else { continue }
+            guard let found = try? await CinemetaCatalog.search(name) else { continue }
             if let match = PlayerArtworkMatcher.best(from: found, for: query), let url = match.posterURL {
                 resolved[key] = url
                 misses.removeValue(forKey: key)

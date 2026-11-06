@@ -129,7 +129,7 @@ struct ConnectionSheet: View {
                 Section("Playback diagnostics") {
                     Button("Capture TV playback diagnostics") { remote.capturePlaybackDiagnostics() }
                         .disabled(!remote.connected)
-                    Text("After Stremio stops or reloads, capture this before manually reconnecting. It records recent app/activity events and whether the persistent input helpers are still alive.")
+                    Text("After Nuvio stops or reloads, capture this before manually reconnecting. It records recent app/activity events and whether the persistent input helpers are still alive.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Text(remote.playbackDiagnostics)
                         .font(.system(size: 10, design: .monospaced))

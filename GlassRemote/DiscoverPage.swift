@@ -1,16 +1,17 @@
 import SwiftUI
 
-/// Page 3: Discover. A Stremio-style browser: always-visible search, Continue Watching and Library
-/// from the signed-in Stremio account, Cinemeta carousels, genre browsing and a detail sheet.
-/// Everything shown is real data: catalogue entries come from Cinemeta, account rows from the
-/// user's own Stremio library, and nothing is shown for a section whose data could not be loaded.
+/// Page 3: Discover. Always-visible search, Continue Watching and Recently watched from the signed-in
+/// Nuvio account's synced watch progress, Cinemeta catalogue carousels (Cinemeta is Nuvio's default
+/// metadata addon), genre browsing and a detail sheet.
+/// Everything shown is real data. There is no "personalised recommendations" row and no library or
+/// watchlist row: Nuvio's library RPCs were not verified, so nothing is invented for them.
 /// A catalogue result never means a stream exists.
 struct DiscoverPage: View {
     @Environment(\.dockClearance) private var dockClearance
     @EnvironmentObject private var navigator: PageNavigator
     @Environment(\.glassTheme) private var theme
     @StateObject private var model = DiscoverModel()
-    @ObservedObject private var account = StremioAccount.shared
+    @ObservedObject private var account = NuvioAccount.shared
     @FocusState private var searching: Bool
     /// Plain reference (not observed): the page only submits artwork, so palette animations must not rebuild it.
     private var themeStore: ThemeStore { .shared }
@@ -54,7 +55,7 @@ struct DiscoverPage: View {
         .sheet(item: $target) { item in
             TitleDetailView(title: item.title, libraryItem: item.libraryItem).environmentObject(RemoteModel.shared)
         }
-        .sheet(isPresented: $showAccount) { StremioAccountSheet() }
+        .sheet(isPresented: $showAccount) { NuvioAccountSheet() }
         .fullScreenCover(item: $collection) { request in
             CollectionView(request: request).environmentObject(RemoteModel.shared)
         }
@@ -114,7 +115,7 @@ struct DiscoverPage: View {
                 }
         }
         .buttonStyle(PressStyle())
-        .accessibilityLabel(account.state == .signedIn ? "Stremio account, connected" : "Connect Stremio account")
+        .accessibilityLabel(account.state == .signedIn ? "Nuvio account, connected" : "Connect Nuvio account")
     }
 
     // MARK: Home
@@ -128,7 +129,7 @@ struct DiscoverPage: View {
         ForEach(model.visibleRows) { row in carousel(row) }
     }
 
-    private func hero(_ title: StremioTitle) -> some View {
+    private func hero(_ title: MediaTitle) -> some View {
         Button { open(title) } label: {
             ZStack(alignment: .bottomLeading) {
                 CachedArtwork(url: title.backgroundURL ?? title.posterURL, contentMode: .fill) {
@@ -163,10 +164,10 @@ struct DiscoverPage: View {
     @ViewBuilder
     private var accountSections: some View {
         switch account.state {
-        case .signedOut, .signingIn:
-            connectCard(text: "Connect your Stremio account to see Continue Watching and your Library here.", action: "Connect")
+        case .signedOut:
+            connectCard(text: "Connect your Nuvio account to see Continue Watching and your watch history here.", action: "Connect")
         case .expired:
-            connectCard(text: "Your Stremio session expired.", action: "Sign in again")
+            connectCard(text: "Your Nuvio session expired.", action: "Sign in again")
         case .signedIn:
             switch account.libraryPhase {
             case .idle, .loading:
@@ -174,7 +175,7 @@ struct DiscoverPage: View {
                 else { loadedAccountRows }
             case .failed(let message):
                 VStack(spacing: 8) {
-                    Text("Couldn't load your Stremio library").scaledFont(14, .semibold)
+                    Text("Couldn't load your Nuvio watch progress").scaledFont(14, .semibold)
                     Text(message).scaledFont(12).foregroundStyle(Color.inkAlpha(0.6)).multilineTextAlignment(.center)
                     Button("Try again") { Task { await account.refresh() } }.scaledFont(13, .semibold)
                 }
@@ -191,43 +192,25 @@ struct DiscoverPage: View {
         let cw = account.continueWatching.filter { model.filter == .all || ($0.title == .movie) == (model.filter == .movies) }
         if !cw.isEmpty {
             sectionHeader("Continue Watching", count: cw.count, seeAll: { collection = CollectionRequest(title: "Continue Watching", local: cw.compactMap(\.asTitle)) })
-            ScrollView(.horizontal, showsIndicators: false) {
+            UnclippedHScroll {
                 LazyHStack(alignment: .top, spacing: 12) {
                     ForEach(cw) { item in
                         if let t = item.asTitle {
                             Button { target = DetailTarget(title: t, libraryItem: item) } label: {
-                                PosterCard(title: t, progress: item.progress, caption: continueCaption(item))
+                                LandscapeCard(title: t, progress: item.progress, caption: continueCaption(item))
                             }.buttonStyle(PosterButtonStyle())
                         }
                     }
                 }.padding(.horizontal, 16)
             }
         }
-        let lib = account.library.filter { $0.title != nil && (model.filter == .all || ($0.title == .movie) == (model.filter == .movies)) }
-        ForEach([StremioTitle.Kind.movie, .series], id: \.rawValue) { kind in
-            let items = lib.filter { $0.title == kind }
-            if !items.isEmpty {
-                sectionHeader(kind == .movie ? "Your movies" : "Your series", count: items.count,
-                              seeAll: { collection = CollectionRequest(title: kind == .movie ? "Your movies" : "Your series", local: items.compactMap(\.asTitle)) })
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: 12) {
-                        ForEach(items) { item in
-                            if let t = item.asTitle {
-                                Button { target = DetailTarget(title: t, libraryItem: item) } label: { PosterCard(title: t) }
-                                    .buttonStyle(PosterButtonStyle())
-                            }
-                        }
-                    }.padding(.horizontal, 16)
-                }
-            }
-        }
-        // Watch history that is not in progress and not saved to the library (finished or watch-only titles).
+        // Finished titles and anything else with recorded playback that is not in progress.
         let history = account.watchHistory.filter { !$0.isContinueWatching && $0.title != nil
             && (model.filter == .all || ($0.title == .movie) == (model.filter == .movies)) }
         if !history.isEmpty {
             sectionHeader("Recently watched", count: history.count,
                           seeAll: { collection = CollectionRequest(title: "Recently watched", local: history.compactMap(\.asTitle)) })
-            ScrollView(.horizontal, showsIndicators: false) {
+            UnclippedHScroll {
                 LazyHStack(alignment: .top, spacing: 12) {
                     ForEach(history.prefix(30)) { item in
                         if let t = item.asTitle {
@@ -238,13 +221,13 @@ struct DiscoverPage: View {
                 }.padding(.horizontal, 16)
             }
         }
-        if cw.isEmpty && lib.isEmpty && history.isEmpty {
-            Text("Nothing in your Stremio library or watch history yet.")
+        if cw.isEmpty && history.isEmpty {
+            Text("Nothing in your Nuvio watch history yet.")
                 .scaledFont(13).foregroundStyle(Color.inkAlpha(0.55)).frame(maxWidth: .infinity).padding(.horizontal, 16)
         }
     }
 
-    private func continueCaption(_ item: StremioLibraryItem) -> String {
+    private func continueCaption(_ item: NuvioWatchItem) -> String {
         var parts: [String] = []
         if let e = item.episode { parts.append("S\(e.season) · E\(e.episode)") }
         let left = max(0, Int((item.durationMs - item.timeOffsetMs) / 60_000))
@@ -275,7 +258,7 @@ struct DiscoverPage: View {
                 Spacer()
                 Button("Clear") { model.clearRecents() }.scaledFont(13, .semibold).foregroundStyle(Color.inkAlpha(0.7))
             }.padding(.horizontal, 16)
-            ScrollView(.horizontal, showsIndicators: false) {
+            UnclippedHScroll {
                 HStack(spacing: 8) {
                     ForEach(model.recents, id: \.self) { text in
                         Button { model.useRecent(text) } label: {
@@ -292,9 +275,9 @@ struct DiscoverPage: View {
     private var genreChips: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Browse by genre").scaledFont(16, .bold).padding(.horizontal, 16)
-            ScrollView(.horizontal, showsIndicators: false) {
+            UnclippedHScroll {
                 HStack(spacing: 8) {
-                    ForEach(StremioCatalog.genres, id: \.self) { g in
+                    ForEach(CinemetaCatalog.genres, id: \.self) { g in
                         Button {
                             collection = CollectionRequest(title: g, kind: model.filter == .series ? .series : .movie, catalog: "top", genre: g)
                         } label: {
@@ -341,7 +324,7 @@ struct DiscoverPage: View {
                     Button("Retry") { Task { await model.retryRow(row.id) } }.scaledFont(12, .semibold)
                 }.padding(.horizontal, 16)
             case .loaded:
-                ScrollView(.horizontal, showsIndicators: false) {
+                UnclippedHScroll {
                     LazyHStack(alignment: .top, spacing: 12) {
                         ForEach(row.items) { item in
                             Button { open(item) } label: { PosterCard(title: item) }.buttonStyle(PosterButtonStyle())
@@ -387,20 +370,20 @@ struct DiscoverPage: View {
                 }.padding(.horizontal, 16)
             }
         case .empty:
-            note("film.stack", "No results", "Nothing in the catalogue matches “\(model.query)”.", searchInStremio: true)
+            note("film.stack", "No results", "Nothing in the catalogue matches “\(model.query)”.", searchInNuvio: true)
         case .failed(let message):
             VStack(spacing: 10) {
-                note("wifi.exclamationmark", "Can't reach the catalogue", message, searchInStremio: false)
+                note("wifi.exclamationmark", "Can't reach the catalogue", message, searchInNuvio: false)
                 Button("Try again") { model.retrySearch() }.scaledFont(14, .semibold)
             }
         case .results:
             if model.visibleMovies.isEmpty && model.visibleSeries.isEmpty {
                 note(model.filter == .movies ? "film" : "tv", model.filter == .movies ? "No movies" : "No series",
-                     "Try “All” to see everything that matched.", searchInStremio: false)
+                     "Try “All” to see everything that matched.", searchInNuvio: false)
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     suggestionList
-                    searchInStremioButton
+                    searchInNuvioButton
                     grid("Movies", model.visibleMovies)
                     grid("Series", model.visibleSeries)
                 }
@@ -425,22 +408,22 @@ struct DiscoverPage: View {
 
     /// Its own view so the connection model (which publishes often) only re-renders this button,
     /// not the whole scrolling page.
-    private var searchInStremioButton: some View {
-        SearchInStremioButton(query: model.query) { launchNote = $0 }
+    private var searchInNuvioButton: some View {
+        SearchInNuvioButton(query: model.query) { launchNote = $0 }
     }
 
-    private func note(_ symbol: String, _ title: String, _ text: String, searchInStremio: Bool) -> some View {
+    private func note(_ symbol: String, _ title: String, _ text: String, searchInNuvio: Bool) -> some View {
         VStack(spacing: 8) {
             Image(systemName: symbol).scaledFont(32, .light).foregroundStyle(Color.inkAlpha(0.45))
             Text(title).scaledFont(17, .semibold)
             Text(text).scaledFont(13).foregroundStyle(Color.inkAlpha(0.58)).multilineTextAlignment(.center)
-            if searchInStremio { searchInStremioButton.padding(.top, 8) }
+            if searchInNuvio { searchInNuvioButton.padding(.top, 8) }
         }
         .frame(maxWidth: .infinity).padding(.top, 30).padding(.horizontal, 12)
     }
 
     @ViewBuilder
-    private func grid(_ title: String, _ items: [StremioTitle]) -> some View {
+    private func grid(_ title: String, _ items: [MediaTitle]) -> some View {
         if !items.isEmpty {
             sectionHeader(title, count: items.count)
             LazyVGrid(columns: columns, spacing: 16) {
@@ -452,28 +435,28 @@ struct DiscoverPage: View {
         }
     }
 
-    private func open(_ title: StremioTitle) {
+    private func open(_ title: MediaTitle) {
         searching = false; launchNote = ""
         target = DetailTarget(title: title, libraryItem: account.item(id: title.id))
     }
 }
 
 struct DetailTarget: Identifiable {
-    let title: StremioTitle
-    let libraryItem: StremioLibraryItem?
+    let title: MediaTitle
+    let libraryItem: NuvioWatchItem?
     var id: String { title.id }
 }
 
-private struct SearchInStremioButton: View {
+private struct SearchInNuvioButton: View {
     @EnvironmentObject private var remote: RemoteModel
     let query: String
     let onResult: (String) -> Void
 
     var body: some View {
         Button {
-            Task { onResult(await remote.searchInStremio(query)) }
+            Task { onResult(await remote.searchInNuvio(query)) }
         } label: {
-            Label("Search “\(query.trimmingCharacters(in: .whitespaces))” in Stremio on the TV", systemImage: "arrow.up.forward.app")
+            Label("Search “\(query.trimmingCharacters(in: .whitespaces))” in Nuvio on the TV", systemImage: "arrow.up.forward.app")
                 .scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
                 .frame(maxWidth: .infinity).frame(height: 40).glassSurface(Capsule(), interactive: true)
         }
@@ -486,7 +469,7 @@ private struct SearchInStremioButton: View {
 /// Portrait 2:3 poster with title and year. Artwork is never stretched or square-cropped.
 struct PosterCard: View {
     static let width: CGFloat = 112
-    let title: StremioTitle
+    let title: MediaTitle
     var progress: Double? = nil
     var caption: String? = nil
     var fixedWidth = true
@@ -535,5 +518,70 @@ struct PosterButtonStyle: ButtonStyle {
         configuration.label
             .opacity(configuration.isPressed ? 0.85 : 1)
             .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+/// Horizontal scroller whose content can grow past its natural bounds without being cut off.
+///
+/// Root cause of the old clipping bug: a horizontal `ScrollView` clips to its own frame, and the chip
+/// rows were exactly as tall as their chips. A held `.glassEffect(.interactive())` chip (and a pressed
+/// poster with its shadow) grows beyond that frame, so the scroll view sliced it. The fix is structural:
+/// the content gets vertical breathing room inside the scroll view, the surplus is cancelled with a
+/// negative outer padding so page spacing is unchanged, and `scrollClipDisabled` (iOS 17+) lets glass
+/// extend past the edges. No fixed heights were changed and nothing is hidden.
+struct UnclippedHScroll<Content: View>: View {
+    private let inset: CGFloat
+    private let content: Content
+    init(inset: CGFloat = 12, @ViewBuilder content: () -> Content) { self.inset = inset; self.content = content() }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) { content.padding(.vertical, inset) }
+            .modifier(ScrollClipOff())
+            .padding(.vertical, -inset)
+    }
+}
+
+private struct ScrollClipOff: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, *) { content.scrollClipDisabled() } else { content }
+    }
+}
+
+/// 16:9 card for landscape artwork. Uses the title's backdrop; with no backdrop the poster is shown
+/// whole (aspect-fit) on a dark panel instead of being stretched or cropped into the wide frame.
+struct LandscapeCard: View {
+    static let width: CGFloat = 232
+    let title: MediaTitle
+    var progress: Double? = nil
+    var caption: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack {
+                if let background = title.backgroundURL {
+                    CachedArtwork(url: background, contentMode: .fill) { Color.ink.opacity(0.06) }
+                } else {
+                    Color.black.opacity(0.5)
+                    CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fit) { Color.clear }.padding(6)
+                }
+            }
+            .frame(width: Self.width, height: Self.width * 9 / 16)
+            .overlay(alignment: .bottom) {
+                if let progress, progress > 0 {
+                    ProgressView(value: progress).tint(Color.white).padding(8)
+                        .background(LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.ink.opacity(0.22), lineWidth: 0.8))
+            .background { RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.black).shadow(color: .black.opacity(0.45), radius: 8, y: 5) }
+            Text(title.name).scaledFont(13, .semibold).lineLimit(1)
+            if let caption, !caption.isEmpty {
+                Text(caption).scaledFont(11).foregroundStyle(Color.inkAlpha(0.6)).lineLimit(1)
+            }
+        }
+        .frame(width: Self.width, alignment: .topLeading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title.name)\(caption.map { ", \($0)" } ?? "")")
     }
 }

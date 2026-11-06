@@ -12,7 +12,7 @@ struct MediaState: Equatable {
     var actions: Int64
     /// Parsed from the same `description=` field as `title`. Android prints MediaDescription as
     /// "title, subtitle, description"; both extras are empty when the app sets none. Unverified
-    /// against a live Stremio session: check on device.
+    /// against a live Nuvio session: check on device.
     var headline: String = ""
     var subtitle: String = ""
     /// The box's uptime (ms) when this sample was read; lets seek measurements remove normal playback.

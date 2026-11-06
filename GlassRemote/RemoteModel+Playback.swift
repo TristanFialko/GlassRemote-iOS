@@ -5,7 +5,7 @@ import Foundation
 /// Why this exists: Play used to send KEYCODE_MEDIA_PLAY_PAUSE (85), a TOGGLE. The button shown
 /// comes from a session snapshot that can be several seconds old, so a toggle sent against a
 /// stale state does the opposite of what the button says (Pause worked, Play often did not, since
-/// a paused session is also the state Stremio is slowest to refresh). Play and Pause are now
+/// a paused session is also the state players are slowest to refresh). Play and Pause are now
 /// explicit, idempotent commands (126 / 127), the result is verified against a fresh session
 /// read, and the UI never claims success on its own.
 enum MediaCommand: String {
@@ -81,7 +81,7 @@ extension RemoteModel {
             }
         }
         GRLog.note("media", "\(command.rawValue) NOT accepted (state \(media.state))")
-        status = "Stremio didn't accept \(command.rawValue)"
+        status = "The player didn't accept \(command.rawValue)"
     }
 
     /// Reads the position again and reports what the key really did. Nothing is shown as "done"

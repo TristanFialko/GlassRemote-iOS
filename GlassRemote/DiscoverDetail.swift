@@ -1,14 +1,14 @@
 import SwiftUI
 
-/// Detail sheet for a catalogue or library title: real Cinemeta metadata, the account's playback
-/// progress when the title is in the signed-in library, and actions that open it in Stremio on the
-/// TV box. Nothing here claims a stream exists.
+/// Detail sheet for a catalogue or watch-history title: real Cinemeta metadata, the Nuvio account's
+/// playback progress when it has some for this title, and an action that opens the title in Nuvio on
+/// the TV box. Nothing here claims a stream exists, and nothing auto-plays.
 struct TitleDetailView: View {
-    let title: StremioTitle
-    let libraryItem: StremioLibraryItem?
+    let title: MediaTitle
+    let libraryItem: NuvioWatchItem?
 
     @EnvironmentObject private var remote: RemoteModel
-    @State private var detail: StremioCatalog.Detail?
+    @State private var detail: CinemetaCatalog.Detail?
     @State private var loading = true
     @State private var failed = false
     @State private var season = 1
@@ -17,12 +17,7 @@ struct TitleDetailView: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 14) {
-                CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fill) { Color.ink.opacity(0.06) }
-                    .frame(width: 200, height: 300)     // exact 2:3 box: the clip and border wrap the poster
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.ink.opacity(0.2), lineWidth: 0.8))
-                    .shadow(color: .black.opacity(0.5), radius: 16, y: 10)
-                    .padding(.top, 24)
+                artwork
                 Text(title.name).scaledFont(24, .bold).multilineTextAlignment(.center)
                 chips
                 if let libraryItem, libraryItem.progress > 0 { progressBlock(libraryItem) }
@@ -43,10 +38,32 @@ struct TitleDetailView: View {
         .task { await load() }
     }
 
+    /// Landscape artwork (backdrop) in a 16:9 frame when the catalogue has one, otherwise the portrait
+    /// poster in an exact 2:3 frame. Each source keeps its own aspect ratio; nothing is stretched.
+    @ViewBuilder
+    private var artwork: some View {
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        if let background = detail?.background ?? title.backgroundURL {
+            CachedArtwork(url: background, contentMode: .fill) { Color.ink.opacity(0.06) }
+                .frame(maxWidth: .infinity).aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .clipShape(shape)
+                .overlay(shape.stroke(Color.ink.opacity(0.2), lineWidth: 0.8))
+                .shadow(color: .black.opacity(0.5), radius: 16, y: 10)
+                .padding(.top, 28)
+        } else {
+            CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fill) { Color.ink.opacity(0.06) }
+                .frame(width: 200, height: 300)
+                .clipShape(shape)
+                .overlay(shape.stroke(Color.ink.opacity(0.2), lineWidth: 0.8))
+                .shadow(color: .black.opacity(0.5), radius: 16, y: 10)
+                .padding(.top, 24)
+        }
+    }
+
     private func load() async {
         loading = true; failed = false
         do {
-            detail = try await StremioCatalog.detail(kind: title.kind, id: title.id)
+            detail = try await CinemetaCatalog.detail(kind: title.kind, id: title.id)
             failed = detail == nil
         } catch { failed = true }
         if let first = detail?.seasons.first {
@@ -64,7 +81,7 @@ struct TitleDetailView: View {
         }
     }
 
-    private func progressBlock(_ item: StremioLibraryItem) -> some View {
+    private func progressBlock(_ item: NuvioWatchItem) -> some View {
         VStack(spacing: 6) {
             ProgressView(value: item.progress).tint(Color.ink)
             HStack {
@@ -78,7 +95,7 @@ struct TitleDetailView: View {
         .padding(14).glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
-    private func progressText(_ item: StremioLibraryItem) -> String {
+    private func progressText(_ item: NuvioWatchItem) -> String {
         let pct = Int((item.progress * 100).rounded())
         if let e = item.episode { return "Season \(e.season) · Episode \(e.episode) · \(pct)% watched" }
         return "\(pct)% watched"
@@ -88,15 +105,12 @@ struct TitleDetailView: View {
 
     private var actions: some View {
         VStack(spacing: 10) {
-            if let item = libraryItem, item.isContinueWatching {
-                button(item.episode.map { "Resume S\($0.season) E\($0.episode)" } ?? "Resume", "play.fill", prominent: true) {
-                    await remote.openInStremio(title, videoID: item.videoID, autoPlay: true)
-                }
-                Text("Starts the title in Stremio on the TV box. Stremio resumes from its own saved position, so the box must be signed in to the same account.")
-                    .scaledFont(11).foregroundStyle(Color.inkFaint(0.45)).multilineTextAlignment(.center)
+            button("Open in Nuvio", "arrow.up.forward.app", prominent: true) {
+                await remote.openInNuvio(title)
             }
-            button("Open in Stremio", "arrow.up.forward.app", prominent: libraryItem?.isContinueWatching != true) {
-                await remote.openInStremio(title)
+            if let item = libraryItem, item.isContinueWatching {
+                Text("Opens this title in Nuvio on the TV box. Playback never starts automatically; Nuvio resumes from your synced position when you play it there.")
+                    .scaledFont(11).foregroundStyle(Color.inkFaint(0.45)).multilineTextAlignment(.center)
             }
         }
     }
@@ -141,9 +155,9 @@ struct TitleDetailView: View {
 
     // MARK: Episodes
 
-    private func episodes(_ detail: StremioCatalog.Detail) -> some View {
+    private func episodes(_ detail: CinemetaCatalog.Detail) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            ScrollView(.horizontal, showsIndicators: false) {
+            UnclippedHScroll {
                 HStack(spacing: 8) {
                     ForEach(detail.seasons, id: \.self) { s in
                         Button { season = s } label: {
@@ -155,19 +169,18 @@ struct TitleDetailView: View {
                     }
                 }
             }
+            Text("Episode list from the catalogue. Nuvio has no verified episode link, so episodes can't be opened directly from here.")
+                .scaledFont(11).foregroundStyle(Color.inkFaint(0.45))
             ForEach(detail.episodes.filter { $0.season == season }) { ep in
-                let current = libraryItem?.videoID == ep.id
-                Button { Task { result = await remote.openInStremio(title, videoID: ep.id) } } label: {
-                    HStack(spacing: 10) {
-                        Text("\(ep.number)").scaledFont(14, .semibold).frame(width: 28)
-                        Text(ep.title.isEmpty ? "Episode \(ep.number)" : ep.title).scaledFont(14).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                        if current { Image(systemName: "play.circle.fill").foregroundStyle(Color.ink.opacity(0.8)) }
-                    }
-                    .padding(.horizontal, 14).frame(minHeight: 44)
-                    .glassSurface(RoundedRectangle(cornerRadius: 16, style: .continuous), interactive: true)
+                let current = libraryItem?.episode.map { $0.season == ep.season && $0.episode == ep.number } ?? false
+                HStack(spacing: 10) {
+                    Text("\(ep.number)").scaledFont(14, .semibold).frame(width: 28)
+                    Text(ep.title.isEmpty ? "Episode \(ep.number)" : ep.title).scaledFont(14).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                    if current { Image(systemName: "play.circle.fill").foregroundStyle(Color.ink.opacity(0.8)) }
                 }
-                .buttonStyle(PressStyle())
-                .disabled(!remote.connected).opacity(remote.connected ? 1 : 0.5)
+                .padding(.horizontal, 14).frame(minHeight: 44)
+                .glassSurface(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .accessibilityElement(children: .combine)
                 .accessibilityLabel("Episode \(ep.number), \(ep.title)\(current ? ", last watched" : "")")
             }
         }
