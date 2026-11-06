@@ -164,6 +164,9 @@ final class RemoteModel: ObservableObject {
     // v0.4: transport command in flight (see RemoteModel+Playback.swift)
     var mediaCommandTask: Task<Void, Never>?
     @Published var mediaCommandPending = false
+    /// What the last Rewind / Fast-forward measurably did, and what each key has been learned to do.
+    @Published var lastSeek: SeekReport?
+    @Published var seekLearner = SeekStepLearner.load()
 
     // v0.4: dual-device remote
     @Published var target: RemoteTarget = RemoteTarget.restored(from: UserDefaults.standard.string(forKey: "glassRemote.target")) {

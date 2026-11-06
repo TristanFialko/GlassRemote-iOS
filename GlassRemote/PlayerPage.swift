@@ -12,6 +12,8 @@ struct PlayerPage: View {
     @ObservedObject private var artwork = PlayerArtworkStore.shared
     @Environment(\.glassTheme) private var theme
 
+    @Environment(\.dockClearance) private var dockClearance
+
     var body: some View {
         let media = remote.media
         let app = remote.apps.first(where: { $0.package == media.package })
@@ -19,9 +21,10 @@ struct PlayerPage: View {
         let poster = media.isActive ? artwork.posterURL(forSessionTitle: sessionTitle) : nil
 
         GeometryReader { proxy in
-            // Compact media controller: the poster takes about a third of the height (never more than
-            // 280 pt), and the transport bar is pinned just above the dock so nothing can sit under it.
-            let posterHeight = min(max(proxy.size.height * (proxy.size.height < 700 ? 0.29 : 0.33), 150), 280)
+            // The poster takes roughly 38 % of the height on tall phones (31 % on small ones), between
+            // 160 and 320 pt: bigger than Phase 4 (0.33, max 280), well short of the oversized Phase 3.
+            // The transport bar is pinned just above the dock so nothing can sit under it.
+            let posterHeight = min(max(proxy.size.height * (proxy.size.height < 700 ? 0.31 : 0.38), 160), 320)
             VStack(spacing: 0) {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 12) {
@@ -42,7 +45,7 @@ struct PlayerPage: View {
                 transport(media: media)
                     .padding(.horizontal, 20)
                     .padding(.top, 6)
-                    .padding(.bottom, DockMetrics.clearance + 6)
+                    .padding(.bottom, dockClearance + 6)
             }
         }
         .background { ambientLight }
@@ -96,7 +99,7 @@ struct PlayerPage: View {
             Image(app.asset == "stremio" ? "stremio_nowplaying" : "\(app.asset)_dark")
                 .resizable().scaledToFit().padding(app.asset == "stremio" ? 64 : 36)
         } else {
-            Image(systemName: media.isActive ? "play.rectangle" : "tv")
+            Image(systemName: media.isActive ? AppPage.playerSymbolOutline : "tv")
                 .scaledFont(56, .light).foregroundStyle(Color.ink.opacity(0.4))
         }
     }
@@ -118,7 +121,7 @@ struct PlayerPage: View {
                     Text(media.subtitle).scaledFont(15, .medium).foregroundStyle(Color.ink.opacity(0.8))
                         .multilineTextAlignment(.center).lineLimit(2)
                 }
-                Text(name).scaledFont(13, .medium).foregroundStyle(Color.ink.opacity(0.5))
+                Text(name).scaledFont(13, .medium).foregroundStyle(Color.inkAlpha(0.5))
             }
         }
         .frame(maxWidth: .infinity)
@@ -140,7 +143,7 @@ struct PlayerPage: View {
                             Spacer()
                             Text("-" + MediaState.format(max(0, total - pos)))
                         }
-                        .font(.system(size: 12).monospacedDigit()).foregroundStyle(Color.ink.opacity(0.65))
+                        .font(.system(size: 12).monospacedDigit()).foregroundStyle(Color.inkAlpha(0.65))
                     } else {
                         Text(MediaState.format(pos))
                             .font(.system(size: 28, weight: .semibold, design: .rounded).monospacedDigit())
@@ -148,8 +151,12 @@ struct PlayerPage: View {
                     }
                 }
                 if media.durationMs == nil {
-                    Text("Stremio doesn't report the total length, so there is no progress bar or seeking.")
-                        .scaledFont(11).foregroundStyle(Color.ink.opacity(0.45)).multilineTextAlignment(.center)
+                    Text("No total length is reported, so there is no progress bar or exact seeking. Rewind and fast-forward move by the app's own step.")
+                        .scaledFont(11).foregroundStyle(Color.inkAlpha(0.5)).multilineTextAlignment(.center)
+                }
+                if let line = seekLine(media: media) {
+                    Text(line).scaledFont(12, .medium).foregroundStyle(Color.inkAlpha(0.7))
+                        .multilineTextAlignment(.center).transition(.opacity)
                 }
             }
         }
@@ -173,6 +180,8 @@ struct PlayerPage: View {
     private func transport(media: MediaState) -> some View {
         let active = media.isActive
         let busy = remote.mediaCommandPending
+        // Relabelled "10 s" only once BOTH keys have been measured, repeatedly, at about ten seconds.
+        let tenSecond = remote.seekLearner.isTenSecond(package: media.package)
         return ZStack {
             // Glass only (bar + centre bubble); the buttons sit above it so they are never refracted.
             GlassGroup(spacing: 12) {
@@ -183,9 +192,9 @@ struct PlayerPage: View {
             }
             HStack(spacing: 6) {
                 control("backward.end.fill", "Previous", enabled: active && media.canPrevious && !busy) { remote.sendMedia(.previous) }
-                control("backward.fill", "Rewind", enabled: active && media.canRewind && !busy) { remote.sendMedia(.rewind) }
+                control(tenSecond ? "gobackward.10" : "backward.fill", tenSecond ? "Back 10 seconds" : "Rewind", enabled: active && media.canRewind && !busy) { remote.sendMedia(.rewind) }
                 playButton(media: media, enabled: active && media.canPlayPause && !busy, busy: busy)
-                control("forward.fill", "Fast forward", enabled: active && media.canFastForward && !busy) { remote.sendMedia(.fastForward) }
+                control(tenSecond ? "goforward.10" : "forward.fill", tenSecond ? "Forward 10 seconds" : "Fast forward", enabled: active && media.canFastForward && !busy) { remote.sendMedia(.fastForward) }
                 control("forward.end.fill", "Next", enabled: active && media.canNext && !busy) { remote.sendMedia(.next) }
             }
             .padding(.horizontal, 10)
@@ -204,7 +213,7 @@ struct PlayerPage: View {
         }
         .buttonStyle(PressStyle())
         .disabled(!enabled)
-        .opacity(enabled || busy ? 1 : 0.4)
+        .controlDisabled(!(enabled || busy))
         .accessibilityLabel(media.isPlaying ? "Pause" : "Play")
     }
 
@@ -215,12 +224,29 @@ struct PlayerPage: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
-        .disabled(!enabled).opacity(enabled ? 1 : 0.32)
+        .disabled(!enabled).controlDisabled(!enabled)
         .accessibilityLabel(label)
+    }
+
+    /// Honest seek feedback: only what the TV's session confirmed, for a few seconds after the key.
+    private func seekLine(media: MediaState) -> String? {
+        if let report = remote.lastSeek, Date().timeIntervalSince(report.at) < 8 {
+            let name = report.command == .rewind ? "Rewind" : "Fast-forward"
+            switch report.outcome {
+            case .confirmed(let seconds): return "\(name): \(seconds < 0 ? "−" : "+")\(Int(abs(seconds).rounded())) s, confirmed by the TV"
+            case .unchanged: return "\(name): the TV reported no position change"
+            case .unknown: break
+            }
+        }
+        let back = remote.seekLearner.step(package: media.package, command: .rewind)
+        let forward = remote.seekLearner.step(package: media.package, command: .fastForward)
+        guard back != nil || forward != nil else { return nil }
+        func text(_ v: Double?) -> String { v.map { "≈\(Int($0.rounded())) s" } ?? "not measured" }
+        return "Measured steps: rewind \(text(back)), fast-forward \(text(forward))"
     }
 
     private var emptyHint: some View {
         Text(remote.connected ? "Start something in Stremio and it appears here." : "Connect to your TV box to see what's playing.")
-            .scaledFont(14).foregroundStyle(Color.ink.opacity(0.55)).multilineTextAlignment(.center)
+            .scaledFont(14).foregroundStyle(Color.inkAlpha(0.55)).multilineTextAlignment(.center)
     }
 }

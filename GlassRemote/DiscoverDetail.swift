@@ -18,8 +18,7 @@ struct TitleDetailView: View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 14) {
                 CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fill) { Color.ink.opacity(0.06) }
-                    .aspectRatio(2.0 / 3.0, contentMode: .fit)
-                    .frame(maxHeight: 300)
+                    .frame(width: 200, height: 300)     // exact 2:3 box: the clip and border wrap the poster
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.ink.opacity(0.2), lineWidth: 0.8))
                     .shadow(color: .black.opacity(0.5), radius: 16, y: 10)
@@ -32,7 +31,7 @@ struct TitleDetailView: View {
                 about
                 if title.kind == .series, let detail, !detail.seasons.isEmpty { episodes(detail) }
                 Text("This is a catalogue listing. It doesn't mean a stream is available for it.")
-                    .scaledFont(11).foregroundStyle(Color.ink.opacity(0.4)).multilineTextAlignment(.center).padding(.top, 6)
+                    .scaledFont(11).foregroundStyle(Color.inkFaint(0.4)).multilineTextAlignment(.center).padding(.top, 6)
             }
             .padding(.horizontal, 22).padding(.bottom, 24)
         }
@@ -72,7 +71,7 @@ struct TitleDetailView: View {
                 Text(progressText(item)).scaledFont(12).foregroundStyle(Color.ink.opacity(0.7))
                 Spacer()
                 if let last = item.lastWatched {
-                    Text(last, style: .relative).scaledFont(12).foregroundStyle(Color.ink.opacity(0.5))
+                    Text(last, style: .relative).scaledFont(12).foregroundStyle(Color.inkFaint(0.5))
                 }
             }
         }
@@ -94,7 +93,7 @@ struct TitleDetailView: View {
                     await remote.openInStremio(title, videoID: item.videoID, autoPlay: true)
                 }
                 Text("Starts the title in Stremio on the TV box. Stremio resumes from its own saved position, so the box must be signed in to the same account.")
-                    .scaledFont(11).foregroundStyle(Color.ink.opacity(0.45)).multilineTextAlignment(.center)
+                    .scaledFont(11).foregroundStyle(Color.inkFaint(0.45)).multilineTextAlignment(.center)
             }
             button("Open in Stremio", "arrow.up.forward.app", prominent: libraryItem?.isContinueWatching != true) {
                 await remote.openInStremio(title)
@@ -112,7 +111,7 @@ struct TitleDetailView: View {
         .buttonStyle(PressStyle())
         .disabled(!remote.connected).opacity(remote.connected ? 1 : 0.5)
         .overlay(alignment: .bottom) {
-            if !remote.connected { Text("Connect to the TV box first").scaledFont(10).foregroundStyle(Color.ink.opacity(0.5)).offset(y: 14) }
+            if !remote.connected { Text("Connect to the TV box first").scaledFont(10).foregroundStyle(Color.inkFaint(0.5)).offset(y: 14) }
         }
         .padding(.bottom, remote.connected ? 0 : 12)
     }
@@ -124,7 +123,7 @@ struct TitleDetailView: View {
         if loading {
             ProgressView().tint(Color.ink.opacity(0.6)).padding(.vertical, 12)
         } else if failed {
-            Text("Couldn't load details from the catalogue.").scaledFont(12).foregroundStyle(Color.ink.opacity(0.5))
+            Text("Couldn't load details from the catalogue.").scaledFont(12).foregroundStyle(Color.inkFaint(0.5))
         } else if let detail {
             VStack(alignment: .leading, spacing: 10) {
                 if !detail.genres.isEmpty { Text(detail.genres.joined(separator: " · ")).scaledFont(13, .semibold).foregroundStyle(Color.ink.opacity(0.75)) }
@@ -137,7 +136,7 @@ struct TitleDetailView: View {
     }
 
     private func info(_ label: String, _ value: String) -> some View {
-        (Text(label + "  ").foregroundColor(Color.ink.opacity(0.5)) + Text(value)).scaledFont(13)
+        (Text(label + "  ").foregroundColor(Color.inkFaint(0.5)) + Text(value)).scaledFont(13)
     }
 
     // MARK: Episodes

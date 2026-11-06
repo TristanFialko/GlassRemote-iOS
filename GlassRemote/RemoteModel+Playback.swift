@@ -54,6 +54,7 @@ extension RemoteModel {
 
     private func runMedia(_ command: MediaCommand) async {
         let before = media.state
+        let beforeSample = media
         GRLog.note("media", "request \(command.rawValue) (session state before: \(before))")
         mediaCommandPending = true
         defer { mediaCommandPending = false }
@@ -63,6 +64,7 @@ extension RemoteModel {
         await pollMedia()
         guard let wanted = command.satisfied(by: media) else {
             GRLog.note("media", "\(command.rawValue) sent; state now \(media.state)")
+            if command == .rewind || command == .fastForward { await recordSeek(command, before: beforeSample) }
             return
         }
         if wanted { GRLog.note("media", "\(command.rawValue) confirmed (state \(media.state))"); return }
@@ -80,5 +82,23 @@ extension RemoteModel {
         }
         GRLog.note("media", "\(command.rawValue) NOT accepted (state \(media.state))")
         status = "Stremio didn't accept \(command.rawValue)"
+    }
+
+    /// Reads the position again and reports what the key really did. Nothing is shown as "done"
+    /// before the TV's own session confirms it; one extra read covers a slow session update.
+    private func recordSeek(_ command: MediaCommand, before: MediaState) async {
+        var outcome = SeekMeasurement.measure(before: before, after: media)
+        if outcome == .unchanged {
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            await pollMedia()
+            outcome = SeekMeasurement.measure(before: before, after: media)
+        }
+        lastSeek = SeekReport(command: command, outcome: outcome, at: Date())
+        GRLog.note("media", "\(command.rawValue) measured: \(outcome)")
+        // A rewind that landed at the very start was clipped, so it says nothing about the step.
+        if case .confirmed(let seconds) = outcome, !(command == .rewind && media.positionMs < 1500) {
+            seekLearner.record(package: before.package, command: command, seconds: seconds)
+            seekLearner.save()
+        }
     }
 }

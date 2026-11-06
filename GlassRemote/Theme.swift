@@ -143,18 +143,132 @@ struct GlassTheme: Equatable {
         let accent = palette.accentColor(light: isLight)
         let accent2 = palette.secondaryColor(light: isLight)
         t.accent = accent; t.accent2 = accent2
-        t.lensOpacity = isLight ? 0.22 : 0.30
-        t.accentSurfaceOpacity = isLight ? 0.26 : 0.34
+        let k = palette.intensity
+        t.lensOpacity = (isLight ? 0.22 : 0.30) * k
+        t.accentSurfaceOpacity = (isLight ? 0.26 : 0.34) * k
         t.rim = isLight ? .white : accent2
         t.glassTint = palette.glassTint(light: isLight)
-        t.glassTintOpacity = isLight ? 0.28 : 0.24
+        t.glassTintOpacity = (isLight ? 0.28 : 0.24) * k
         if !isLight {
             t.canvasMid = palette.canvasColor()
-            t.glow = accent.opacity(0.20)
+            t.glow = accent.opacity(0.20 * k)
         } else {
-            t.glow = accent.opacity(0.16)
+            t.glow = accent.opacity(0.16 * k)
         }
         return t
+    }
+}
+
+
+// MARK: - Contrast tokens
+//
+// Surfaces and text pick their separation from these tokens, never from the accent. That keeps the
+// dock, selectors and controls legible whatever Adaptive extracts from artwork, and it is the single
+// place to tune light-theme visibility. Dark themes keep their existing look: every token that was
+// not needed there is clear or very faint.
+
+extension GlassTheme {
+    /// Hairline that keeps a glass surface visible against its own canvas.
+    var edge: Color { isLight ? Color(white: 0.10).opacity(0.20) : rim.opacity(0.22) }
+    /// Stronger hairline for surfaces that sit over busy content (the dock).
+    var edgeStrong: Color { isLight ? Color(white: 0.10).opacity(0.30) : rim.opacity(0.34) }
+    /// Soft contact shadow that separates bright glass from a bright canvas. Dark themes need none.
+    var separationShadow: Color { isLight ? Color.black.opacity(0.11) : .clear }
+
+    /// Under-glass wash for ordinary controls (segmented bars, search). Light themes get a faint
+    /// ink tint so a white bar is not white-on-white; dark themes are unchanged.
+    var controlScrim: Color { isLight ? Color(white: 0.10).opacity(0.045) : .clear }
+
+    // Dock: its own polarity-opposed scrim guarantees label contrast over any page content.
+    var dockScrim: Color { isLight ? Color.white.opacity(0.58) : Color.black.opacity(0.40) }
+    var dockInk: Color { isLight ? Color(white: 0.08) : .white }
+    var dockInkInactive: Color { isLight ? Color(white: 0.08).opacity(0.62) : Color.white.opacity(0.70) }
+
+    /// Accent used to tint selected lenses. Adaptive clamps its luminance so a very bright artwork
+    /// colour can never wash out the selected label; fixed themes use their accent unchanged.
+    var lensTint: Color {
+        guard id == .adaptive else { return accent }
+        return ColorMath.clamped(accent, maxLuminance: isLight ? 0.30 : 0.36)
+    }
+    /// Selected-lens fill and edge: obvious on light surfaces, a faint rim on dark ones.
+    var lensFill: Color { isLight ? lensTint.opacity(0.14) : .clear }
+    var lensEdge: Color { isLight ? lensTint.opacity(0.55) : rim.opacity(0.18) }
+
+    /// Outline drawn on ordinary glass: light themes only (dark glass already carries its own rim).
+    var controlEdge: Color { isLight ? edge : .clear }
+    /// Outline of the dock: always present, faint on dark.
+    var dockEdge: Color { isLight ? edgeStrong : rim.opacity(0.16) }
+}
+
+/// Small colour maths shared by the palette and the contrast tokens (pure; unit tested).
+enum ColorMath {
+    /// HSV (all 0...1) to sRGB.
+    static func rgb(hue h: Double, saturation s: Double, value v: Double) -> (r: Double, g: Double, b: Double) {
+        let hh = (h - h.rounded(.down)) * 6
+        let i = Int(hh) % 6
+        let f = hh - Double(Int(hh))
+        let p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f))
+        switch i {
+        case 0: return (v, t, p)
+        case 1: return (q, v, p)
+        case 2: return (p, v, t)
+        case 3: return (p, q, v)
+        case 4: return (t, p, v)
+        default: return (v, p, q)
+        }
+    }
+
+    static func hsv(r: Double, g: Double, b: Double) -> (h: Double, s: Double, v: Double) {
+        let mx = max(r, g, b), mn = min(r, g, b), d = mx - mn
+        var h = 0.0
+        if d > 0 {
+            if mx == r { h = ((g - b) / d).truncatingRemainder(dividingBy: 6) }
+            else if mx == g { h = (b - r) / d + 2 }
+            else { h = (r - g) / d + 4 }
+            h /= 6
+            if h < 0 { h += 1 }
+        }
+        return (h, mx == 0 ? 0 : d / mx, mx)
+    }
+
+    /// WCAG relative luminance of an sRGB colour.
+    static func luminance(r: Double, g: Double, b: Double) -> Double {
+        func lin(_ c: Double) -> Double { c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    }
+
+    static func contrast(_ a: Double, _ b: Double) -> Double {
+        (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    }
+
+    /// The colour of this hue whose luminance is `target`. Saturation is eased off first when the hue
+    /// cannot get that bright at full value (pure blue tops out at ~7 % luminance), so a dark-theme
+    /// accent turns periwinkle rather than staying murky. Perceptually even across hues.
+    static func color(hue: Double, saturation: Double, luminance target: Double) -> (r: Double, g: Double, b: Double) {
+        var s = min(max(saturation, 0), 1)
+        for _ in 0..<16 {
+            let top = rgb(hue: hue, saturation: s, value: 1)
+            if luminance(r: top.r, g: top.g, b: top.b) >= target || s <= 0.02 { break }
+            s *= 0.88
+        }
+        var lo = 0.0, hi = 1.0
+        for _ in 0..<22 {
+            let mid = (lo + hi) / 2
+            let c = rgb(hue: hue, saturation: s, value: mid)
+            if luminance(r: c.r, g: c.g, b: c.b) < target { lo = mid } else { hi = mid }
+        }
+        return rgb(hue: hue, saturation: s, value: hi)
+    }
+
+    /// `color` with its luminance reduced to at most `maxLuminance` (unchanged when already darker).
+    static func clamped(_ color: Color, maxLuminance: Double) -> Color {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a) else { return color }
+        let l = luminance(r: Double(r), g: Double(g), b: Double(b))
+        guard l > maxLuminance, l > 0 else { return color }
+        let parts = Self.hsv(r: Double(r), g: Double(g), b: Double(b))
+        let c = Self.color(hue: parts.h, saturation: parts.s, luminance: maxLuminance)
+        return Color(red: c.r, green: c.g, blue: c.b)
     }
 }
 
@@ -172,49 +286,101 @@ extension Color {
     static let ink = Color(UIColor { $0.userInterfaceStyle == .light ? UIColor(white: 0.08, alpha: 1) : .white })
     /// The opposite of `ink`: for glyphs drawn on top of an `ink`-coloured fill.
     static let inkInverse = Color(UIColor { $0.userInterfaceStyle == .light ? .white : UIColor(white: 0.05, alpha: 1) })
+
+    /// Secondary / tertiary foreground. Identical to `ink.opacity(a)` in dark scheme. In light scheme
+    /// the opacity of text-weight values (0.4 to 0.99) is lifted 30 % of the way to opaque, so captions and
+    /// inactive icons keep roughly 4.5:1 against pale glass instead of fading into it.
+    static func inkAlpha(_ a: Double) -> Color {
+        Color(UIColor { trait in
+            if trait.userInterfaceStyle == .light {
+                let lifted = (a >= 0.4 && a < 1) ? a + (1 - a) * 0.30 : a
+                return UIColor(white: 0.08, alpha: CGFloat(lifted))
+            }
+            return UIColor(white: 1, alpha: CGFloat(a))
+        })
+    }
 }
 
 // MARK: - Artwork palette (Adaptive)
 
-/// Dominant hue of an artwork, stored raw (hue / saturation / brightness). Concrete colours are
-/// generated per scheme so contrast stays acceptable and saturation is capped.
+/// Dominant colours of an artwork, stored raw (hue / saturation / brightness). Concrete colours are
+/// generated per scheme by matching a target *luminance*, not a fixed brightness, so a yellow, a blue
+/// and a red poster all produce accents of the same visual weight, and saturation is compressed so a
+/// loud poster never makes the whole interface neon.
 struct ArtworkPalette: Equatable {
     var hue: Double
     var saturation: Double
     var brightness: Double
     var secondaryHue: Double
     var isNeutral: Bool
+    /// Share (0...1) of the centre-weighted image that carries real colour. Mostly-monochrome art
+    /// has a low value and gets a quieter accent.
+    var coverage: Double = 1
+    /// Mean brightness of the whole image (0 = black, 1 = white).
+    var meanBrightness: Double = 0.5
+    /// Saturation of the secondary hue's region.
+    var secondarySaturation: Double = 0.5
 
     static let neutral = ArtworkPalette(hue: 0, saturation: 0, brightness: 0.8, secondaryHue: 0, isNeutral: true)
 
+    /// 0.6...1: how strongly the palette is allowed to tint the interface.
+    var intensity: Double { 0.6 + 0.4 * min(1, coverage * 4) }
+
+    /// Source saturation compressed into a calm range (0.30 ... 0.74).
+    private var calmSaturation: Double { (0.30 + 0.44 * min(max(saturation, 0), 1)) * (0.80 + 0.20 * min(1, coverage * 4)) }
+
+    private func tone(hue: Double, saturation: Double, luminance: Double) -> Color {
+        let c = ColorMath.color(hue: hue, saturation: saturation, luminance: luminance)
+        return Color(red: c.r, green: c.g, blue: c.b)
+    }
+
+    /// Accent: luminance 0.36 on dark (reads as text on the dark canvas, and white labels stay legible
+    /// over it), 0.17 on light (about 5:1 against the pale canvas).
     func accentColor(light: Bool) -> Color {
-        light ? Color(hue: hue, saturation: min(max(saturation, 0.5), 0.78), brightness: 0.62)
-              : Color(hue: hue, saturation: min(max(saturation, 0.45), 0.72), brightness: min(max(brightness + 0.12, 0.66), 0.92))
+        tone(hue: hue, saturation: calmSaturation, luminance: light ? 0.17 : 0.36)
     }
+
+    /// Secondary accent: lighter and softer, from the second distinct hue when the artwork has one.
     func secondaryColor(light: Bool) -> Color {
-        light ? Color(hue: secondaryHue, saturation: 0.45, brightness: 0.78)
-              : Color(hue: secondaryHue, saturation: 0.40, brightness: 0.92)
+        let s = min(max(secondarySaturation * 0.8, 0.25), 0.55)
+        return tone(hue: secondaryHue, saturation: s, luminance: light ? 0.30 : 0.55)
     }
+
     func glassTint(light: Bool) -> Color {
-        light ? Color(hue: hue, saturation: 0.18, brightness: 1.0) : Color(hue: hue, saturation: 0.55, brightness: 0.34)
+        light ? Color(hue: hue, saturation: 0.18, brightness: 1.0)
+              : Color(hue: hue, saturation: 0.42 + 0.16 * min(1, coverage * 4), brightness: 0.34)
     }
-    /// A very dark wash of the hue: the canvas only hints at the artwork.
-    func canvasColor() -> Color { Color(hue: hue, saturation: 0.60, brightness: 0.16) }
+
+    /// A very dark wash of the hue: the canvas only hints at the artwork. Dark artwork gets a touch
+    /// less so the page does not turn muddy.
+    func canvasColor() -> Color {
+        Color(hue: hue, saturation: 0.60, brightness: 0.13 + 0.05 * min(1, meanBrightness * 2))
+    }
+
+    /// True when `other` is close enough that recolouring the interface would be noise, not change.
+    func isSimilar(to other: ArtworkPalette) -> Bool {
+        guard isNeutral == other.isNeutral else { return false }
+        if isNeutral { return true }
+        let d = abs(hue - other.hue)
+        return min(d, 1 - d) < 0.02 && abs(saturation - other.saturation) < 0.06 && abs(brightness - other.brightness) < 0.08
+    }
 }
 
 enum ArtworkPaletteExtractor {
-    /// Downsamples to 32x32 and picks the hue bin with the most weight (weight = saturation x
-    /// brightness, ignoring near-grey and near-black/white pixels). Runs off the main thread.
-    /// Returns `.neutral` for greyscale artwork. Pure: no network, no state.
+    /// Edge of the square the artwork is reduced to before analysis.
+    static let sampleSide = 48
+
+    /// Downsamples to 48x48 and analyses it. Runs off the main thread. Returns `.neutral` for
+    /// greyscale artwork. Pure: no network, no state.
     static func extract(from image: UIImage) -> ArtworkPalette {
         guard let cg = image.cgImage else { return .neutral }
-        let side = 32
+        let side = sampleSide
         var pixels = [UInt8](repeating: 0, count: side * side * 4)
         let drew = pixels.withUnsafeMutableBytes { buffer -> Bool in
             guard let ctx = CGContext(data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
                                       space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
-            ctx.interpolationQuality = .low
+            ctx.interpolationQuality = .medium
             ctx.draw(cg, in: CGRect(x: 0, y: 0, width: side, height: side))
             return true
         }
@@ -222,32 +388,91 @@ enum ArtworkPaletteExtractor {
         return palette(fromRGBA: pixels)
     }
 
+    /// Weighted hue histogram.
+    ///  - Centre-weighted: posters carry borders, letterboxing and credits at the edges, which say
+    ///    nothing about the picture, so edge pixels count for a quarter of centre pixels.
+    ///  - A pixel's weight is area x saturation x (0.3 + 0.7 x brightness): vivid regions beat dull
+    ///    ones, yet dark but tinted artwork still registers (brightness floor 0.14).
+    ///  - Near-grey, near-black and blown-out pixels are ignored.
+    ///  - Weight is shared with the two neighbouring bins, so a hue sitting on a bin boundary is not
+    ///    split into two weak bins, and the final hue is the circular mean of the winning bins.
+    ///  - The secondary hue is the best bin at least three bins (45 degrees) away, if it carries at
+    ///    least a quarter of the primary's weight.
+    /// `pixels` is RGBA, row-major; a square image gets the centre weighting, anything else is uniform.
     static func palette(fromRGBA pixels: [UInt8]) -> ArtworkPalette {
         let bins = 24
+        let count = pixels.count / 4
+        guard count > 0 else { return .neutral }
+        let side = Int(Double(count).squareRoot().rounded())
+        let square = side * side == count
+
         var weight = [Double](repeating: 0, count: bins)
         var sat = [Double](repeating: 0, count: bins)
         var bri = [Double](repeating: 0, count: bins)
-        let count = pixels.count / 4
+        var sinSum = [Double](repeating: 0, count: bins)
+        var cosSum = [Double](repeating: 0, count: bins)
+        var totalMass = 0.0, colouredMass = 0.0, brightnessSum = 0.0
+
         for i in 0..<count {
-            let r = Double(pixels[i * 4]) / 255, g = Double(pixels[i * 4 + 1]) / 255, b = Double(pixels[i * 4 + 2]) / 255
-            var h: CGFloat = 0, s: CGFloat = 0, v: CGFloat = 0, a: CGFloat = 0
-            UIColor(red: r, green: g, blue: b, alpha: 1).getHue(&h, saturation: &s, brightness: &v, alpha: &a)
-            guard s > 0.22, v > 0.16, v < 0.98 else { continue }
-            let w = Double(s) * Double(v)
-            let bin = min(Int(Double(h) * Double(bins)), bins - 1)
-            weight[bin] += w; sat[bin] += w * Double(s); bri[bin] += w * Double(v)
+            let alpha = Double(pixels[i * 4 + 3]) / 255
+            guard alpha > 0.5 else { continue }
+            let r = Double(pixels[i * 4]) / 255 / alpha, g = Double(pixels[i * 4 + 1]) / 255 / alpha, b = Double(pixels[i * 4 + 2]) / 255 / alpha
+            let c = ColorMath.hsv(r: min(r, 1), g: min(g, 1), b: min(b, 1))
+
+            var position = 1.0
+            if square {
+                let nx = (Double(i % side) + 0.5) / Double(side) * 2 - 1
+                let ny = (Double(i / side) + 0.5) / Double(side) * 2 - 1
+                position = max(0.25, 1 - 0.75 * (nx * nx + ny * ny) / 1.4)
+            }
+            totalMass += position
+            brightnessSum += c.v * position
+
+            guard c.s > 0.22, c.v > 0.14, c.v < 0.99 else { continue }
+            let w = position * c.s * (0.30 + 0.70 * c.v)
+            colouredMass += position
+            let bin = min(Int(c.h * Double(bins)), bins - 1)
+            let angle = c.h * 2 * Double.pi
+            for (offset, share) in [(-1, 0.25), (0, 1.0), (1, 0.25)] {
+                let target = (bin + offset + bins) % bins
+                weight[target] += w * share
+                sat[target] += w * share * c.s
+                bri[target] += w * share * c.v
+                sinSum[target] += w * share * sin(angle)
+                cosSum[target] += w * share * cos(angle)
+            }
         }
-        let total = weight.reduce(0, +)
-        // Less than ~4 % of the image carries colour: treat as neutral (greyscale / monochrome art).
-        guard total > Double(count) * 0.04, let best = weight.indices.max(by: { weight[$0] < weight[$1] }), weight[best] > 0 else { return .neutral }
-        let hue = (Double(best) + 0.5) / Double(bins)
+
+        let coverage = totalMass > 0 ? colouredMass / totalMass : 0
+        let mean = totalMass > 0 ? brightnessSum / totalMass : 0
+        // Less than ~5 % of the picture carries colour: greyscale / monochrome art.
+        guard coverage > 0.05, let best = weight.indices.max(by: { weight[$0] < weight[$1] }), weight[best] > 0 else { return .neutral }
+
+        func hue(around bin: Int) -> Double {
+            var s = 0.0, c = 0.0
+            for offset in -1...1 {
+                let idx = (bin + offset + bins) % bins
+                s += sinSum[idx]; c += cosSum[idx]
+            }
+            var h = atan2(s, c) / (2 * Double.pi)
+            if h < 0 { h += 1 }
+            return h
+        }
+
+        let primaryHue = hue(around: best)
         let second = weight.indices.filter { idx in
             let d = abs(idx - best); return min(d, bins - d) >= 3
         }.max(by: { weight[$0] < weight[$1] })
-        let secondHue = (second.map { weight[$0] > weight[best] * 0.25 ? (Double($0) + 0.5) / Double(bins) : nil } ?? nil)
-            ?? (hue + 0.06).truncatingRemainder(dividingBy: 1)
-        return ArtworkPalette(hue: hue, saturation: sat[best] / weight[best], brightness: bri[best] / weight[best],
-                              secondaryHue: secondHue, isNeutral: false)
+
+        var secondaryHue = (primaryHue + 0.07).truncatingRemainder(dividingBy: 1)
+        var secondarySat = sat[best] / weight[best]
+        if let second, weight[second] > weight[best] * 0.25 {
+            secondaryHue = hue(around: second)
+            secondarySat = sat[second] / weight[second]
+        }
+        return ArtworkPalette(hue: primaryHue, saturation: sat[best] / weight[best], brightness: bri[best] / weight[best],
+                              secondaryHue: secondaryHue, isNeutral: false,
+                              coverage: coverage, meanBrightness: mean, secondarySaturation: secondarySat)
     }
 }
 
@@ -278,7 +503,7 @@ final class ThemeStore: ObservableObject {
     @Published var selected: ThemeID {
         didSet {
             UserDefaults.standard.set(selected.rawValue, forKey: Self.themeKey)
-            if selected == .adaptive { recompute() }
+            if selected == .adaptive { recompute(immediate: true) }
         }
     }
     @Published var ambient: AmbientStyle {
@@ -291,6 +516,7 @@ final class ThemeStore: ObservableObject {
     private var page: AppPage = .remote
     private var cache: [URL: ArtworkPalette] = [:]
     private var task: Task<Void, Never>?
+    private var settleTask: Task<Void, Never>?
 
     init() {
         selected = ThemeID(rawValue: UserDefaults.standard.string(forKey: Self.themeKey) ?? "") ?? .defaultDark
@@ -323,24 +549,41 @@ final class ThemeStore: ObservableObject {
         }
     }
 
-    private func recompute() {
+    /// Delays (seconds) before a change of artwork recolours the UI. A short settle absorbs rapid
+    /// changes (a hero image loading, a page swipe passing through); a longer grace stops the
+    /// interface flashing to neutral while a page simply has no artwork for a moment.
+    static let settleDelay: TimeInterval = 0.25
+    static let neutralGrace: TimeInterval = 1.5
+
+    private func recompute(immediate: Bool = false) {
         guard selected == .adaptive else { return }
         task?.cancel()
-        guard let url = activeURL else { apply(.neutral); return }
-        if let hit = cache[url] { apply(hit); return }
+        guard let url = activeURL else { settle(.neutral, after: immediate ? 0 : Self.neutralGrace); return }
+        if let hit = cache[url] { settle(hit, after: immediate ? 0 : Self.settleDelay); return }
         task = Task { [weak self] in
             guard let image = await ArtworkCache.shared.image(for: url), !Task.isCancelled else { return }
             // Pixel work off the main thread; the result is cached per URL so an image is never processed twice.
             let result = await Task.detached(priority: .utility) { ArtworkPaletteExtractor.extract(from: image) }.value
             guard !Task.isCancelled, let self else { return }
             self.cache[url] = result
-            if self.activeURL == url { self.apply(result) }
+            if self.activeURL == url { self.settle(result, after: immediate ? 0 : Self.settleDelay) }
         }
     }
 
-    private func apply(_ new: ArtworkPalette) {
+    private func settle(_ new: ArtworkPalette, after delay: TimeInterval) {
+        settleTask?.cancel()
+        guard !palette.isSimilar(to: new) else { return }
+        if delay <= 0 { commit(new); return }
+        settleTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.commit(new)
+        }
+    }
+
+    private func commit(_ new: ArtworkPalette) {
         guard new != palette else { return }
-        withAnimation(.easeInOut(duration: 0.9)) { palette = new }
+        withAnimation(.easeInOut(duration: 0.8)) { palette = new }
     }
 }
 
@@ -486,7 +729,7 @@ struct ThemePickerSheet: View {
                     ForEach(coloured) { id in card(id) }
                 }
 
-                Text("Dynamic").scaledFont(15, .semibold).foregroundStyle(Color.ink.opacity(0.6))
+                Text("Dynamic").scaledFont(15, .semibold).foregroundStyle(Color.inkAlpha(0.6))
                 LazyVGrid(columns: columns, spacing: 16) {
                     card(.adaptive)
                     card(.auto)
@@ -494,7 +737,7 @@ struct ThemePickerSheet: View {
 
                 ambientSection
                 Text("Adaptive takes its accents from the artwork on screen. Auto follows the iPhone's Light or Dark setting.")
-                    .scaledFont(11).foregroundStyle(Color.ink.opacity(0.5))
+                    .scaledFont(11).foregroundStyle(Color.inkAlpha(0.5))
             }
             .padding(.horizontal, 20).padding(.bottom, 28)
         }
@@ -521,7 +764,7 @@ struct ThemePickerSheet: View {
                     if on { Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.accent) }
                     VStack(alignment: .leading, spacing: 1) {
                         Text(id.title).scaledFont(14, .semibold)
-                        Text(id.subtitle).scaledFont(11).foregroundStyle(Color.ink.opacity(0.55)).lineLimit(1)
+                        Text(id.subtitle).scaledFont(11).foregroundStyle(Color.inkAlpha(0.55)).lineLimit(1)
                     }
                     Spacer(minLength: 0)
                 }
@@ -539,7 +782,7 @@ struct ThemePickerSheet: View {
 
     private var ambientSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Ambient background").scaledFont(15, .semibold).foregroundStyle(Color.ink.opacity(0.6))
+            Text("Ambient background").scaledFont(15, .semibold).foregroundStyle(Color.inkAlpha(0.6))
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(AmbientStyle.allCases) { style in
@@ -548,7 +791,7 @@ struct ThemePickerSheet: View {
                             VStack(spacing: 6) {
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.ink.opacity(0.08))
-                                    if style == .none { Image(systemName: "slash.circle").scaledFont(20, .light).foregroundStyle(Color.ink.opacity(0.5)) }
+                                    if style == .none { Image(systemName: "slash.circle").scaledFont(20, .light).foregroundStyle(Color.inkAlpha(0.5)) }
                                     else { AmbientArtwork(style: style).clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous)) }
                                 }
                                 .frame(width: 74, height: 96)
@@ -564,7 +807,7 @@ struct ThemePickerSheet: View {
             }
             if store.ambient != .none {
                 Text("Drawn in-app, dimmed so text and glass stay readable. Posters are never covered.")
-                    .scaledFont(11).foregroundStyle(Color.ink.opacity(0.5))
+                    .scaledFont(11).foregroundStyle(Color.inkAlpha(0.5))
             }
         }
     }

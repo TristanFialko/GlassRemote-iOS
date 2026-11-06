@@ -61,7 +61,7 @@ struct StremioAccountSheet: View {
                 Label("The password is never saved or logged. Only Stremio's session key is kept, in the iOS Keychain on this iPhone.", systemImage: "key")
                 Label("Accounts created only with Facebook or Apple have no Stremio password; set one at stremio.com first.", systemImage: "info.circle")
             }
-            .scaledFont(11).foregroundStyle(Color.ink.opacity(0.55))
+            .scaledFont(11).foregroundStyle(Color.inkFaint(0.55))
         }
     }
 
@@ -82,7 +82,7 @@ struct StremioAccountSheet: View {
                 Text("Sign out").scaledFont(15, .semibold).frame(maxWidth: .infinity).frame(height: 48).glassBar(Capsule())
             }.buttonStyle(PressStyle())
             Text("Signing out removes the session key from this iPhone and ends it on Stremio's server.")
-                .scaledFont(11).foregroundStyle(Color.ink.opacity(0.5)).multilineTextAlignment(.center)
+                .scaledFont(11).foregroundStyle(Color.inkFaint(0.5)).multilineTextAlignment(.center)
         }
     }
 

@@ -15,6 +15,8 @@ struct MediaState: Equatable {
     /// against a live Stremio session: check on device.
     var headline: String = ""
     var subtitle: String = ""
+    /// The box's uptime (ms) when this sample was read; lets seek measurements remove normal playback.
+    var deviceUptimeMs: Int64? = nil
 
     static let idle = MediaState(package: "", title: "", state: 0, positionMs: 0, speed: 1, sampledAt: .distantPast, actions: 0)
 
@@ -27,7 +29,7 @@ struct MediaState: Equatable {
     var canNext: Bool { actions & 32 != 0 }
     var canRewind: Bool { actions & 8 != 0 }
     var canFastForward: Bool { actions & 64 != 0 }
-    /// ACTION_SEEK_TO is advertised, but Android offers no ADB route to invoke it with an arbitrary position.
+    /// ACTION_SEEK_TO is advertised, but no shell route can invoke it with a position (see SEEKING_REPORT.md).
     var advertisesSeekTo: Bool { actions & 256 != 0 }
     /// Total length. `dumpsys media_session` prints only the description, never METADATA_KEY_DURATION,
     /// so this stays nil and the player never shows a scrubber. Set only if a real source appears.
@@ -96,6 +98,7 @@ enum MediaParser {
 
             var candidate = MediaState(package: package, title: title, state: state,
                                        positionMs: position, speed: speed, sampledAt: now, actions: actions)
+            candidate.deviceUptimeMs = uptimeMs
             if let md = match(#"metadata: size=\d+, description=([^\n]*)"#, block)?[1] {
                 let parts = splitDescription(md)
                 candidate.headline = parts.headline

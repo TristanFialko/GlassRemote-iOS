@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ImageIO
 
 /// In-memory + URLCache-backed image loader for remote artwork (posters, backdrops).
 /// Used by Discover and Player. Nothing is written to disk by this type itself; `URLCache`
@@ -24,20 +25,41 @@ final class ArtworkCache {
     func cached(_ url: URL) -> UIImage? { memory.object(forKey: url as NSURL) }
 
     func image(for url: URL) async -> UIImage? {
-        guard url.scheme == "https" else { return nil }
+        guard url.scheme == "https" || url.isFileURL else { return nil }
         if let hit = cached(url) { return hit }
         if let task = inFlight[url] { return await task.value }
         let session = self.session
-        let task = Task<UIImage?, Never> {
-            guard let (data, response) = try? await session.data(from: url),
-                  (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-            return UIImage(data: data)
+        // Download AND decode off the main thread: decoding a full-size poster lazily at first draw
+        // was a source of scroll hitches in Discover. Images are downsampled to what the UI can show.
+        let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
+            let data: Data
+            if url.isFileURL {
+                guard let d = try? Data(contentsOf: url) else { return nil }
+                data = d
+            } else {
+                guard let (d, response) = try? await session.data(from: url),
+                      (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+                data = d
+            }
+            return ArtworkCache.decode(data, maxPixel: 900)
         }
         inFlight[url] = task
         let image = await task.value
         inFlight[url] = nil
         if let image { memory.setObject(image, forKey: url as NSURL) }
         return image
+    }
+
+    nonisolated static func decode(_ data: Data, maxPixel: Int) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return UIImage(data: data) }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return UIImage(data: data) }
+        return UIImage(cgImage: cg)
     }
 }
 
@@ -163,24 +185,6 @@ final class PlayerArtworkStore: ObservableObject {
     struct Hint: Equatable { var title: String; var posterURL: URL? }
     @Published private(set) var hint: Hint?
     @Published private(set) var resolved: [String: URL] = [:]
-    private var misses: [String: Date] = [:]
-    private var inFlight: Set<String> = []
-    private static let cacheKey = "glassRemote.playerPosterCache.v1"
-    private static let cacheLimit = 120
-
-    init() {
-        let stored = UserDefaults.standard.dictionary(forKey: Self.cacheKey) as? [String: String] ?? [:]
-        resolved = stored.compactMapValues { URL(string: $0) }.filter { $0.value.scheme == "https" }
-    }
-
-    func remember(title: String, posterURL: URL?) { hint = Hint(title: title, posterURL: posterURL) }
-
-    /// Poster for the current session: the Discover hint when it matches, else a resolved/cached one.
-    func posterURL(forSessionTitle title: String) -> URL? {
-        if let hint, let url = hint.posterURL, Self.matches(session: title, hint: hint.title) { return url }
-        return resolved[PlayerArtworkMatcher.normalise(title)]
-    }
-
     /// Looks the title up (once; failures retry after five minutes). Safe to call on every change.
     func resolve(sessionTitle: String, subtitle: String) async {
         let key = PlayerArtworkMatcher.normalise(sessionTitle)

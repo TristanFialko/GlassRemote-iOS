@@ -18,19 +18,32 @@ enum AppPage: Int, CaseIterable, Identifiable {
 
     /// `appletvremote.gen4` ships with SF Symbols 4 (iOS 16, this app's deployment target). The
     /// runtime check keeps an unexpected OS from showing an empty icon: it falls back to gen2.
-    static let remoteSymbol: String = {
-        for name in ["appletvremote.gen4.fill", "appletvremote.gen4", "appletvremote.gen2.fill"]
-        where UIImage(systemName: name) != nil { return name }
-        return "dot.radiowaves.left.and.right"
+    static let remoteSymbols: (fill: String, outline: String) = {
+        for pair in [("appletvremote.gen4.fill", "appletvremote.gen4"), ("appletvremote.gen2.fill", "appletvremote.gen2")]
+        where UIImage(systemName: pair.0) != nil && UIImage(systemName: pair.1) != nil { return pair }
+        return ("dot.radiowaves.left.and.right", "dot.radiowaves.left.and.right")
     }()
+    static var remoteSymbol: String { remoteSymbols.fill }
 
-    var symbol: String {
+    /// The Player's media-player symbol. `play.circle` replaces the old `play.rectangle.fill`, which at
+    /// dock size read as a wide thin slab with a tiny triangle. The circle has the same optical weight
+    /// as the Remote glyph, stays recognisable at 22 pt, and its outline / filled pair makes the selected
+    /// state obvious in every theme. Every other place that showed the old symbol uses `playerSymbol`.
+    static let playerSymbolFilled = "play.circle.fill"
+    static let playerSymbolOutline = "play.circle"
+    static var playerSymbol: String { playerSymbolFilled }
+
+    /// Filled glyph for the selected dock item, outline for the others (Discover's magnifier has no
+    /// filled form, so it keeps one symbol and the lens carries the state).
+    func symbol(selected: Bool) -> String {
         switch self {
-        case .remote: return AppPage.remoteSymbol
-        case .player: return "play.rectangle.fill"
+        case .remote: return selected ? AppPage.remoteSymbols.fill : AppPage.remoteSymbols.outline
+        case .player: return selected ? AppPage.playerSymbolFilled : AppPage.playerSymbolOutline
         case .discover: return "magnifyingglass"
         }
     }
+
+    var symbol: String { symbol(selected: true) }
 
     /// Pure paging maths (unit tested). `translation` is the horizontal drag, `predicted` where it
     /// would coast to. A page changes on a deliberate drag past a third of the width or a flick.

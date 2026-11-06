@@ -148,9 +148,9 @@ struct CollectionView: View {
 
     private func message(_ symbol: String, _ title: String, _ text: String) -> some View {
         VStack(spacing: 8) {
-            Image(systemName: symbol).scaledFont(32, .light).foregroundStyle(Color.ink.opacity(0.45))
+            Image(systemName: symbol).scaledFont(32, .light).foregroundStyle(Color.inkFaint(0.45))
             Text(title).scaledFont(17, .semibold)
-            Text(text).scaledFont(13).foregroundStyle(Color.ink.opacity(0.58)).multilineTextAlignment(.center)
+            Text(text).scaledFont(13).foregroundStyle(Color.inkFaint(0.58)).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.top, 50)
     }

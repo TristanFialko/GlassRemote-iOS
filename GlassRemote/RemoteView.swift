@@ -30,7 +30,6 @@ struct RemoteView: View {
     @State private var pendingPower: PowerAction?
     @State private var didAutoConnect = false
     @State private var screenshotItem: ScreenshotItem?
-    @State private var showPlayer = false
     @State private var showDeviceInfo = false
     @State private var showThemes = false
     @ObservedObject private var favourites = AppFavourites.shared
@@ -44,10 +43,14 @@ struct RemoteView: View {
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
 
+    /// Short screens (iPhone SE / mini class): tighter gaps so the larger pad never pushes the
+    /// navigation keys or the volume bar out of reach.
+    private func compact(_ proxy: GeometryProxy) -> Bool { proxy.size.height < 600 }
+
     var body: some View {
         GeometryReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 8) {
+                VStack(spacing: compact(proxy) ? 6 : 8) {
                     header
                     deviceSelector
                     if remote.target == .samsung {
@@ -55,12 +58,11 @@ struct RemoteView: View {
                         SamsungRemotePanel()
                     } else {
                         appsSection
-                        nowPlaying
                         modeRow
-                        // The pad is the point of this page: it takes every spare point and never shrinks
-                        // below a comfortable size, while the buttons around it keep their full size.
+                        // The pad is the point of this page: it takes every spare point (including the room the
+                        // old mini-player used) and never shrinks below a comfortable size.
                         controlSurface
-                            .frame(minHeight: 230, maxHeight: androidExpanded ? 230 : CGFloat.infinity)
+                            .frame(minHeight: compact(proxy) ? 200 : 250, maxHeight: androidExpanded ? 250 : CGFloat.infinity)
                             .layoutPriority(1)
                         navRow
                     }
@@ -74,7 +76,6 @@ struct RemoteView: View {
             // The page only scrolls while the Apps grid pushes content below the fold.
             .scrollDisabled(!androidExpanded)
         }
-        .background { backdrop }
         .themedSheet()
         // Text follows Dynamic Type, capped so the fixed remote layout keeps fitting.
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
@@ -83,11 +84,6 @@ struct RemoteView: View {
         .sheet(isPresented: $showKeyboard) { KeyboardSheet().environmentObject(remote) }
         .sheet(item: $screenshotItem) { item in ScreenshotSheet(item: item) }
         .sheet(isPresented: $showDeviceInfo) { DeviceInfoSheet().environmentObject(remote) }
-        .sheet(isPresented: $showPlayer) {
-            NowPlayingSheet().environmentObject(remote)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
         .confirmationDialog(
             pendingPower?.title ?? "",
             isPresented: Binding(get: { pendingPower != nil }, set: { if !$0 { pendingPower = nil } }),
@@ -133,7 +129,7 @@ struct RemoteView: View {
         case .connected: return .green
         case .connecting, .pairing: return .yellow
         case .denied, .unreachable: return .orange
-        case .off: return Color.ink.opacity(0.35)
+        case .off: return Color.inkFaint(0.35)
         }
     }
 
@@ -277,98 +273,6 @@ struct RemoteView: View {
                 }
             }
         }
-    }
-
-    // MARK: - Now playing
-
-    private var nowPlaying: some View {
-        let media = remote.media
-        let app = remote.apps.first(where: { $0.package == media.package })
-
-        return HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.black.opacity(0.75))
-                if let app {
-                    // Stremio uses a transparent, border-free asset so it sits on the card with no second frame.
-                    Image(app.asset == "stremio" ? "stremio_nowplaying" : "\(app.asset)_dark").resizable().scaledToFit().padding(app.asset == "stremio" ? 9 : 3)
-                } else {
-                    Image(systemName: media.isActive ? "play.rectangle" : "tv")
-                        .scaledFont(20).foregroundStyle(Color.ink.opacity(0.55))
-                }
-            }
-            .frame(width: 42, height: 42)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.ink.opacity(0.18)))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(media.isActive ? (media.title.isEmpty ? (app?.name ?? "Playing") : media.title) : "Nothing playing")
-                    .scaledFont(14, .semibold)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                subtitle(media: media, app: app)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Previous/Next are preferred where the session offers them; otherwise Rewind/Fast-forward.
-            // A control the session does not advertise is shown dimmed and disabled.
-            mediaButton(
-                icon: media.canPrevious ? "backward.end.fill" : "backward.fill",
-                label: media.canPrevious ? "Previous" : "Rewind",
-                enabled: media.canPrevious || media.canRewind
-            ) { remote.sendMedia(media.canPrevious ? .previous : .rewind) }
-
-            mediaButton(
-                icon: media.isPlaying ? "pause.fill" : "play.fill",
-                label: media.isPlaying ? "Pause" : "Play",
-                enabled: media.isActive && media.canPlayPause && !remote.mediaCommandPending,
-                prominent: true
-            ) { remote.sendMedia(media.isPlaying ? .pause : .play) }
-
-            mediaButton(
-                icon: media.canNext ? "forward.end.fill" : "forward.fill",
-                label: media.canNext ? "Next" : "Fast forward",
-                enabled: media.canNext || media.canFastForward
-            ) { remote.sendMedia(media.canNext ? .next : .fastForward) }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        // The whole card opens the expanded player. The tap target sits BEHIND the content, so the
-        // Previous / Play-Pause / Next buttons (drawn on top) receive their own taps and never reach it.
-        .background {
-            Color.clear
-                .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                .onTapGesture { if media.isActive { showPlayer = true } }
-        }
-        .glassSurface(RoundedRectangle(cornerRadius: 28, style: .continuous), elevated: true)
-        .accessibilityAction(named: "Open player") { if media.isActive { showPlayer = true } }
-    }
-
-    @ViewBuilder
-    private func subtitle(media: MediaState, app: TVApp?) -> some View {
-        let name = app?.name ?? (media.package.split(separator: ".").last.map(String.init) ?? "")
-        if media.isActive {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                let position = MediaState.format(media.position(at: context.date))
-                Text(media.positionMs > 0 || media.isPlaying ? "\(name) · \(position)" : name)
-                    .scaledFont(12).foregroundStyle(Color.ink.opacity(0.65)).lineLimit(1)
-            }
-        } else {
-            Text(remote.connected ? "Start something on the TV" : "Not connected")
-                .scaledFont(12).foregroundStyle(Color.ink.opacity(0.55)).lineLimit(1)
-        }
-    }
-
-    private func mediaButton(icon: String, label: String, enabled: Bool, prominent: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .scaledFont(15, .semibold)
-                .foregroundStyle(Color.ink)
-                .frame(width: 44, height: 44)   // touch target unchanged
-                .glassSurface(Circle(), interactive: enabled, elevated: prominent)
-        }
-        .buttonStyle(PressStyle())
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.4)
-        .accessibilityLabel(label)
     }
 
     // MARK: - Mode selector
@@ -532,7 +436,7 @@ struct RemoteView: View {
     private var dpadSurface: some View {
         let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
         return GeometryReader { geo in
-            let size = max(170, min(340, min(geo.size.width, geo.size.height) - 16))
+            let size = max(180, min(420, min(geo.size.width, geo.size.height) - 12))
             ZStack {
                 Color.clear.glassSurface(Circle(), elevated: true)
                     .frame(width: size, height: size)

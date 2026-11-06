@@ -22,8 +22,38 @@ final class PageNavigator: ObservableObject {
     }
 }
 
+/// Geometry of the floating page dock. Everything is derived from the real bottom safe-area inset
+/// (measured by `RootPagerView`), so the dock sits correctly on every iPhone, with or without a home
+/// indicator, and pages keep exactly the clearance it needs.
 enum DockMetrics {
-    static let height: CGFloat = 64
-    /// Space pages keep clear at the bottom so controls are never hidden behind the floating dock.
-    static let clearance: CGFloat = 84
+    /// Dock height (was 64): a slightly more substantial bar with a larger lens.
+    static let height: CGFloat = 70
+    /// Gap between the dock's bottom edge and the bottom safe-area edge, before the drop below.
+    static let baseGap: CGFloat = 4
+    /// Space pages keep between their content and the dock's top edge.
+    static let breathing: CGFloat = 14
+    static let sideInset: CGFloat = 14
+
+    /// How far the dock sinks into the bottom safe area (the home-indicator zone). 30 % of the inset,
+    /// at most 10 pt: on a notched iPhone that is 10 pt, which still leaves the dock well clear of the
+    /// indicator and within thumb reach; with no safe area (home-button iPhones) it is zero.
+    static func drop(safeBottom: CGFloat) -> CGFloat { min(max(safeBottom * 0.30, 0), 10) }
+
+    /// Space a page keeps clear at the bottom so no control is ever hidden behind the dock.
+    static func clearance(safeBottom: CGFloat) -> CGFloat { height + baseGap - drop(safeBottom: safeBottom) + breathing }
+
+    /// Distance from the physical bottom edge of the screen up to the dock's top edge.
+    static func topFromScreenBottom(safeBottom: CGFloat) -> CGFloat { safeBottom + baseGap - drop(safeBottom: safeBottom) + height }
+
+    /// Value used until the pager has measured a real inset (previews, tests): a notched iPhone.
+    static let defaultClearance: CGFloat = clearance(safeBottom: 34)
+}
+
+private struct DockClearanceKey: EnvironmentKey { static let defaultValue: CGFloat = DockMetrics.defaultClearance }
+extension EnvironmentValues {
+    /// Bottom space every page reserves for the dock. Set once by `RootPagerView`.
+    var dockClearance: CGFloat {
+        get { self[DockClearanceKey.self] }
+        set { self[DockClearanceKey.self] = newValue }
+    }
 }
