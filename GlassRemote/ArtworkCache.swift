@@ -185,20 +185,47 @@ final class PlayerArtworkStore: ObservableObject {
     struct Hint: Equatable { var title: String; var posterURL: URL? }
     @Published private(set) var hint: Hint?
     @Published private(set) var resolved: [String: URL] = [:]
-    /// Looks the title up (once; failures retry after five minutes). Safe to call on every change.
+
+    private var misses: [String: Date] = [:]
+    private var inFlight: Set<String> = []
+    private static let cacheKey = "glassRemote.playerPosterCache.v1"
+    private static let cacheLimit = 120
+
+    private init() {
+        let stored = UserDefaults.standard.dictionary(forKey: Self.cacheKey) as? [String: String] ?? [:]
+        resolved = stored.compactMapValues { URL(string: $0) }.filter { $0.value.scheme == "https" }
+    }
+
+    /// Remember artwork selected from Discover so Player can use it immediately.
+    func remember(title: String, posterURL: URL?) {
+        hint = Hint(title: title, posterURL: posterURL)
+    }
+
+    /// Returns a matching Discover hint first, then a previously resolved Cinemeta poster.
+    func posterURL(forSessionTitle title: String) -> URL? {
+        if let hint, let url = hint.posterURL, Self.matches(session: title, hint: hint.title) {
+            return url
+        }
+        return resolved[PlayerArtworkMatcher.normalise(title)]
+    }
+
+    /// Looks up a title once; failures retry after five minutes. Safe to call on every media update.
     func resolve(sessionTitle: String, subtitle: String) async {
+        let query = PlayerArtworkMatcher.query(title: sessionTitle, subtitle: subtitle)
         let key = PlayerArtworkMatcher.normalise(sessionTitle)
-        guard key.count >= 2, resolved[key] == nil else { return }
-        if let hint, let url = hint.posterURL, Self.matches(session: sessionTitle, hint: hint.title) { _ = url; return }
+        guard key.count >= 2, posterURL(forSessionTitle: sessionTitle) == nil else { return }
         if let failed = misses[key], Date().timeIntervalSince(failed) < 300 { return }
         guard !inFlight.contains(key) else { return }
-        inFlight.insert(key); defer { inFlight.remove(key) }
 
-        let query = PlayerArtworkMatcher.query(title: sessionTitle, subtitle: subtitle)
+        inFlight.insert(key)
+        defer { inFlight.remove(key) }
+
         for name in query.names.prefix(3) {
-            guard let found = try? await StremioCatalog.search(name), !Task.isCancelled else { continue }
+            guard !Task.isCancelled else { return }
+            guard let found = try? await StremioCatalog.search(name) else { continue }
             if let match = PlayerArtworkMatcher.best(from: found, for: query), let url = match.posterURL {
                 resolved[key] = url
+                misses.removeValue(forKey: key)
                 persist()
                 return
             }
@@ -207,12 +234,14 @@ final class PlayerArtworkStore: ObservableObject {
     }
 
     private func persist() {
-        let trimmed = resolved.count > Self.cacheLimit ? Dictionary(uniqueKeysWithValues: Array(resolved).suffix(Self.cacheLimit)) : resolved
+        let entries = Array(resolved).suffix(Self.cacheLimit)
+        let trimmed = Dictionary(uniqueKeysWithValues: entries)
         UserDefaults.standard.set(trimmed.mapValues(\.absoluteString), forKey: Self.cacheKey)
     }
 
     nonisolated static func matches(session: String, hint: String) -> Bool {
-        let a = PlayerArtworkMatcher.normalise(session), b = PlayerArtworkMatcher.normalise(hint)
+        let a = PlayerArtworkMatcher.normalise(session)
+        let b = PlayerArtworkMatcher.normalise(hint)
         guard a.count >= 3, b.count >= 3 else { return false }
         return a == b || a.hasPrefix(b + " ") || b.hasPrefix(a + " ")
     }

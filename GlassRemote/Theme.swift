@@ -299,6 +299,19 @@ extension Color {
             return UIColor(white: 1, alpha: CGFloat(a))
         })
     }
+
+    /// Very faint foreground used for tertiary labels and decorative metadata.
+    /// Lifted more aggressively in light appearance so it remains visible on pale glass.
+    static func inkFaint(_ a: Double) -> Color {
+        Color(UIColor { trait in
+            let alpha: Double
+            if trait.userInterfaceStyle == .light {
+                alpha = a + (1 - a) * 0.48
+                return UIColor(white: 0.10, alpha: CGFloat(min(1, max(0, alpha))))
+            }
+            return UIColor(white: 1, alpha: CGFloat(min(1, max(0, a))))
+        })
+    }
 }
 
 // MARK: - Artwork palette (Adaptive)
