@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import GlassRemote
 
 final class TextEntryTests: XCTestCase {
@@ -681,5 +682,97 @@ final class PlayerArtworkMatcherTests: XCTestCase {
         XCTAssertEqual(PlayerArtworkMatcher.best(from: results, for: .init(names: ["Dune"], year: nil, looksEpisodic: false))?.kind, .movie)
         XCTAssertEqual(PlayerArtworkMatcher.best(from: results, for: .init(names: ["Dune"], year: "2021", looksEpisodic: false))?.year, "2021")
         XCTAssertNil(PlayerArtworkMatcher.best(from: results, for: .init(names: ["Dun"], year: nil, looksEpisodic: false)))   // no fuzzy guesses
+    }
+}
+
+
+final class StremioAggregationTests: XCTestCase {
+    /// Regression for the Phase 3 bug: a title that was only WATCHED (not saved) is stored with
+    /// `temp` + `removed`. It has progress and belongs in Continue Watching, but is not a library item.
+    func testWatchOnlyItemIsContinueWatchingButNotLibrary() throws {
+        let json = #"""
+        {"result":[
+         {"_id":"tt0384766","name":"Desperate Housewives","type":"series","removed":true,"temp":true,
+          "state":{"lastWatched":"2026-11-01T20:00:00.000Z","timeOffset":1380000,"duration":3000000,"video_id":"tt0384766:5:11"}},
+         {"_id":"tt0903747","name":"Breaking Bad","type":"series","removed":false,"temp":false,
+          "state":{"timeOffset":0,"duration":0}},
+         {"_id":"tt0133093","name":"Removed on purpose","type":"movie","removed":true,"temp":false,
+          "state":{"timeOffset":100,"duration":200}}
+        ]}
+        """#.data(using: .utf8)!
+        let items = try StremioAccountParser.parseLibrary(json)
+        let dh = try XCTUnwrap(items.first { $0.id == "tt0384766" })
+        XCTAssertTrue(dh.isContinueWatching)
+        XCTAssertFalse(dh.isInLibrary)
+        XCTAssertTrue(dh.hasWatchHistory)
+        XCTAssertEqual(dh.progress, 0.46, accuracy: 0.001)
+        XCTAssertEqual(dh.episode?.season, 5); XCTAssertEqual(dh.episode?.episode, 11)
+        // Saved but never watched: library yes, history no, continue no.
+        let bb = try XCTUnwrap(items.first { $0.id == "tt0903747" })
+        XCTAssertTrue(bb.isInLibrary); XCTAssertFalse(bb.hasWatchHistory); XCTAssertFalse(bb.isContinueWatching)
+        // Deliberately removed: never continues, even with progress.
+        let gone = try XCTUnwrap(items.first { $0.id == "tt0133093" })
+        XCTAssertFalse(gone.isContinueWatching); XCTAssertFalse(gone.isInLibrary)
+    }
+}
+
+final class ThemeSystemTests: XCTestCase {
+    func testElevenThemesAndAutoDoesNotMeanAdaptive() {
+        XCTAssertEqual(ThemeID.allCases.count, 11)
+        XCTAssertEqual(Set(ThemeID.allCases.map(\.rawValue)).count, 11)
+        XCTAssertNotEqual(ThemeID.adaptive, ThemeID.auto)
+    }
+
+    func testAutoFollowsSystemSchemeAndOthersForceTheirOwn() {
+        XCTAssertFalse(GlassTheme.base(for: .auto, systemScheme: .dark).isLight)
+        XCTAssertTrue(GlassTheme.base(for: .auto, systemScheme: .light).isLight)
+        XCTAssertNil(GlassTheme.base(for: .auto, systemScheme: .dark).scheme)
+        XCTAssertEqual(GlassTheme.base(for: .lightGlass, systemScheme: .dark).scheme, .light)
+        XCTAssertEqual(GlassTheme.base(for: .glassWhite, systemScheme: .dark).scheme, .light)
+        XCTAssertEqual(GlassTheme.base(for: .violet, systemScheme: .light).scheme, .dark)
+    }
+
+    func testNeutralPaletteLeavesAdaptiveBaseUntouched() {
+        let base = GlassTheme.base(for: .adaptive, systemScheme: .dark)
+        XCTAssertEqual(base.adapted(to: .neutral), base)
+        let tinted = base.adapted(to: ArtworkPalette(hue: 0.6, saturation: 0.7, brightness: 0.7, secondaryHue: 0.7, isNeutral: false))
+        XCTAssertNotEqual(tinted.accent, base.accent)
+        XCTAssertEqual(tinted.id, .adaptive)
+    }
+
+    private func solid(_ r: UInt8, _ g: UInt8, _ b: UInt8, count: Int = 1024) -> [UInt8] {
+        (0..<count).flatMap { _ in [r, g, b, 255] }
+    }
+
+    func testExtractorFindsDominantHueAndIgnoresGreyscale() {
+        let blue = ArtworkPaletteExtractor.palette(fromRGBA: solid(30, 90, 230))
+        XCTAssertFalse(blue.isNeutral)
+        XCTAssertEqual(blue.hue, 0.61, accuracy: 0.06)
+        XCTAssertTrue(ArtworkPaletteExtractor.palette(fromRGBA: solid(120, 120, 120)).isNeutral)
+        XCTAssertTrue(ArtworkPaletteExtractor.palette(fromRGBA: solid(0, 0, 0)).isNeutral)
+    }
+
+    func testMostlyBlueWithSomeOrangePicksBlue() {
+        let pixels = solid(30, 90, 230, count: 800) + solid(240, 130, 30, count: 224)
+        XCTAssertEqual(ArtworkPaletteExtractor.palette(fromRGBA: pixels).hue, 0.61, accuracy: 0.06)
+    }
+}
+
+final class CatalogPagingTests: XCTestCase {
+    func testBrowseURLsUseAddonExtrasInThePath() {
+        XCTAssertEqual(StremioCatalog.browseURL(kind: .movie, catalog: "top")?.absoluteString, "https://v3-cinemeta.strem.io/catalog/movie/top.json")
+        XCTAssertEqual(StremioCatalog.browseURL(kind: .series, catalog: "year", skip: 100)?.absoluteString, "https://v3-cinemeta.strem.io/catalog/series/year/skip=100.json")
+        XCTAssertEqual(StremioCatalog.browseURL(kind: .movie, catalog: "top", genre: "Sci-Fi", skip: 50)?.absoluteString,
+                       "https://v3-cinemeta.strem.io/catalog/movie/top/genre=Sci-Fi&skip=50.json")
+        XCTAssertNil(StremioCatalog.browseURL(kind: .movie, catalog: "top/../x"))
+        XCTAssertNil(StremioCatalog.browseURL(kind: .movie, catalog: "top", skip: -1))
+    }
+
+    func testHomeRowsAreUniqueAndGenreRowsComeAfterTheCoreOnes() {
+        let rows = DiscoverModel.makeRows()
+        XCTAssertEqual(Set(rows.map(\.id)).count, rows.count)
+        XCTAssertEqual(rows.prefix(6).map(\.source.catalog), ["top", "top", "imdbRating", "imdbRating", "year", "year"])
+        XCTAssertTrue(rows.dropFirst(6).allSatisfy { $0.source.genre != nil })
+        XCTAssertEqual(rows.count, 6 + StremioCatalog.genres.count * 2)
     }
 }
