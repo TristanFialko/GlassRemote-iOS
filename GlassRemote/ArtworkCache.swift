@@ -234,9 +234,13 @@ final class PlayerArtworkStore: ObservableObject {
     }
 
     private func persist() {
-        let entries = Array(resolved).suffix(Self.cacheLimit)
-        let trimmed = Dictionary(uniqueKeysWithValues: entries)
-        UserDefaults.standard.set(trimmed.mapValues(\.absoluteString), forKey: Self.cacheKey)
+        let entries = resolved.sorted { $0.key < $1.key }.suffix(Self.cacheLimit)
+        var trimmed: [String: URL] = [:]
+        for entry in entries {
+            trimmed[entry.key] = entry.value
+        }
+        let stored: [String: String] = trimmed.mapValues { $0.absoluteString }
+        UserDefaults.standard.set(stored, forKey: Self.cacheKey)
     }
 
     nonisolated static func matches(session: String, hint: String) -> Bool {

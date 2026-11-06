@@ -155,7 +155,6 @@ struct TitleDetailView: View {
                     }
                 }
             }
-            .claimsHorizontalTouches()
             ForEach(detail.episodes.filter { $0.season == season }) { ep in
                 let current = libraryItem?.videoID == ep.id
                 Button { Task { result = await remote.openInStremio(title, videoID: ep.id) } } label: {
