@@ -768,6 +768,7 @@ final class CatalogPagingTests: XCTestCase {
         XCTAssertNil(StremioCatalog.browseURL(kind: .movie, catalog: "top", skip: -1))
     }
 
+    @MainActor
     func testHomeRowsAreUniqueAndGenreRowsComeAfterTheCoreOnes() {
         let rows = DiscoverModel.makeRows()
         XCTAssertEqual(Set(rows.map(\.id)).count, rows.count)
