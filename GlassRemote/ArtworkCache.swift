@@ -213,18 +213,3 @@ final class PlayerArtworkStore: ObservableObject {
         return a == b || a.hasPrefix(b + " ") || b.hasPrefix(a + " ")
     }
 }
-
-
-extension ArtworkCache {
-    /// Average colour of an image (drawn into 1x1), for ambient lighting behind artwork.
-    nonisolated static func averageColor(of image: UIImage) -> Color? {
-        guard let cg = image.cgImage else { return nil }
-        var pixel = [UInt8](repeating: 0, count: 4)
-        guard let context = CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        context.interpolationQuality = .medium
-        context.draw(cg, in: CGRect(x: 0, y: 0, width: 1, height: 1))
-        return Color(red: Double(pixel[0]) / 255, green: Double(pixel[1]) / 255, blue: Double(pixel[2]) / 255)
-    }
-}

@@ -85,7 +85,7 @@ struct SamsungRemotePanel: View {
                 }.buttonStyle(PressStyle())
             }
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.ink)
         .padding(.horizontal, 14).frame(height: 40)
         .glassSurface(Capsule())
         .accessibilityElement(children: .combine)

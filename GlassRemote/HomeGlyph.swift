@@ -25,7 +25,7 @@ struct HouseShape: Shape {
 }
 
 struct HomeGlyph: View {
-    var color: Color = .white
+    var color: Color = Color.ink
     private let lineWidth: CGFloat = 1.9
 
     var body: some View {

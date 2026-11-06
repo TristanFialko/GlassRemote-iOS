@@ -55,6 +55,7 @@ struct RootPagerView: View {
         }
         .background { AmbientBackdrop() }
         .environmentObject(navigator)
+        .onChange(of: navigator.page) { ThemeStore.shared.pageChanged($0) }
     }
 
     @ViewBuilder

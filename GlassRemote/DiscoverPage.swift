@@ -8,10 +8,13 @@ import SwiftUI
 struct DiscoverPage: View {
     @EnvironmentObject private var remote: RemoteModel
     @EnvironmentObject private var navigator: PageNavigator
+    @Environment(\.glassTheme) private var theme
     @StateObject private var model = DiscoverModel()
     @ObservedObject private var account = StremioAccount.shared
     @FocusState private var searching: Bool
+    @ObservedObject private var themeStore = ThemeStore.shared
     @State private var target: DetailTarget?
+    @State private var collection: CollectionRequest?
     @State private var showAccount = false
     @State private var launchNote = ""
 
@@ -34,10 +37,10 @@ struct DiscoverPage: View {
             .padding(.horizontal, 16).padding(.top, 10)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+                LazyVStack(alignment: .leading, spacing: 22) {
                     if model.isSearching { searchContent } else { home }
                     if !launchNote.isEmpty {
-                        Text(launchNote).scaledFont(12).foregroundStyle(.white.opacity(0.7)).frame(maxWidth: .infinity)
+                        Text(launchNote).scaledFont(12).foregroundStyle(Color.ink.opacity(0.7)).frame(maxWidth: .infinity)
                     }
                 }
                 .padding(.top, 6)
@@ -45,13 +48,19 @@ struct DiscoverPage: View {
             }
             .scrollDismissesKeyboard(.interactively)
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.ink)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .sheet(item: $target) { item in
             TitleDetailView(title: item.title, libraryItem: item.libraryItem).environmentObject(remote)
         }
         .sheet(isPresented: $showAccount) { StremioAccountSheet() }
+        .fullScreenCover(item: $collection) { request in
+            CollectionView(request: request).environmentObject(remote)
+        }
         .task { await model.loadHomeIfNeeded() }
+        // Adaptive theme: the featured artwork (or the title being viewed) feeds the ONE shared palette.
+        .onChange(of: model.featured?.id) { _ in publishArtwork() }
+        .onChange(of: target?.id) { _ in publishArtwork() }
         .task { if account.state == .signedIn, account.libraryPhase == .idle { await account.refresh() } }
         // Search shortcut from the Remote page: wait for the page slide, then bring up the keyboard.
         .onChange(of: navigator.searchFocusToken) { _ in
@@ -62,11 +71,16 @@ struct DiscoverPage: View {
         }
     }
 
+    private func publishArtwork() {
+        let shown = target?.title ?? model.featured
+        themeStore.submitArtwork(shown?.backgroundURL ?? shown?.posterURL, for: .discover)
+    }
+
     // MARK: Search field and account
 
     private var searchField: some View {
         HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass").scaledFont(16, .medium).foregroundStyle(.white.opacity(0.65))
+            Image(systemName: "magnifyingglass").scaledFont(16, .medium).foregroundStyle(Color.ink.opacity(0.65))
             TextField("Search movies and series", text: $model.query)
                 .focused($searching)
                 .submitLabel(.search)
@@ -76,7 +90,7 @@ struct DiscoverPage: View {
                 .onSubmit { searching = false }
             if !model.query.isEmpty {
                 Button { model.query = ""; model.queryChanged(); searching = true } label: {
-                    Image(systemName: "xmark.circle.fill").scaledFont(17).foregroundStyle(.white.opacity(0.55))
+                    Image(systemName: "xmark.circle.fill").scaledFont(17).foregroundStyle(Color.ink.opacity(0.55))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
@@ -91,7 +105,7 @@ struct DiscoverPage: View {
         Button { showAccount = true } label: {
             Image(systemName: account.state == .signedIn ? "person.crop.circle.fill" : "person.crop.circle")
                 .scaledFont(22, .regular)
-                .foregroundStyle(account.state == .signedIn ? Color.white : Color.white.opacity(0.75))
+                .foregroundStyle(account.state == .signedIn ? Color.ink : Color.ink.opacity(0.75))
                 .frame(width: 48, height: 48)
                 .glassSurface(Circle(), interactive: true)
                 .overlay(alignment: .topTrailing) {
@@ -122,15 +136,16 @@ struct DiscoverPage: View {
                 .frame(height: 210).frame(maxWidth: .infinity).clipped()
                 LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .center, endPoint: .bottom)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Featured").scaledFont(11, .semibold).foregroundStyle(.white.opacity(0.7)).textCase(.uppercase)
+                    Text("Featured").scaledFont(11, .semibold).foregroundStyle(Color.white.opacity(0.7)).textCase(.uppercase)
                     Text(title.name).scaledFont(24, .bold).lineLimit(2)
                     HStack(spacing: 8) {
                         Text(title.kind == .movie ? "Movie" : "Series")
                         if !title.year.isEmpty { Text("· \(title.year)") }
                         if !title.rating.isEmpty { Label(title.rating, systemImage: "star.fill").labelStyle(.titleAndIcon) }
                     }
-                    .scaledFont(12, .medium).foregroundStyle(.white.opacity(0.8))
+                    .scaledFont(12, .medium).foregroundStyle(Color.white.opacity(0.8))
                 }
+                .foregroundStyle(Color.white)
                 .padding(16)
             }
             .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
@@ -138,7 +153,7 @@ struct DiscoverPage: View {
             .shadow(color: .black.opacity(0.5), radius: 14, y: 8)
             .padding(.horizontal, 16)
         }
-        .buttonStyle(PressStyle())
+        .buttonStyle(PosterButtonStyle())
         .accessibilityLabel("Featured: \(title.name)")
     }
 
@@ -159,7 +174,7 @@ struct DiscoverPage: View {
             case .failed(let message):
                 VStack(spacing: 8) {
                     Text("Couldn't load your Stremio library").scaledFont(14, .semibold)
-                    Text(message).scaledFont(12).foregroundStyle(.white.opacity(0.6)).multilineTextAlignment(.center)
+                    Text(message).scaledFont(12).foregroundStyle(Color.ink.opacity(0.6)).multilineTextAlignment(.center)
                     Button("Try again") { Task { await account.refresh() } }.scaledFont(13, .semibold)
                 }
                 .frame(maxWidth: .infinity).padding(14)
@@ -174,14 +189,14 @@ struct DiscoverPage: View {
     private var loadedAccountRows: some View {
         let cw = account.continueWatching.filter { model.filter == .all || ($0.title == .movie) == (model.filter == .movies) }
         if !cw.isEmpty {
-            sectionHeader("Continue Watching")
+            sectionHeader("Continue Watching", count: cw.count, seeAll: { collection = CollectionRequest(title: "Continue Watching", local: cw.compactMap(\.asTitle)) })
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 12) {
                     ForEach(cw) { item in
                         if let t = item.asTitle {
                             Button { target = DetailTarget(title: t, libraryItem: item) } label: {
                                 PosterCard(title: t, progress: item.progress, caption: continueCaption(item))
-                            }.buttonStyle(PressStyle())
+                            }.buttonStyle(PosterButtonStyle())
                         }
                     }
                 }.padding(.horizontal, 16)
@@ -192,13 +207,14 @@ struct DiscoverPage: View {
         ForEach([StremioTitle.Kind.movie, .series], id: \.rawValue) { kind in
             let items = lib.filter { $0.title == kind }
             if !items.isEmpty {
-                sectionHeader(kind == .movie ? "Your movies" : "Your series", count: items.count)
+                sectionHeader(kind == .movie ? "Your movies" : "Your series", count: items.count,
+                              seeAll: { collection = CollectionRequest(title: kind == .movie ? "Your movies" : "Your series", local: items.compactMap(\.asTitle)) })
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 12) {
                         ForEach(items) { item in
                             if let t = item.asTitle {
                                 Button { target = DetailTarget(title: t, libraryItem: item) } label: { PosterCard(title: t) }
-                                    .buttonStyle(PressStyle())
+                                    .buttonStyle(PosterButtonStyle())
                             }
                         }
                     }.padding(.horizontal, 16)
@@ -206,9 +222,27 @@ struct DiscoverPage: View {
                 .claimsHorizontalTouches()
             }
         }
-        if cw.isEmpty && lib.isEmpty {
+        // Watch history that is not in progress and not saved to the library (finished or watch-only titles).
+        let history = account.watchHistory.filter { !$0.isContinueWatching && $0.title != nil
+            && (model.filter == .all || ($0.title == .movie) == (model.filter == .movies)) }
+        if !history.isEmpty {
+            sectionHeader("Recently watched", count: history.count,
+                          seeAll: { collection = CollectionRequest(title: "Recently watched", local: history.compactMap(\.asTitle)) })
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 12) {
+                    ForEach(history.prefix(30)) { item in
+                        if let t = item.asTitle {
+                            Button { target = DetailTarget(title: t, libraryItem: item) } label: { PosterCard(title: t) }
+                                .buttonStyle(PosterButtonStyle())
+                        }
+                    }
+                }.padding(.horizontal, 16)
+            }
+            .claimsHorizontalTouches()
+        }
+        if cw.isEmpty && lib.isEmpty && history.isEmpty {
             Text("Nothing in your Stremio library or watch history yet.")
-                .scaledFont(13).foregroundStyle(.white.opacity(0.55)).frame(maxWidth: .infinity).padding(.horizontal, 16)
+                .scaledFont(13).foregroundStyle(Color.ink.opacity(0.55)).frame(maxWidth: .infinity).padding(.horizontal, 16)
         }
     }
 
@@ -222,8 +256,8 @@ struct DiscoverPage: View {
 
     private func connectCard(text: String, action: String) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: "person.crop.circle.badge.plus").scaledFont(26, .light).foregroundStyle(.white.opacity(0.7))
-            Text(text).scaledFont(13).foregroundStyle(.white.opacity(0.78)).frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "person.crop.circle.badge.plus").scaledFont(26, .light).foregroundStyle(Color.ink.opacity(0.7))
+            Text(text).scaledFont(13).foregroundStyle(Color.ink.opacity(0.78)).frame(maxWidth: .infinity, alignment: .leading)
             Button { showAccount = true } label: {
                 Text(action).scaledFont(13, .semibold).padding(.horizontal, 14).frame(height: 34)
                     .glassSurface(Capsule(), interactive: true, elevated: true)
@@ -241,7 +275,7 @@ struct DiscoverPage: View {
             HStack {
                 Text("Recent searches").scaledFont(16, .bold)
                 Spacer()
-                Button("Clear") { model.clearRecents() }.scaledFont(13, .semibold).foregroundStyle(.white.opacity(0.7))
+                Button("Clear") { model.clearRecents() }.scaledFont(13, .semibold).foregroundStyle(Color.ink.opacity(0.7))
             }.padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -264,14 +298,13 @@ struct DiscoverPage: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(StremioCatalog.genres, id: \.self) { g in
-                        let on = model.genre == g
-                        Button { model.genre = on ? nil : g } label: {
+                        Button {
+                            collection = CollectionRequest(title: g, kind: model.filter == .series ? .series : .movie, catalog: "top", genre: g)
+                        } label: {
                             Text(g).scaledFont(13, .semibold).padding(.horizontal, 14).frame(height: 34)
-                                .background(on ? Color.white.opacity(0.22) : .clear, in: Capsule())
                                 .glassSurface(Capsule(), interactive: true)
                         }
                         .buttonStyle(PressStyle())
-                        .accessibilityAddTraits(on ? .isSelected : [])
                     }
                 }.padding(.horizontal, 16)
             }
@@ -281,41 +314,58 @@ struct DiscoverPage: View {
 
     // MARK: Carousels
 
-    private func sectionHeader(_ title: String, count: Int? = nil) -> some View {
+    private func sectionHeader(_ title: String, count: Int? = nil, seeAll: (() -> Void)? = nil) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title).scaledFont(20, .bold)
-            if let count { Text("\(count)").scaledFont(13).foregroundStyle(.white.opacity(0.5)) }
+            if let count { Text("\(count)").scaledFont(13).foregroundStyle(Color.ink.opacity(0.5)) }
+            Spacer()
+            if let seeAll {
+                Button(action: seeAll) {
+                    HStack(spacing: 3) { Text("See All"); Image(systemName: "chevron.right").scaledFont(11, .semibold) }
+                        .scaledFont(13, .semibold).foregroundStyle(theme.accent)
+                        .padding(.vertical, 6).padding(.leading, 10).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("See all \(title)")
+            }
         }.padding(.horizontal, 16)
     }
 
     @ViewBuilder
     private func carousel(_ row: DiscoverRow) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionHeader(row.title)
+            sectionHeader(row.title, seeAll: row.phase == .failed ? nil : {
+                collection = CollectionRequest(title: row.title, kind: row.kind, catalog: row.source.catalog, genre: row.source.genre)
+            })
             switch row.phase {
-            case .loading: skeletonStrip
+            case .idle, .loading: skeletonStrip
             case .failed:
-                Text("Couldn't load this row.").scaledFont(12).foregroundStyle(.white.opacity(0.5)).padding(.horizontal, 16)
+                HStack {
+                    Text("Couldn't load this row.").scaledFont(12).foregroundStyle(Color.ink.opacity(0.5))
+                    Button("Retry") { Task { await model.retryRow(row.id) } }.scaledFont(12, .semibold)
+                }.padding(.horizontal, 16)
             case .loaded:
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 12) {
                         ForEach(row.items) { item in
-                            Button { open(item) } label: { PosterCard(title: item) }.buttonStyle(PressStyle())
+                            Button { open(item) } label: { PosterCard(title: item) }.buttonStyle(PosterButtonStyle())
                         }
                     }.padding(.horizontal, 16)
                 }
                 .claimsHorizontalTouches()
             }
         }
+        // Rows request their data only when they scroll into view.
+        .task { await model.loadRowIfNeeded(row.id) }
     }
 
     private var skeletonStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
                 ForEach(0..<5, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.06))
+                    RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.ink.opacity(0.06))
                         .frame(width: PosterCard.width, height: PosterCard.width * 1.5)
-                        .overlay(ProgressView().tint(.white.opacity(0.5)))
+                        .overlay(ProgressView().tint(Color.ink.opacity(0.5)))
                 }
             }.padding(.horizontal, 16)
         }
@@ -336,8 +386,8 @@ struct DiscoverPage: View {
                 suggestionList
                 LazyVGrid(columns: columns, spacing: 14) {
                     ForEach(0..<6, id: \.self) { _ in
-                        RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.06))
-                            .aspectRatio(2.0 / 3.0, contentMode: .fit).overlay(ProgressView().tint(.white.opacity(0.6)))
+                        RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.ink.opacity(0.06))
+                            .aspectRatio(2.0 / 3.0, contentMode: .fit).overlay(ProgressView().tint(Color.ink.opacity(0.6)))
                     }
                 }.padding(.horizontal, 16)
             }
@@ -370,7 +420,7 @@ struct DiscoverPage: View {
             VStack(spacing: 6) {
                 ForEach(list.prefix(3), id: \.self) { text in
                     Button { model.useRecent(text) } label: {
-                        HStack { Image(systemName: "clock.arrow.circlepath").foregroundStyle(.white.opacity(0.55)); Text(text).scaledFont(14); Spacer() }
+                        HStack { Image(systemName: "clock.arrow.circlepath").foregroundStyle(Color.ink.opacity(0.55)); Text(text).scaledFont(14); Spacer() }
                             .padding(.horizontal, 16).frame(height: 40).glassSurface(Capsule(), interactive: true)
                     }.buttonStyle(PressStyle())
                 }
@@ -393,9 +443,9 @@ struct DiscoverPage: View {
 
     private func note(_ symbol: String, _ title: String, _ text: String, searchInStremio: Bool) -> some View {
         VStack(spacing: 8) {
-            Image(systemName: symbol).scaledFont(32, .light).foregroundStyle(.white.opacity(0.45))
+            Image(systemName: symbol).scaledFont(32, .light).foregroundStyle(Color.ink.opacity(0.45))
             Text(title).scaledFont(17, .semibold)
-            Text(text).scaledFont(13).foregroundStyle(.white.opacity(0.58)).multilineTextAlignment(.center)
+            Text(text).scaledFont(13).foregroundStyle(Color.ink.opacity(0.58)).multilineTextAlignment(.center)
             if searchInStremio { searchInStremioButton.padding(.top, 8) }
         }
         .frame(maxWidth: .infinity).padding(.top, 30).padding(.horizontal, 12)
@@ -408,7 +458,7 @@ struct DiscoverPage: View {
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(items) { item in
                     Button { open(item) } label: { PosterCard(title: item, fixedWidth: false) }
-                        .buttonStyle(PressStyle())
+                        .buttonStyle(PosterButtonStyle())
                 }
             }.padding(.horizontal, 16)
         }
@@ -440,18 +490,18 @@ struct PosterCard: View {
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
                 .overlay(alignment: .bottom) {
                     if let progress, progress > 0 {
-                        ProgressView(value: progress).tint(.white).padding(8)
+                        ProgressView(value: progress).tint(Color.white).padding(8)
                             .background(LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 0.8))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.ink.opacity(0.22), lineWidth: 0.8))
                 .shadow(color: .black.opacity(0.45), radius: 8, y: 5)
             Text(title.name).scaledFont(13, .semibold).lineLimit(2).multilineTextAlignment(.leading)
             if let caption, !caption.isEmpty {
-                Text(caption).scaledFont(11).foregroundStyle(.white.opacity(0.6)).lineLimit(2).multilineTextAlignment(.leading)
+                Text(caption).scaledFont(11).foregroundStyle(Color.ink.opacity(0.6)).lineLimit(2).multilineTextAlignment(.leading)
             } else if !title.year.isEmpty {
-                Text(title.year).scaledFont(11).foregroundStyle(.white.opacity(0.55))
+                Text(title.year).scaledFont(11).foregroundStyle(Color.ink.opacity(0.55))
             }
         }
         .frame(width: fixedWidth ? Self.width : nil, alignment: .topLeading)
@@ -461,18 +511,35 @@ struct PosterCard: View {
 
     private var placeholder: some View {
         ZStack {
-            LinearGradient(colors: [Color.white.opacity(0.09), Color.white.opacity(0.03)], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [Color.ink.opacity(0.09), Color.ink.opacity(0.03)], startPoint: .top, endPoint: .bottom)
             VStack(spacing: 6) {
                 Image(systemName: title.kind == .movie ? "film" : "tv").scaledFont(24, .light)
                 Text(title.name).scaledFont(11, .medium).lineLimit(3).multilineTextAlignment(.center).padding(.horizontal, 8)
-            }.foregroundStyle(.white.opacity(0.4))
+            }.foregroundStyle(Color.ink.opacity(0.4))
         }
     }
 }
 
 extension View {
-    /// Horizontal carousels scroll their own content; tell the page pager this finger is not a page swipe.
+    /// Horizontal carousels scroll their own content. Only a horizontal-dominant drag marks the touch
+    /// as "not a page swipe" for the pager; vertical drags are never claimed, so the page scrolls
+    /// normally even when the finger starts on a carousel. (The Phase 3 version attached a
+    /// zero-distance drag to every carousel, which grabbed the touch immediately.)
     func claimsHorizontalTouches() -> some View {
-        simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in ScrubTouch.shared.touch() })
+        simultaneousGesture(
+            DragGesture(minimumDistance: 8).onChanged { value in
+                if abs(value.translation.width) > abs(value.translation.height) { ScrubTouch.shared.touch() }
+            }
+        )
+    }
+}
+
+/// Poster tap style: a light press scale with NO haptic. A haptic on touch-down fired at the start
+/// of every scroll that began on a poster.
+struct PosterButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }

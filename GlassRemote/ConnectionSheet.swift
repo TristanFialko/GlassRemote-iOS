@@ -156,7 +156,7 @@ struct ConnectionSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .preferredColorScheme(.dark)
+        .themedSheet()
     }
 }
 

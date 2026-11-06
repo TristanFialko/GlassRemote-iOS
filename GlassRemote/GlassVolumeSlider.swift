@@ -44,7 +44,7 @@ struct GlassVolumeSlider: View {
                 Rectangle()
                     .fill(
                         LinearGradient(
-                            colors: [Color.white.opacity(0.92), Color.white.opacity(0.80)],
+                            colors: [Color.ink.opacity(0.92), Color.ink.opacity(0.80)],
                             startPoint: .top,
                             endPoint: .bottom
                         )
@@ -53,10 +53,10 @@ struct GlassVolumeSlider: View {
                     .animation(dragStart == nil ? .easeOut(duration: 0.18) : nil, value: value)
 
                 // Glyph on the unfilled glass: white.
-                glyph(Color.white.opacity(0.92))
+                glyph(Color.ink.opacity(0.92))
 
                 // Same glyph, dark, revealed only where the fill is underneath it.
-                glyph(Color.black.opacity(0.72))
+                glyph(Color.inkInverse.opacity(0.78))
                     .mask(alignment: .leading) {
                         Rectangle()
                             .frame(width: fillWidth)

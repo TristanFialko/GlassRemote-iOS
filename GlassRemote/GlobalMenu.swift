@@ -60,12 +60,14 @@ struct GlobalMenuButton: View {
     let boxOnline: Bool
     let onScreenshot: () -> Void
     let onDeviceInfo: () -> Void
+    let onThemes: () -> Void
 
     private var samsungOn: Bool { remote.tvVolumeEnabled }
     private var samsungConnected: Bool { remote.samsungState == .connected }
 
     var body: some View {
         Menu {
+            Button(action: onThemes) { Label("Themes", systemImage: "paintpalette") }
             Section("Device") {
                 ForEach(entries(.device), id: \.self) { entry in view(for: entry) }
             }
@@ -194,7 +196,7 @@ struct DeviceInfoSheet: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .presentationDetents([.large])
-        .preferredColorScheme(.dark)
+        .themedSheet()
     }
 
     private func row(_ label: String, _ value: String) -> some View {

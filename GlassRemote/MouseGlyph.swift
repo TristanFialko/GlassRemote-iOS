@@ -3,7 +3,7 @@ import SwiftUI
 /// Outlined mouse: a tall capsule with a single button split from the top. Stroke weight
 /// matches the semibold SF Symbols beside it in the mode selector.
 struct MouseGlyph: View {
-    var color: Color = .white
+    var color: Color = Color.ink
     private let lineWidth: CGFloat = 1.8
 
     var body: some View {

@@ -38,6 +38,6 @@ struct ScreenshotSheet: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
         }
-        .preferredColorScheme(.dark)
+        .themedSheet()
     }
 }

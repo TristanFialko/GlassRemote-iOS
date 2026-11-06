@@ -10,33 +10,43 @@ import SwiftUI
 struct PlayerPage: View {
     @EnvironmentObject private var remote: RemoteModel
     @ObservedObject private var artwork = PlayerArtworkStore.shared
-    @State private var ambient: Color?
+    @Environment(\.glassTheme) private var theme
 
     var body: some View {
         let media = remote.media
         let app = remote.apps.first(where: { $0.package == media.package })
         let sessionTitle = media.headline.isEmpty ? media.title : media.headline
-        let poster = artwork.posterURL(forSessionTitle: sessionTitle)
+        let poster = media.isActive ? artwork.posterURL(forSessionTitle: sessionTitle) : nil
 
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: 18) {
-                artworkCard(app: app, media: media, poster: poster)
-                    .padding(.top, 6)
-                Group {
-                    titleBlock(app: app, media: media)
-                    playbackBlock(media: media)
+        GeometryReader { proxy in
+            // Compact media controller: the poster takes about a third of the height (never more than
+            // 280 pt), and the transport bar is pinned just above the dock so nothing can sit under it.
+            let posterHeight = min(max(proxy.size.height * (proxy.size.height < 700 ? 0.29 : 0.33), 150), 280)
+            VStack(spacing: 0) {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 12) {
+                        artworkCard(app: app, media: media, poster: poster, height: posterHeight)
+                            .padding(.top, 4)
+                        Group {
+                            titleBlock(app: app, media: media)
+                            playbackBlock(media: media)
+                        }
+                        .id(sessionTitle + media.package)        // new title = soft cross-fade
+                        .transition(.opacity)
+                        if !media.isActive { emptyHint }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 8)
+                    .animation(.easeInOut(duration: 0.35), value: sessionTitle)
                 }
-                .id(sessionTitle + media.package)        // new title = soft cross-fade
-                .transition(.opacity)
                 transport(media: media)
-                if !media.isActive { emptyHint }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 6)
+                    .padding(.bottom, DockMetrics.clearance + 6)
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, DockMetrics.clearance + 12)
-            .animation(.easeInOut(duration: 0.35), value: sessionTitle)
         }
         .background { ambientLight }
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.ink)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         // Stremio's session has no artwork: look the title up so playback started in Stremio itself
         // (not just from Discover) still gets its poster.
@@ -44,20 +54,15 @@ struct PlayerPage: View {
             guard media.isActive, media.package == RemoteModel.stremioPackage, !sessionTitle.isEmpty else { return }
             await artwork.resolve(sessionTitle: sessionTitle, subtitle: media.subtitle)
         }
-        .task(id: poster) {
-            guard let poster, let image = await ArtworkCache.shared.image(for: poster) else {
-                withAnimation(.easeOut(duration: 0.4)) { ambient = nil }
-                return
-            }
-            let colour = ArtworkCache.averageColor(of: image)
-            withAnimation(.easeInOut(duration: 0.6)) { ambient = colour }
-        }
+        // Adaptive theme: this page only reports its artwork; the shared palette decides the colours.
+        .onChange(of: poster) { ThemeStore.shared.submitArtwork($0, for: .player) }
+        .onAppear { ThemeStore.shared.submitArtwork(poster, for: .player) }
     }
 
-    /// Soft light pooled behind the artwork, taken from the artwork itself.
+    /// Soft light pooled behind the artwork, from the shared theme (the accent when Adaptive).
     private var ambientLight: some View {
-        RadialGradient(colors: [(ambient ?? Color.white).opacity(ambient == nil ? 0.05 : 0.42), .clear],
-                       center: .init(x: 0.5, y: 0.22), startRadius: 10, endRadius: 380)
+        RadialGradient(colors: [theme.accent.opacity(theme.id == .adaptive ? 0.34 : 0.07), .clear],
+                       center: .init(x: 0.5, y: 0.2), startRadius: 10, endRadius: 360)
             .blur(radius: 30)
             .ignoresSafeArea()
             .allowsHitTesting(false)
@@ -65,8 +70,9 @@ struct PlayerPage: View {
 
     // MARK: Artwork
 
-    private func artworkCard(app: TVApp?, media: MediaState, poster: URL?) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+    private func artworkCard(app: TVApp?, media: MediaState, poster: URL?, height: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
+        let portrait = poster != nil
         return ZStack {
             shape.fill(Color.black.opacity(0.55))
             if let poster {
@@ -75,13 +81,13 @@ struct PlayerPage: View {
                 fallbackIcon(app: app, media: media)
             }
         }
-        .aspectRatio(poster == nil ? 1 : 2.0 / 3.0, contentMode: .fit)
-        .frame(maxWidth: poster == nil ? 240 : 270)
+        // Portrait 2:3 for posters; a smaller square for app artwork (no stretching either way).
+        .frame(width: portrait ? height * 2 / 3 : height * 0.72, height: portrait ? height : height * 0.72)
         .clipShape(shape)
-        .overlay(shape.stroke(Color.white.opacity(0.22), lineWidth: 0.8))
-        .shadow(color: (ambient ?? .black).opacity(0.55), radius: 28, y: 16)
+        .overlay(shape.stroke(Color.ink.opacity(0.22), lineWidth: 0.8))
+        .shadow(color: (portrait ? theme.accent : Color.black).opacity(portrait ? 0.35 : 0.5), radius: 22, y: 12)
         .animation(.spring(response: 0.5, dampingFraction: 0.86), value: poster)
-        .accessibilityLabel(poster == nil ? "App artwork" : "Poster")
+        .accessibilityLabel(portrait ? "Poster" : "App artwork")
     }
 
     @ViewBuilder
@@ -91,7 +97,7 @@ struct PlayerPage: View {
                 .resizable().scaledToFit().padding(app.asset == "stremio" ? 64 : 36)
         } else {
             Image(systemName: media.isActive ? "play.rectangle" : "tv")
-                .scaledFont(56, .light).foregroundStyle(.white.opacity(0.4))
+                .scaledFont(56, .light).foregroundStyle(Color.ink.opacity(0.4))
         }
     }
 
@@ -104,15 +110,15 @@ struct PlayerPage: View {
             if !media.headline.isEmpty { return media.headline }
             return media.title.isEmpty ? (name.isEmpty ? "Playing" : name) : media.title
         }()
-        return VStack(spacing: 6) {
-            Text(title).scaledFont(26, .bold).multilineTextAlignment(.center).lineLimit(3).minimumScaleFactor(0.8)
+        return VStack(spacing: 4) {
+            Text(title).scaledFont(22, .bold).multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.8)
             if media.isActive {
                 // Episode information only when the session really reports a subtitle.
                 if !media.subtitle.isEmpty {
-                    Text(media.subtitle).scaledFont(16, .medium).foregroundStyle(.white.opacity(0.8))
+                    Text(media.subtitle).scaledFont(15, .medium).foregroundStyle(Color.ink.opacity(0.8))
                         .multilineTextAlignment(.center).lineLimit(2)
                 }
-                Text(name).scaledFont(13, .medium).foregroundStyle(.white.opacity(0.5))
+                Text(name).scaledFont(13, .medium).foregroundStyle(Color.ink.opacity(0.5))
             }
         }
         .frame(maxWidth: .infinity)
@@ -121,29 +127,29 @@ struct PlayerPage: View {
     // MARK: State, elapsed time
 
     private func playbackBlock(media: MediaState) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             if media.isActive {
                 stateBadge(media: media)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let pos = media.position(at: context.date)
                     if let dur = media.durationMs, dur > 0 {
                         let total = Double(dur) / 1000
-                        ProgressView(value: min(pos, total), total: total).tint(.white)
+                        ProgressView(value: min(pos, total), total: total).tint(theme.accent)
                         HStack {
                             Text(MediaState.format(pos))
                             Spacer()
                             Text("-" + MediaState.format(max(0, total - pos)))
                         }
-                        .font(.system(size: 12).monospacedDigit()).foregroundStyle(.white.opacity(0.65))
+                        .font(.system(size: 12).monospacedDigit()).foregroundStyle(Color.ink.opacity(0.65))
                     } else {
                         Text(MediaState.format(pos))
-                            .font(.system(size: 34, weight: .semibold, design: .rounded).monospacedDigit())
+                            .font(.system(size: 28, weight: .semibold, design: .rounded).monospacedDigit())
                             .accessibilityLabel("Elapsed \(MediaState.format(pos))")
                     }
                 }
                 if media.durationMs == nil {
                     Text("Stremio doesn't report the total length, so there is no progress bar or seeking.")
-                        .scaledFont(11).foregroundStyle(.white.opacity(0.45)).multilineTextAlignment(.center)
+                        .scaledFont(11).foregroundStyle(Color.ink.opacity(0.45)).multilineTextAlignment(.center)
                 }
             }
         }
@@ -171,8 +177,8 @@ struct PlayerPage: View {
             // Glass only (bar + centre bubble); the buttons sit above it so they are never refracted.
             GlassGroup(spacing: 12) {
                 ZStack {
-                    Color.clear.frame(height: 92).glassBar(Capsule(), interactive: false)
-                    Color.clear.frame(width: 70, height: 70).glassLens(Circle())
+                    Color.clear.frame(height: 80).glassBar(Capsule(), interactive: false)
+                    Color.clear.frame(width: 62, height: 62).glassLens(Circle())
                 }
             }
             HStack(spacing: 6) {
@@ -184,16 +190,16 @@ struct PlayerPage: View {
             }
             .padding(.horizontal, 10)
         }
-        .frame(height: 92)
+        .frame(height: 80)
     }
 
     private func playButton(media: MediaState, enabled: Bool, busy: Bool) -> some View {
         Button { remote.sendMedia(media.isPlaying ? .pause : .play) } label: {
             ZStack {
-                if busy { ProgressView().tint(.white) }
+                if busy { ProgressView().tint(Color.ink) }
                 else { Image(systemName: media.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 28, weight: .semibold)) }
             }
-            .frame(width: 70, height: 70)
+            .frame(width: 62, height: 62)
             .contentShape(Circle())
         }
         .buttonStyle(PressStyle())
@@ -205,7 +211,7 @@ struct PlayerPage: View {
     private func control(_ icon: String, _ label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon).font(.system(size: 19, weight: .semibold))
-                .frame(maxWidth: .infinity).frame(height: 60)
+                .frame(maxWidth: .infinity).frame(height: 56)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
@@ -215,6 +221,6 @@ struct PlayerPage: View {
 
     private var emptyHint: some View {
         Text(remote.connected ? "Start something in Stremio and it appears here." : "Connect to your TV box to see what's playing.")
-            .scaledFont(14).foregroundStyle(.white.opacity(0.55)).multilineTextAlignment(.center)
+            .scaledFont(14).foregroundStyle(Color.ink.opacity(0.55)).multilineTextAlignment(.center)
     }
 }

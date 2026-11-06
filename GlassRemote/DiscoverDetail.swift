@@ -17,30 +17,30 @@ struct TitleDetailView: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 14) {
-                CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fill) { Color.white.opacity(0.06) }
+                CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fill) { Color.ink.opacity(0.06) }
                     .aspectRatio(2.0 / 3.0, contentMode: .fit)
                     .frame(maxHeight: 300)
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.white.opacity(0.2), lineWidth: 0.8))
+                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.ink.opacity(0.2), lineWidth: 0.8))
                     .shadow(color: .black.opacity(0.5), radius: 16, y: 10)
                     .padding(.top, 24)
                 Text(title.name).scaledFont(24, .bold).multilineTextAlignment(.center)
                 chips
                 if let libraryItem, libraryItem.progress > 0 { progressBlock(libraryItem) }
                 actions
-                if !result.isEmpty { Text(result).scaledFont(13).foregroundStyle(.white.opacity(0.75)).multilineTextAlignment(.center) }
+                if !result.isEmpty { Text(result).scaledFont(13).foregroundStyle(Color.ink.opacity(0.75)).multilineTextAlignment(.center) }
                 about
                 if title.kind == .series, let detail, !detail.seasons.isEmpty { episodes(detail) }
                 Text("This is a catalogue listing. It doesn't mean a stream is available for it.")
-                    .scaledFont(11).foregroundStyle(.white.opacity(0.4)).multilineTextAlignment(.center).padding(.top, 6)
+                    .scaledFont(11).foregroundStyle(Color.ink.opacity(0.4)).multilineTextAlignment(.center).padding(.top, 6)
             }
             .padding(.horizontal, 22).padding(.bottom, 24)
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.ink)
         .background { AmbientBackdrop() }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .preferredColorScheme(.dark)
+        .themedSheet()
         .task { await load() }
     }
 
@@ -67,12 +67,12 @@ struct TitleDetailView: View {
 
     private func progressBlock(_ item: StremioLibraryItem) -> some View {
         VStack(spacing: 6) {
-            ProgressView(value: item.progress).tint(.white)
+            ProgressView(value: item.progress).tint(Color.ink)
             HStack {
-                Text(progressText(item)).scaledFont(12).foregroundStyle(.white.opacity(0.7))
+                Text(progressText(item)).scaledFont(12).foregroundStyle(Color.ink.opacity(0.7))
                 Spacer()
                 if let last = item.lastWatched {
-                    Text(last, style: .relative).scaledFont(12).foregroundStyle(.white.opacity(0.5))
+                    Text(last, style: .relative).scaledFont(12).foregroundStyle(Color.ink.opacity(0.5))
                 }
             }
         }
@@ -94,7 +94,7 @@ struct TitleDetailView: View {
                     await remote.openInStremio(title, videoID: item.videoID, autoPlay: true)
                 }
                 Text("Starts the title in Stremio on the TV box. Stremio resumes from its own saved position, so the box must be signed in to the same account.")
-                    .scaledFont(11).foregroundStyle(.white.opacity(0.45)).multilineTextAlignment(.center)
+                    .scaledFont(11).foregroundStyle(Color.ink.opacity(0.45)).multilineTextAlignment(.center)
             }
             button("Open in Stremio", "arrow.up.forward.app", prominent: libraryItem?.isContinueWatching != true) {
                 await remote.openInStremio(title)
@@ -112,7 +112,7 @@ struct TitleDetailView: View {
         .buttonStyle(PressStyle())
         .disabled(!remote.connected).opacity(remote.connected ? 1 : 0.5)
         .overlay(alignment: .bottom) {
-            if !remote.connected { Text("Connect to the TV box first").scaledFont(10).foregroundStyle(.white.opacity(0.5)).offset(y: 14) }
+            if !remote.connected { Text("Connect to the TV box first").scaledFont(10).foregroundStyle(Color.ink.opacity(0.5)).offset(y: 14) }
         }
         .padding(.bottom, remote.connected ? 0 : 12)
     }
@@ -122,13 +122,13 @@ struct TitleDetailView: View {
     @ViewBuilder
     private var about: some View {
         if loading {
-            ProgressView().tint(.white.opacity(0.6)).padding(.vertical, 12)
+            ProgressView().tint(Color.ink.opacity(0.6)).padding(.vertical, 12)
         } else if failed {
-            Text("Couldn't load details from the catalogue.").scaledFont(12).foregroundStyle(.white.opacity(0.5))
+            Text("Couldn't load details from the catalogue.").scaledFont(12).foregroundStyle(Color.ink.opacity(0.5))
         } else if let detail {
             VStack(alignment: .leading, spacing: 10) {
-                if !detail.genres.isEmpty { Text(detail.genres.joined(separator: " · ")).scaledFont(13, .semibold).foregroundStyle(.white.opacity(0.75)) }
-                if !detail.overview.isEmpty { Text(detail.overview).scaledFont(14).foregroundStyle(.white.opacity(0.85)) }
+                if !detail.genres.isEmpty { Text(detail.genres.joined(separator: " · ")).scaledFont(13, .semibold).foregroundStyle(Color.ink.opacity(0.75)) }
+                if !detail.overview.isEmpty { Text(detail.overview).scaledFont(14).foregroundStyle(Color.ink.opacity(0.85)) }
                 if !detail.directors.isEmpty { info("Director", detail.directors.joined(separator: ", ")) }
                 if !detail.cast.isEmpty { info("Cast", detail.cast.prefix(6).joined(separator: ", ")) }
             }
@@ -137,7 +137,7 @@ struct TitleDetailView: View {
     }
 
     private func info(_ label: String, _ value: String) -> some View {
-        (Text(label + "  ").foregroundColor(.white.opacity(0.5)) + Text(value)).scaledFont(13)
+        (Text(label + "  ").foregroundColor(Color.ink.opacity(0.5)) + Text(value)).scaledFont(13)
     }
 
     // MARK: Episodes
@@ -150,7 +150,7 @@ struct TitleDetailView: View {
                         Button { season = s } label: {
                             Text(s == 0 ? "Specials" : "Season \(s)").scaledFont(13, .semibold)
                                 .padding(.horizontal, 14).frame(height: 34)
-                                .background(season == s ? Color.white.opacity(0.22) : .clear, in: Capsule())
+                                .background(season == s ? Color.ink.opacity(0.22) : .clear, in: Capsule())
                                 .glassSurface(Capsule(), interactive: true)
                         }.buttonStyle(PressStyle())
                     }
@@ -163,7 +163,7 @@ struct TitleDetailView: View {
                     HStack(spacing: 10) {
                         Text("\(ep.number)").scaledFont(14, .semibold).frame(width: 28)
                         Text(ep.title.isEmpty ? "Episode \(ep.number)" : ep.title).scaledFont(14).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                        if current { Image(systemName: "play.circle.fill").foregroundStyle(.white.opacity(0.8)) }
+                        if current { Image(systemName: "play.circle.fill").foregroundStyle(Color.ink.opacity(0.8)) }
                     }
                     .padding(.horizontal, 14).frame(minHeight: 44)
                     .glassSurface(RoundedRectangle(cornerRadius: 16, style: .continuous), interactive: true)

@@ -33,15 +33,30 @@ struct StremioLibraryItem: Identifiable, Hashable {
     let flaggedWatched: Bool
 
     var title: StremioTitle.Kind? { StremioTitle.Kind(rawValue: kind) }
-    var isInLibrary: Bool { !removed && !temp }
     var progress: Double {
         guard timeOffsetMs > 0, durationMs > 0 else { return 0 }
         return min(1, Double(timeOffsetMs) / Double(durationMs))
     }
-    /// Started, not finished, and a type this app can open. (Stremio's own list also offers the
-    /// next episode of a finished one; this app does not synthesise that.)
+
+    // Five separate questions. The `libraryItem` collection holds BOTH things the user saved and
+    // things they merely watched: playing a title that is not in the library creates an item with
+    // `temp: true` (and `removed: true`). Keeping the concepts apart is what makes the counts honest.
+
+    /// 1. Library membership: the user's saved titles. Watch-only (temp) and removed items are not.
+    var isInLibrary: Bool { !removed && !temp }
+
+    /// 2. Watch history: anything with recorded playback, in the library or not.
+    var hasWatchHistory: Bool { timeOffsetMs > 0 || timesWatched > 0 || flaggedWatched }
+
+    /// 5. Completed: marked watched, watched through at least once, or played to the end.
+    var isCompleted: Bool { flaggedWatched || timesWatched > 0 || progress >= 0.95 }
+
+    /// 3. Continue Watching eligibility (stremio-core's rule): started, not finished, a movie or
+    /// series, and either still in the library or a temp watch-only item. A title the user
+    /// deliberately removed (`removed` without `temp`) is excluded. Library membership is NOT required.
+    /// (Stremio also offers the next episode of a finished one; this app does not synthesise that.)
     var isContinueWatching: Bool {
-        !removed && title != nil && timeOffsetMs > 0 && durationMs > 0 && progress < 0.95
+        (!removed || temp) && title != nil && timeOffsetMs > 0 && durationMs > 0 && progress < 0.95
     }
 
     /// (season, episode) from a series video id such as "tt0944947:1:5".
@@ -203,16 +218,16 @@ final class StremioAccount: ObservableObject {
 
     init() { state = KeychainStore.string(for: Self.keychainAccount) == nil ? .signedOut : .signedIn }
 
-    var library: [StremioLibraryItem] {
-        items.filter(\.isInLibrary).sorted { ($0.lastWatched ?? .distantPast) > ($1.lastWatched ?? .distantPast) }
+    private func newestFirst(_ list: [StremioLibraryItem]) -> [StremioLibraryItem] {
+        list.sorted { ($0.lastWatched ?? .distantPast) > ($1.lastWatched ?? .distantPast) }
     }
-    var continueWatching: [StremioLibraryItem] {
-        items.filter(\.isContinueWatching).sorted { ($0.lastWatched ?? .distantPast) > ($1.lastWatched ?? .distantPast) }
-    }
-    var recentlyWatched: [StremioLibraryItem] {
-        items.filter { !$0.removed && $0.lastWatched != nil && ($0.timesWatched > 0 || $0.flaggedWatched || $0.timeOffsetMs > 0) }
-            .sorted { ($0.lastWatched ?? .distantPast) > ($1.lastWatched ?? .distantPast) }
-    }
+    /// Saved titles only.
+    var library: [StremioLibraryItem] { newestFirst(items.filter(\.isInLibrary)) }
+    /// Everything with playback progress, whether or not it is in the library.
+    var watchHistory: [StremioLibraryItem] { newestFirst(items.filter(\.hasWatchHistory)) }
+    var continueWatching: [StremioLibraryItem] { newestFirst(items.filter(\.isContinueWatching)) }
+    /// Finished titles (history that is no longer "in progress").
+    var completed: [StremioLibraryItem] { newestFirst(items.filter { $0.hasWatchHistory && $0.isCompleted && !$0.isContinueWatching }) }
     func item(id: String) -> StremioLibraryItem? { items.first { $0.id == id } }
 
     func signIn(email: String, password: String) async {

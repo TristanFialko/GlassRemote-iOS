@@ -83,20 +83,28 @@ enum StremioCatalog {
 
     // MARK: Browse (Cinemeta catalogues: "top" = popular, "imdbRating" = top rated)
 
-    static let genres = ["Action", "Comedy", "Drama", "Sci-Fi", "Thriller", "Horror", "Animation", "Documentary", "Crime", "Romance"]
+    static let genres = ["Action", "Comedy", "Drama", "Sci-Fi", "Thriller", "Horror", "Animation", "Documentary",
+                         "Crime", "Romance", "Adventure", "Fantasy", "Mystery", "Family"]
 
-    static func browseURL(kind: StremioTitle.Kind, catalog: String, genre: String? = nil) -> URL? {
-        guard catalog.range(of: #"^[A-Za-z]+$"#, options: .regularExpression) != nil else { return nil }
+    /// Cinemeta sort catalogues: "top" (popular), "imdbRating" (top rated), "year" (newest).
+    static let sortCatalogs: [(id: String, title: String)] = [("top", "Popular"), ("imdbRating", "Top rated"), ("year", "Newest")]
+
+    /// Addon-protocol extras go in the path: `/catalog/movie/top/genre=Action&skip=100.json`.
+    static func browseURL(kind: StremioTitle.Kind, catalog: String, genre: String? = nil, skip: Int = 0) -> URL? {
+        guard catalog.range(of: #"^[A-Za-z]+$"#, options: .regularExpression) != nil, skip >= 0 else { return nil }
+        var extras: [String] = []
         if let genre {
             let g = encode(genre)
             guard !g.isEmpty else { return nil }
-            return URL(string: "\(base)/catalog/\(kind.rawValue)/\(catalog)/genre=\(g).json")
+            extras.append("genre=\(g)")
         }
-        return URL(string: "\(base)/catalog/\(kind.rawValue)/\(catalog).json")
+        if skip > 0 { extras.append("skip=\(skip)") }
+        let tail = extras.isEmpty ? "" : "/" + extras.joined(separator: "&")
+        return URL(string: "\(base)/catalog/\(kind.rawValue)/\(catalog)\(tail).json")
     }
 
-    static func browse(kind: StremioTitle.Kind, catalog: String = "top", genre: String? = nil, session: URLSession = .shared) async throws -> [StremioTitle] {
-        guard let url = browseURL(kind: kind, catalog: catalog, genre: genre) else { return [] }
+    static func browse(kind: StremioTitle.Kind, catalog: String = "top", genre: String? = nil, skip: Int = 0, session: URLSession = .shared) async throws -> [StremioTitle] {
+        guard let url = browseURL(kind: kind, catalog: catalog, genre: genre, skip: skip) else { return [] }
         return parse(try await fetch(url, session: session), kind: kind)
     }
 
@@ -181,14 +189,31 @@ enum RecentSearches {
     }
 }
 
+/// A catalogue slice: which Cinemeta catalogue, optionally one genre. Shared by the home carousels
+/// and the See All collection page so neither needs its own implementation per category.
+struct CatalogSource: Hashable, Identifiable {
+    var kind: StremioTitle.Kind
+    var catalog: String
+    var genre: String?
+    var id: String { "\(kind.rawValue)/\(catalog)/\(genre ?? "-")" }
+
+    var title: String {
+        let noun = kind == .movie ? "movies" : "series"
+        if let genre { return catalog == "top" ? "\(genre) \(noun)" : "\(sortTitle) \(genre) \(noun)" }
+        return "\(sortTitle) \(noun)"
+    }
+    var sortTitle: String { StremioCatalog.sortCatalogs.first { $0.id == catalog }?.title ?? "Popular" }
+}
+
 /// One horizontal carousel on the Discover home.
 struct DiscoverRow: Identifiable, Equatable {
-    enum Phase: Equatable { case loading, loaded, failed }
-    let id: String
-    let title: String
-    let kind: StremioTitle.Kind
+    enum Phase: Equatable { case idle, loading, loaded, failed }
+    let source: CatalogSource
     var items: [StremioTitle] = []
-    var phase: Phase = .loading
+    var phase: Phase = .idle
+    var id: String { source.id }
+    var title: String { source.title }
+    var kind: StremioTitle.Kind { source.kind }
 }
 
 @MainActor
@@ -203,20 +228,28 @@ final class DiscoverModel: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var movies: [StremioTitle] = []
     @Published private(set) var series: [StremioTitle] = []
-    @Published private(set) var rows: [DiscoverRow] = []
-    @Published var genre: String? { didSet { if genre != oldValue { Task { await loadGenreRows() } } } }
-    @Published private(set) var genreRows: [DiscoverRow] = []
+    @Published private(set) var rows: [DiscoverRow] = DiscoverModel.makeRows()
     private var task: Task<Void, Never>?
-    private var homeLoaded = false
+
+    /// Popular, top rated and newest first, then every genre. Genre rows are only requested when
+    /// they scroll into view, so the page can be long without being expensive.
+    static func makeRows() -> [DiscoverRow] {
+        var list: [DiscoverRow] = []
+        for catalog in ["top", "imdbRating", "year"] {
+            for kind in [StremioTitle.Kind.movie, .series] { list.append(DiscoverRow(source: CatalogSource(kind: kind, catalog: catalog, genre: nil))) }
+        }
+        for genre in StremioCatalog.genres {
+            for kind in [StremioTitle.Kind.movie, .series] { list.append(DiscoverRow(source: CatalogSource(kind: kind, catalog: "top", genre: genre))) }
+        }
+        return list
+    }
 
     var visibleMovies: [StremioTitle] { filter == .series ? [] : movies }
     var visibleSeries: [StremioTitle] { filter == .movies ? [] : series }
-    var visibleRows: [DiscoverRow] {
-        (genreRows + rows).filter { filter == .all || ($0.kind == .movie) == (filter == .movies) }
-    }
+    var visibleRows: [DiscoverRow] { rows.filter { filter == .all || ($0.kind == .movie) == (filter == .movies) } }
     /// Featured: the first popular title that has real backdrop artwork. Nothing is invented.
     var featured: StremioTitle? {
-        let pool = rows.filter { filter == .all || ($0.kind == .movie) == (filter == .movies) }.first { $0.id.hasPrefix("top") }
+        let pool = rows.first { $0.source.catalog == "top" && $0.source.genre == nil && (filter == .all || ($0.kind == .movie) == (filter == .movies)) }
         return pool?.items.first { $0.backgroundURL != nil }
     }
     var isSearching: Bool { query.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 }
@@ -224,49 +257,36 @@ final class DiscoverModel: ObservableObject {
     func useRecent(_ text: String) { query = text; queryChanged() }
     func clearRecents() { recents = []; UserDefaults.standard.removeObject(forKey: RecentSearches.key) }
 
-    /// Search suggestions while typing: remembered searches that start with or contain the text.
+    /// Search suggestions while typing: remembered searches that contain the text.
     var suggestions: [String] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !text.isEmpty else { return [] }
         return recents.filter { $0.lowercased().contains(text) && $0.lowercased() != text }
     }
 
-    // MARK: Home
+    // MARK: Rows
 
+    /// The two popular rows feed the Featured hero, so they load up front; the rest load on demand.
     func loadHomeIfNeeded() async {
-        guard !homeLoaded else { return }
-        homeLoaded = true
-        await loadHome()
-    }
-
-    func loadHome() async {
-        let specs: [(String, String, StremioTitle.Kind, String)] = [
-            ("top.movie", "Popular movies", .movie, "top"), ("top.series", "Popular series", .series, "top"),
-            ("rated.movie", "Top rated movies", .movie, "imdbRating"), ("rated.series", "Top rated series", .series, "imdbRating")
-        ]
-        rows = specs.map { DiscoverRow(id: $0.0, title: $0.1, kind: $0.2) }
-        await withTaskGroup(of: (String, [StremioTitle]?).self) { group in
-            for spec in specs {
-                group.addTask { (spec.0, try? await StremioCatalog.browse(kind: spec.2, catalog: spec.3)) }
-            }
-            for await (id, items) in group {
-                guard let i = rows.firstIndex(where: { $0.id == id }) else { continue }
-                rows[i].items = items ?? []
-                rows[i].phase = (items?.isEmpty == false) ? .loaded : .failed
-            }
+        await withTaskGroup(of: Void.self) { group in
+            for id in ["movie/top/-", "series/top/-"] { group.addTask { await self.loadRowIfNeeded(id) } }
         }
     }
 
-    private func loadGenreRows() async {
-        guard let genre else { genreRows = []; return }
-        genreRows = [DiscoverRow(id: "genre.movie", title: "\(genre) movies", kind: .movie),
-                     DiscoverRow(id: "genre.series", title: "\(genre) series", kind: .series)]
-        for kind in [StremioTitle.Kind.movie, .series] {
-            let items = try? await StremioCatalog.browse(kind: kind, genre: genre)
-            guard self.genre == genre, let i = genreRows.firstIndex(where: { $0.kind == kind }) else { return }
-            genreRows[i].items = items ?? []
-            genreRows[i].phase = (items?.isEmpty == false) ? .loaded : .failed
-        }
+    func loadRowIfNeeded(_ id: String) async {
+        guard let i = rows.firstIndex(where: { $0.id == id }), rows[i].phase == .idle else { return }
+        rows[i].phase = .loading
+        let source = rows[i].source
+        let items = try? await StremioCatalog.browse(kind: source.kind, catalog: source.catalog, genre: source.genre)
+        guard let j = rows.firstIndex(where: { $0.id == id }) else { return }
+        rows[j].items = items ?? []
+        rows[j].phase = (items?.isEmpty == false) ? .loaded : .failed
+    }
+
+    func retryRow(_ id: String) async {
+        guard let i = rows.firstIndex(where: { $0.id == id }) else { return }
+        rows[i].phase = .idle
+        await loadRowIfNeeded(id)
     }
 
     // MARK: Search

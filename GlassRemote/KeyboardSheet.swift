@@ -99,7 +99,7 @@ struct KeyboardSheet: View {
             .onAppear { focused = true }
         }
         .presentationDetents([.medium, .large])
-        .preferredColorScheme(.dark)
+        .themedSheet()
     }
 
     /// Forwards the difference between what the TV has received and the field's new contents.

@@ -32,6 +32,7 @@ struct RemoteView: View {
     @State private var screenshotItem: ScreenshotItem?
     @State private var showPlayer = false
     @State private var showDeviceInfo = false
+    @State private var showThemes = false
     @ObservedObject private var favourites = AppFavourites.shared
     @State private var volumeSliderValue: Double = 0.5
     @State private var externalVolumeEcho: Double?
@@ -74,10 +75,11 @@ struct RemoteView: View {
             .scrollDisabled(!androidExpanded)
         }
         .background { backdrop }
-        .preferredColorScheme(.dark)
+        .themedSheet()
         // Text follows Dynamic Type, capped so the fixed remote layout keeps fitting.
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .sheet(isPresented: $remote.showConnection) { ConnectionSheet().environmentObject(remote) }
+        .sheet(isPresented: $showThemes) { ThemePickerSheet() }
         .sheet(isPresented: $showKeyboard) { KeyboardSheet().environmentObject(remote) }
         .sheet(item: $screenshotItem) { item in ScreenshotSheet(item: item) }
         .sheet(isPresented: $showDeviceInfo) { DeviceInfoSheet().environmentObject(remote) }
@@ -131,13 +133,13 @@ struct RemoteView: View {
         case .connected: return .green
         case .connecting, .pairing: return .yellow
         case .denied, .unreachable: return .orange
-        case .off: return Color.white.opacity(0.35)
+        case .off: return Color.ink.opacity(0.35)
         }
     }
 
     private var header: some View {
         HStack(spacing: 10) {
-            GlobalMenuButton(boxOnline: androidOK, onScreenshot: takeScreenshot, onDeviceInfo: { showDeviceInfo = true })
+            GlobalMenuButton(boxOnline: androidOK, onScreenshot: takeScreenshot, onDeviceInfo: { showDeviceInfo = true }, onThemes: { showThemes = true })
 
             // Status only: it does not open anything. Reconnecting lives in the menu.
             HStack(spacing: 10) {
@@ -152,7 +154,7 @@ struct RemoteView: View {
                     }
                 }
             }
-            .foregroundStyle(Color.white.opacity(0.88))
+            .foregroundStyle(Color.ink.opacity(0.88))
             .padding(.horizontal, 14)
             .frame(height: 36)
             .glassSurface(Capsule())
@@ -163,7 +165,7 @@ struct RemoteView: View {
 
             PowerMenuButton { pendingPower = $0 }
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.ink)
     }
 
     private func takeScreenshot() {
@@ -208,12 +210,12 @@ struct RemoteView: View {
                     Text("Apps").scaledFont(15, .semibold)
                     Spacer()
                     if !appsExpanded {
-                        Text("\(remote.apps.count)").scaledFont(13).foregroundStyle(.white.opacity(0.65))
+                        Text("\(remote.apps.count)").scaledFont(13).foregroundStyle(Color.ink.opacity(0.65))
                     }
                     Image(systemName: appsExpanded ? "chevron.up" : "chevron.down")
                         .scaledFont(14, .semibold)
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.ink)
                 .padding(.horizontal, 18)
                 .frame(height: appsExpanded ? 40 : 46)
                 .contentShape(Rectangle())
@@ -244,11 +246,11 @@ struct RemoteView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
                         .overlay {
                             RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
+                                .strokeBorder(Color.ink.opacity(0.22), lineWidth: 1)
                         }
                         .background {
                             RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .fill(Color.white.opacity(0.07))   // flat fill: no material on top of the glass panel
+                                .fill(Color.ink.opacity(0.07))   // flat fill: no material on top of the glass panel
                         }
                         .shadow(color: .black.opacity(0.34), radius: 8, y: 4)
                         .frame(maxWidth: .infinity)
@@ -291,12 +293,12 @@ struct RemoteView: View {
                     Image(app.asset == "stremio" ? "stremio_nowplaying" : "\(app.asset)_dark").resizable().scaledToFit().padding(app.asset == "stremio" ? 9 : 3)
                 } else {
                     Image(systemName: media.isActive ? "play.rectangle" : "tv")
-                        .scaledFont(20).foregroundStyle(.white.opacity(0.55))
+                        .scaledFont(20).foregroundStyle(Color.ink.opacity(0.55))
                 }
             }
             .frame(width: 42, height: 42)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.white.opacity(0.18)))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.ink.opacity(0.18)))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(media.isActive ? (media.title.isEmpty ? (app?.name ?? "Playing") : media.title) : "Nothing playing")
@@ -347,11 +349,11 @@ struct RemoteView: View {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let position = MediaState.format(media.position(at: context.date))
                 Text(media.positionMs > 0 || media.isPlaying ? "\(name) · \(position)" : name)
-                    .scaledFont(12).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
+                    .scaledFont(12).foregroundStyle(Color.ink.opacity(0.65)).lineLimit(1)
             }
         } else {
             Text(remote.connected ? "Start something on the TV" : "Not connected")
-                .scaledFont(12).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+                .scaledFont(12).foregroundStyle(Color.ink.opacity(0.55)).lineLimit(1)
         }
     }
 
@@ -359,7 +361,7 @@ struct RemoteView: View {
         Button(action: action) {
             Image(systemName: icon)
                 .scaledFont(15, .semibold)
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.ink)
                 .frame(width: 44, height: 44)   // touch target unchanged
                 .glassSurface(Circle(), interactive: enabled, elevated: prominent)
         }
@@ -431,7 +433,7 @@ struct RemoteView: View {
             .glassSurface(shape, elevated: true)
             .overlay(alignment: .bottom) {
                 Text("Tap to click · hold to drag · two fingers to scroll or tap for Back")
-                    .scaledFont(12).foregroundStyle(.white.opacity(0.7))
+                    .scaledFont(12).foregroundStyle(Color.ink.opacity(0.7))
                     .padding(.bottom, 16)
                     .allowsHitTesting(false)
             }
@@ -543,9 +545,9 @@ struct RemoteView: View {
                                                                   startPoint: .top, endPoint: .bottom), lineWidth: 1.2))
                     .overlay(Circle().stroke(Color.black.opacity(0.45), lineWidth: 0.8).padding(1.8))
                     // Directional separation: four hairline seams on the diagonals, stopping short of the centre.
-                    .overlay(DpadSeams().stroke(Color.white.opacity(0.10), lineWidth: 0.8).padding(size * 0.06)
+                    .overlay(DpadSeams().stroke(Color.ink.opacity(0.12), lineWidth: 0.8).padding(size * 0.06)
                         .allowsHitTesting(false))
-                    .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.8).frame(width: size * 0.36, height: size * 0.36)
+                    .overlay(Circle().stroke(Color.ink.opacity(0.12), lineWidth: 0.8).frame(width: size * 0.36, height: size * 0.36)
                         .allowsHitTesting(false))
                     .shadow(color: .black.opacity(0.5), radius: 14, y: 8)
                 VStack(spacing: 0) {
@@ -582,7 +584,7 @@ struct RemoteView: View {
         RepeatKey(onFire: { remote.routedKey(key) }) {
             Image(systemName: icon)
                 .scaledFont(ok ? 12 : 22, .medium)
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.ink)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background {
                     if ok {

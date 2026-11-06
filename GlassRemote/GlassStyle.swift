@@ -1,101 +1,24 @@
 import SwiftUI
 import UIKit
 
-/// Smoked native Liquid Glass styling shared by the app's interactive surfaces.
+/// Themed glass styling shared by the app's surfaces. Every colour comes from the active
+/// `GlassTheme` (environment), so a theme change restyles every surface at once.
 ///
-/// iOS 26+ uses Apple's real glass material, with a restrained smoke tint so refraction,
-/// highlights and depth remain visible. Earlier systems get a material-based fallback.
+/// iOS 26+ uses Apple's real glass material, tinted by the theme; earlier systems get a
+/// material-based fallback built from the same tokens.
 extension View {
-    @ViewBuilder
-    func glassSurface<S: Shape>(
-        _ shape: S,
-        interactive: Bool = false,
-        elevated: Bool = false,
-        accent: Bool = false
-    ) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            let smoke = Glass.regular.tint(
-                Color(white: elevated ? 0.12 : 0.09)
-                    .opacity(elevated ? 0.12 : 0.20)
-            )
-            self.glassEffect(interactive ? smoke.interactive() : smoke, in: shape)
-        } else {
-            self.legacyGlass(shape, elevated: elevated || accent)
-        }
-        #else
-        self.legacyGlass(shape, elevated: elevated || accent)
-        #endif
+    func glassSurface<S: Shape>(_ shape: S, interactive: Bool = false, elevated: Bool = false, accent: Bool = false) -> some View {
+        modifier(ThemedGlassSurface(shape: shape, interactive: interactive, elevated: elevated, accent: accent))
     }
 
-    fileprivate func legacyGlass<S: Shape>(_ shape: S, elevated: Bool) -> some View {
-        self
-            .background {
-                ZStack {
-                    shape.fill(.ultraThinMaterial)
-                    shape.fill(Color.black.opacity(elevated ? 0.13 : 0.26))
-                    shape.fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(elevated ? 0.24 : 0.16),
-                                Color.white.opacity(0.025),
-                                Color.white.opacity(0.075)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                }
-            }
-            .overlay {
-                shape.stroke(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.46),
-                            Color.white.opacity(0.11),
-                            Color.white.opacity(0.025),
-                            Color.white.opacity(0.24)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 0.9
-                )
-            }
-            .shadow(color: .black.opacity(0.40), radius: elevated ? 12 : 8, y: elevated ? 7 : 4)
-    }
-}
-
-// MARK: - v0.4 glass helpers
-
-extension View {
-    /// Large floating bars (the page dock, transport bar). Untinted regular glass on iOS 26 so
-    /// refraction and the specular edge carry the look; heavier material fallback before that.
-    @ViewBuilder
+    /// Large floating bars (the page dock, transport bar).
     func glassBar<S: Shape>(_ shape: S, interactive: Bool = true) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            self.glassEffect(interactive ? Glass.regular.interactive() : Glass.regular, in: shape)
-        } else {
-            self.legacyBar(shape)
-        }
-        #else
-        self.legacyBar(shape)
-        #endif
+        modifier(ThemedGlassBar(shape: shape, interactive: interactive))
     }
 
-    /// The selected-item "lens" inside a bar: clear, lightly lifted glass.
-    @ViewBuilder
+    /// The selected-item "lens" inside a bar, tinted with the accent.
     func glassLens<S: Shape>(_ shape: S) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            self.glassEffect(Glass.clear.tint(Color.white.opacity(0.10)).interactive(), in: shape)
-        } else {
-            self.legacyLens(shape)
-        }
-        #else
-        self.legacyLens(shape)
-        #endif
+        modifier(ThemedGlassLens(shape: shape))
     }
 
     /// Lets two glass shapes in one `GlassGroup` morph into each other on iOS 26. No-op earlier.
@@ -111,31 +34,119 @@ extension View {
         self
         #endif
     }
+}
 
-    fileprivate func legacyBar<S: Shape>(_ shape: S) -> some View {
-        self
+private struct ThemedGlassSurface<S: Shape>: ViewModifier {
+    let shape: S
+    let interactive: Bool
+    let elevated: Bool
+    let accent: Bool
+    @Environment(\.glassTheme) private var theme
+
+    private var tint: Color {
+        if accent { return theme.accent.opacity(theme.accentSurfaceOpacity) }
+        return theme.glassTint.opacity(theme.glassTintOpacity * (elevated ? 0.6 : 1))
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            let glass = Glass.regular.tint(tint)
+            content.glassEffect(interactive ? glass.interactive() : glass, in: shape)
+        } else {
+            legacy(content)
+        }
+        #else
+        legacy(content)
+        #endif
+    }
+
+    private func legacy(_ content: Content) -> some View {
+        let light = theme.isLight
+        return content
+            .background {
+                ZStack {
+                    shape.fill(.ultraThinMaterial)
+                    shape.fill(light ? Color.white.opacity(elevated || accent ? 0.30 : 0.42) : Color.black.opacity(elevated || accent ? 0.13 : 0.26))
+                    shape.fill(tint)
+                    shape.fill(LinearGradient(colors: [Color.white.opacity(light ? 0.5 : (elevated || accent ? 0.24 : 0.16)), Color.white.opacity(0.025), Color.white.opacity(0.075)],
+                                              startPoint: .topLeading, endPoint: .bottomTrailing))
+                }
+            }
+            .overlay {
+                shape.stroke(LinearGradient(colors: [theme.rim.opacity(light ? 0.95 : 0.46), theme.rim.opacity(0.11), theme.rim.opacity(0.025), theme.rim.opacity(light ? 0.6 : 0.24)],
+                                            startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.9)
+            }
+            .shadow(color: .black.opacity(light ? 0.14 : 0.40), radius: elevated ? 12 : 8, y: elevated ? 7 : 4)
+    }
+}
+
+private struct ThemedGlassBar<S: Shape>: ViewModifier {
+    let shape: S
+    let interactive: Bool
+    @Environment(\.glassTheme) private var theme
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            // Untinted for the neutral themes (refraction carries the look); a light wash for coloured ones.
+            let tint = theme.id == .defaultDark || theme.isLight ? Color.clear : theme.glassTint.opacity(theme.glassTintOpacity * 0.5)
+            let glass = Glass.regular.tint(tint)
+            content.glassEffect(interactive ? glass.interactive() : glass, in: shape)
+        } else {
+            legacy(content)
+        }
+        #else
+        legacy(content)
+        #endif
+    }
+
+    private func legacy(_ content: Content) -> some View {
+        let light = theme.isLight
+        return content
             .background {
                 ZStack {
                     shape.fill(.thinMaterial)
-                    shape.fill(Color.black.opacity(0.18))
-                    shape.fill(LinearGradient(colors: [Color.white.opacity(0.22), Color.white.opacity(0.03), Color.white.opacity(0.10)],
+                    shape.fill(light ? Color.white.opacity(0.35) : Color.black.opacity(0.18))
+                    shape.fill(theme.glassTint.opacity(theme.glassTintOpacity * 0.5))
+                    shape.fill(LinearGradient(colors: [Color.white.opacity(light ? 0.5 : 0.22), Color.white.opacity(0.03), Color.white.opacity(light ? 0.25 : 0.10)],
                                               startPoint: .top, endPoint: .bottom))
                 }
             }
-            .overlay { shape.stroke(LinearGradient(colors: [Color.white.opacity(0.55), Color.white.opacity(0.08), Color.white.opacity(0.30)],
+            .overlay { shape.stroke(LinearGradient(colors: [theme.rim.opacity(light ? 1 : 0.55), theme.rim.opacity(0.08), theme.rim.opacity(light ? 0.7 : 0.30)],
                                                    startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1) }
-            .shadow(color: .black.opacity(0.45), radius: 16, y: 9)
+            .shadow(color: .black.opacity(light ? 0.16 : 0.45), radius: 16, y: 9)
+    }
+}
+
+private struct ThemedGlassLens<S: Shape>: ViewModifier {
+    let shape: S
+    @Environment(\.glassTheme) private var theme
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            content.glassEffect(Glass.clear.tint(theme.accent.opacity(theme.lensOpacity)).interactive(), in: shape)
+        } else {
+            legacy(content)
+        }
+        #else
+        legacy(content)
+        #endif
     }
 
-    fileprivate func legacyLens<S: Shape>(_ shape: S) -> some View {
-        self
+    private func legacy(_ content: Content) -> some View {
+        content
             .background {
                 ZStack {
-                    shape.fill(Color.white.opacity(0.16))
-                    shape.fill(LinearGradient(colors: [Color.white.opacity(0.30), Color.white.opacity(0.04)], startPoint: .top, endPoint: .bottom))
+                    shape.fill(theme.accent.opacity(theme.isLight ? 0.18 : max(theme.lensOpacity, 0.16)))
+                    shape.fill(LinearGradient(colors: [Color.white.opacity(theme.isLight ? 0.55 : 0.30), Color.white.opacity(0.04)], startPoint: .top, endPoint: .bottom))
                 }
             }
-            .overlay { shape.stroke(Color.white.opacity(0.45), lineWidth: 0.8) }
+            .overlay { shape.stroke(theme.rim.opacity(theme.isLight ? 0.9 : 0.45), lineWidth: 0.8) }
     }
 }
 
@@ -244,7 +255,7 @@ struct GlassSegmented<Value: Hashable>: View {
                 if let symbol = item?.symbol { Image(systemName: symbol).scaledFont(13, .semibold) }
                 Text(item?.title ?? "").scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
             }
-            .foregroundStyle(selected ? Color.white : Color.white.opacity(0.68))
+            .foregroundStyle(selected ? Color.ink : Color.ink.opacity(0.68))
         }
     }
 }
@@ -282,93 +293,110 @@ struct PressStyle: ButtonStyle {
     }
 }
 
-/// Full-width Mouse / D-pad selector. The shell and selected segment are both glass.
+/// Full-width Mouse / D-pad selector. Behaves like the page dock's glass bar, but swipes follow the
+/// page convention: swipe LEFT for D-pad, swipe RIGHT for Mouse. A tap picks the tapped half.
+/// The gesture lives only on this bar; the trackpad / D-pad surface below is a separate view and is
+/// never touched by it.
 struct ModeSelector: View {
     @Binding var isMouse: Bool
     /// Height of each segment. The Android remote uses a compact value so the pad gets the room.
     var segmentHeight: CGFloat = 38
-    @Namespace private var pill
+    @Namespace private var ns
+    @State private var fired = false
+    @State private var nudge: CGFloat = 0
+    private let inset: CGFloat = 4
+    private let swipeDistance: CGFloat = 22
 
     var body: some View {
-        GlassGroup(spacing: 6) {
-            HStack(spacing: 0) {
-                segment("Mouse", selected: isMouse, action: { isMouse = true }) { MouseGlyph(color: isMouse ? .white : Color.white.opacity(0.72)) }
-                segment("D-pad", selected: !isMouse, action: { isMouse = false }) {
-                    Image(systemName: "circle.grid.cross").scaledFont(15, .semibold)
+        let height = segmentHeight + inset * 2
+        GeometryReader { geo in
+            let seg = (geo.size.width - inset * 2) / 2
+            ZStack(alignment: .leading) {
+                GlassGroup(spacing: 10) {
+                    ZStack(alignment: .leading) {
+                        Color.clear.glassBar(Capsule(), interactive: true).glassMorph("bar", in: ns)
+                        Color.clear
+                            .frame(width: seg, height: segmentHeight)
+                            .glassLens(Capsule())
+                            .glassMorph("lens", in: ns)
+                            .offset(x: inset + (isMouse ? 0 : seg) + nudge)
+                            .animation(.spring(response: 0.38, dampingFraction: 0.80), value: isMouse)
+                            .animation(.interactiveSpring(response: 0.2, dampingFraction: 0.85), value: nudge)
+                    }
                 }
-            }
-            .padding(4)
-            .frame(maxWidth: .infinity)
-            .glassSurface(Capsule(), interactive: true)
-            .animation(.spring(response: 0.38, dampingFraction: 0.82), value: isMouse)
-        }
-    }
-
-    private func segment<Icon: View>(_ title: String, selected: Bool, action: @escaping () -> Void, @ViewBuilder icon: () -> Icon) -> some View {
-        Button {
-            Haptics.soft()
-            action()
-        } label: {
-            HStack(spacing: 7) {
-                icon()
-                Text(title).scaledFont(14, .semibold)
-            }
-            .foregroundStyle(selected ? Color.white : Color.white.opacity(0.72))
-            .frame(maxWidth: .infinity)
-            .frame(height: segmentHeight)
-            .background {
-                if selected {
-                    Capsule()
-                        .fill(Color.clear)
-                        .glassSurface(Capsule(), interactive: true, elevated: true)
-                        .matchedGeometryEffect(id: "pill", in: pill)
+                HStack(spacing: 0) {
+                    label(true).frame(width: seg, height: height)
+                    label(false).frame(width: seg, height: height)
                 }
+                .padding(.horizontal, inset)
+                .allowsHitTesting(false)
             }
             .contentShape(Capsule())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        ScrubTouch.shared.touch()
+                        let dx = drag.translation.width, dy = drag.translation.height
+                        // The bar leans a little toward the swipe, then commits once past the threshold.
+                        nudge = abs(dx) > abs(dy) ? min(max(dx * 0.12, -8), 8) : 0
+                        if !fired, abs(dx) >= swipeDistance, abs(dx) > abs(dy) * 1.2 {
+                            fired = true
+                            set(mouse: dx > 0)
+                        }
+                    }
+                    .onEnded { drag in
+                        defer { fired = false; nudge = 0 }
+                        // A tap (little movement): choose the half that was tapped.
+                        if !fired, abs(drag.translation.width) < 10, abs(drag.translation.height) < 10 {
+                            set(mouse: drag.location.x < geo.size.width / 2)
+                        }
+                    }
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Mouse or D-pad")
+            .accessibilityValue(isMouse ? "Mouse" : "D-pad")
+            .accessibilityAdjustableAction { direction in
+                set(mouse: direction == .decrement)   // swipe up/increment -> D-pad, matching page order
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        .frame(height: height)
+    }
+
+    private func set(mouse: Bool) {
+        guard mouse != isMouse else { return }
+        Haptics.soft()
+        isMouse = mouse
+    }
+
+    @ViewBuilder
+    private func label(_ mouse: Bool) -> some View {
+        let selected = mouse == isMouse
+        HStack(spacing: 7) {
+            if mouse { MouseGlyph(color: selected ? Color.ink : Color.ink.opacity(0.72)) }
+            else { Image(systemName: "circle.grid.cross").scaledFont(15, .semibold) }
+            Text(mouse ? "Mouse" : "D-pad").scaledFont(14, .semibold)
+        }
+        .foregroundStyle(selected ? Color.ink : Color.ink.opacity(0.72))
     }
 }
 
-/// Softly lifted charcoal canvas: brighter behind the controls, still near-black at the edges.
+/// The themed canvas: a gradient with a soft glow behind the controls, plus an optional ambient picture.
 struct AmbientBackdrop: View {
+    @Environment(\.glassTheme) private var theme
+    @ObservedObject private var store = ThemeStore.shared
+
     var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            let h = geo.size.height
-            ZStack {
-                Color.black
-                RadialGradient(
-                    colors: [
-                        Color(white: 0.105),
-                        Color(white: 0.068),
-                        Color(white: 0.045),
-                        .black
-                    ],
-                    center: UnitPoint(x: 0.5, y: 0.48),
-                    startRadius: 0,
-                    endRadius: max(w, h) * 0.78
-                )
-                LinearGradient(
-                    colors: [Color(white: 0.035), .clear, Color.black.opacity(0.34)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                RadialGradient(
-                    colors: [Color(white: 0.052).opacity(0.72), .clear],
-                    center: UnitPoint(x: 0.5, y: 0.80),
-                    startRadius: 0,
-                    endRadius: w * 0.90
-                )
+        ZStack {
+            LinearGradient(colors: [theme.canvasTop, theme.canvasMid, theme.canvasBottom], startPoint: .top, endPoint: .bottom)
+            RadialGradient(colors: [theme.glow, .clear], center: UnitPoint(x: 0.5, y: 0.45), startRadius: 0, endRadius: 520)
+            if store.ambient != .none {
+                AmbientArtwork(style: store.ambient).transition(.opacity)
             }
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
     }
 }
-
 
 /// The one button used for every key on both remotes (Android navigation, Samsung keys), so the
 /// two remotes share icon size, weight, height and glass treatment.
@@ -383,7 +411,7 @@ struct RemoteKeyButton<Icon: View>: View {
     var body: some View {
         Button(action: action) {
             icon()
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.ink)
                 .frame(maxWidth: .infinity)
                 .frame(height: Self.height)
                 .glassSurface(Capsule(), interactive: enabled)

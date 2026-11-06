@@ -19,7 +19,7 @@ struct NowPlayingSheet: View {
                     Spacer()
                     Button { dismiss() } label: {
                         Image(systemName: "chevron.down").scaledFont(15, .semibold)
-                            .foregroundStyle(.white).frame(width: 40, height: 40)
+                            .foregroundStyle(Color.ink).frame(width: 40, height: 40)
                             .glassSurface(Circle(), interactive: true)
                     }
                     .buttonStyle(PressStyle()).accessibilityLabel("Close player")
@@ -30,7 +30,7 @@ struct NowPlayingSheet: View {
                 VStack(spacing: 6) {
                     Text(media.isActive ? (media.title.isEmpty ? (app?.name ?? "Playing") : media.title) : "Nothing playing")
                         .scaledFont(22, .bold).multilineTextAlignment(.center).lineLimit(3)
-                    Text(app?.name ?? media.package).scaledFont(14).foregroundStyle(.white.opacity(0.6))
+                    Text(app?.name ?? media.package).scaledFont(14).foregroundStyle(Color.ink.opacity(0.6))
                 }
 
                 timeline(media: media)
@@ -52,10 +52,10 @@ struct NowPlayingSheet: View {
                 }
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(Color.ink)
             .padding(.horizontal, 24).padding(.top, 14).padding(.bottom, 12)
         }
-        .preferredColorScheme(.dark)
+        .themedSheet()
         .onChange(of: media.isActive) { active in if !active { dismiss() } }  // single-parameter form: deployment target is iOS 16
     }
 
@@ -67,7 +67,7 @@ struct NowPlayingSheet: View {
                 Image(app.asset == "stremio" ? "stremio_nowplaying" : "\(app.asset)_dark")
                     .resizable().scaledToFit().padding(app.asset == "stremio" ? 70 : 40)
             } else {
-                Image(systemName: "play.rectangle").scaledFont(60).foregroundStyle(.white.opacity(0.4))
+                Image(systemName: "play.rectangle").scaledFont(60).foregroundStyle(Color.ink.opacity(0.4))
             }
         }
         .aspectRatio(1, contentMode: .fit)
@@ -82,17 +82,17 @@ struct NowPlayingSheet: View {
             VStack(spacing: 8) {
                 if let durMs = media.durationMs, durMs > 0 {
                     // Only reachable with a genuine duration; seeking itself would still need a verified route.
-                    ProgressView(value: min(pos, Double(durMs) / 1000), total: Double(durMs) / 1000).tint(.white)
+                    ProgressView(value: min(pos, Double(durMs) / 1000), total: Double(durMs) / 1000).tint(Color.ink)
                     HStack {
                         Text(MediaState.format(pos))
                         Spacer()
                         Text("-" + MediaState.format(max(0, Double(durMs) / 1000 - pos)))
                     }
-                    .font(.system(size: 12).monospacedDigit()).foregroundStyle(.white.opacity(0.65))
+                    .font(.system(size: 12).monospacedDigit()).foregroundStyle(Color.ink.opacity(0.65))
                 } else {
                     Text(MediaState.format(pos)).font(.system(size: 28, weight: .semibold).monospacedDigit())
                     Text("Elapsed · this app doesn't report total length, so seeking isn't available")
-                        .scaledFont(12).foregroundStyle(.white.opacity(0.5)).multilineTextAlignment(.center)
+                        .scaledFont(12).foregroundStyle(Color.ink.opacity(0.5)).multilineTextAlignment(.center)
                 }
             }
         }
