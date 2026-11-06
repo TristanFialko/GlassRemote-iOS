@@ -759,6 +759,11 @@ final class ThemeSystemTests: XCTestCase {
 }
 
 final class CatalogPagingTests: XCTestCase {
+    // Kept local to this test class; private helpers in other XCTestCase classes are not visible here.
+    private func solid(_ r: UInt8, _ g: UInt8, _ b: UInt8, count: Int = 1024) -> [UInt8] {
+        (0..<count).flatMap { _ in [r, g, b, 255] }
+    }
+
     func testBrowseURLsUseAddonExtrasInThePath() {
         XCTAssertEqual(StremioCatalog.browseURL(kind: .movie, catalog: "top")?.absoluteString, "https://v3-cinemeta.strem.io/catalog/movie/top.json")
         XCTAssertEqual(StremioCatalog.browseURL(kind: .series, catalog: "year", skip: 100)?.absoluteString, "https://v3-cinemeta.strem.io/catalog/series/year/skip=100.json")
