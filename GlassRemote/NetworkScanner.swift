@@ -60,7 +60,7 @@ enum NetworkScanner {
         let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
         let gate = ProbeGate()
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            func finish(_ result: Bool) {
+            let finish: @Sendable (Bool) -> Void = { result in
                 guard gate.claim() else { return }
                 connection.cancel()
                 continuation.resume(returning: result)
