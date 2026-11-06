@@ -180,6 +180,14 @@ enum PlayerArtworkMatcher {
 /// Cinemeta, matched by exact normalised name, and cached.
 @MainActor
 final class PlayerArtworkStore: ObservableObject {
+    /// Only Stremio playback titles are eligible for Cinemeta catalogue poster lookup.
+    /// Other TV apps may expose arbitrary media/session labels, so they should keep their app icon.
+    nonisolated static func usesCatalogue(package: String) -> Bool {
+        package.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("com.stremio.")
+    }
+
     static let shared = PlayerArtworkStore()
 
     struct Hint: Equatable { var title: String; var posterURL: URL? }

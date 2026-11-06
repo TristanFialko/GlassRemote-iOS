@@ -281,6 +281,19 @@ extension EnvironmentValues {
 }
 
 extension Color {
+    /// Very faint foreground used for tertiary labels and decorative metadata.
+    /// Lifted more aggressively in light appearance so it remains visible on pale glass.
+    static func inkFaint(_ a: Double) -> Color {
+        Color(UIColor { trait in
+            let alpha: Double
+            if trait.userInterfaceStyle == .light {
+                alpha = a + (1 - a) * 0.48
+                return UIColor(white: 0.10, alpha: CGFloat(min(1, max(0, alpha))))
+            }
+            return UIColor(white: 1, alpha: CGFloat(min(1, max(0, a))))
+        })
+    }
+
     /// Primary foreground: white in dark scheme, near-black in light scheme. Use instead of `.white`
     /// for text and icons (leave literal `Color.white` for content drawn over posters).
     static let ink = Color(UIColor { $0.userInterfaceStyle == .light ? UIColor(white: 0.08, alpha: 1) : .white })
@@ -297,19 +310,6 @@ extension Color {
                 return UIColor(white: 0.08, alpha: CGFloat(lifted))
             }
             return UIColor(white: 1, alpha: CGFloat(a))
-        })
-    }
-
-    /// Very faint foreground used for tertiary labels and decorative metadata.
-    /// Lifted more aggressively in light appearance so it remains visible on pale glass.
-    static func inkFaint(_ a: Double) -> Color {
-        Color(UIColor { trait in
-            let alpha: Double
-            if trait.userInterfaceStyle == .light {
-                alpha = a + (1 - a) * 0.48
-                return UIColor(white: 0.10, alpha: CGFloat(min(1, max(0, alpha))))
-            }
-            return UIColor(white: 1, alpha: CGFloat(min(1, max(0, a))))
         })
     }
 }
@@ -333,8 +333,34 @@ struct ArtworkPalette: Equatable {
     var meanBrightness: Double = 0.5
     /// Saturation of the secondary hue's region.
     var secondarySaturation: Double = 0.5
+    /// Blend amount of the artwork tint (0 = neutral, 1 = fully applied).
+    var strength: Double = 1
 
-    static let neutral = ArtworkPalette(hue: 0, saturation: 0, brightness: 0.8, secondaryHue: 0, isNeutral: true)
+    static let neutral = ArtworkPalette(hue: 0, saturation: 0, brightness: 0.8, secondaryHue: 0, isNeutral: true, strength: 0)
+
+    /// Smoothly interpolates between palettes using the shortest path around the hue wheel.
+    /// This is used when artwork changes so the interface fades instead of snapping.
+    func mixed(to other: ArtworkPalette, _ amount: Double) -> ArtworkPalette {
+        let t = min(max(amount, 0), 1)
+        func hueMix(_ a: Double, _ b: Double) -> Double {
+            var delta = b - a
+            if delta > 0.5 { delta -= 1 }
+            if delta < -0.5 { delta += 1 }
+            let value = (a + delta * t).truncatingRemainder(dividingBy: 1)
+            return value < 0 ? value + 1 : value
+        }
+        return ArtworkPalette(
+            hue: hueMix(hue, other.hue),
+            saturation: saturation + (other.saturation - saturation) * t,
+            brightness: brightness + (other.brightness - brightness) * t,
+            secondaryHue: hueMix(secondaryHue, other.secondaryHue),
+            isNeutral: t >= 1 ? other.isNeutral : (t <= 0 ? isNeutral : false),
+            coverage: coverage + (other.coverage - coverage) * t,
+            meanBrightness: meanBrightness + (other.meanBrightness - meanBrightness) * t,
+            secondarySaturation: secondarySaturation + (other.secondarySaturation - secondarySaturation) * t,
+            strength: strength + (other.strength - strength) * t
+        )
+    }
 
     /// 0.6...1: how strongly the palette is allowed to tint the interface.
     var intensity: Double { 0.6 + 0.4 * min(1, coverage * 4) }
