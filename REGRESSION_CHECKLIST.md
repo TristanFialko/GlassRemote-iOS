@@ -75,3 +75,15 @@
 - [ ] Open in Stremio (movie, series, an episode, Resume, Search in Stremio) each open the right place on the box. The deep-link shapes are from Stremio's docs but unconfirmed on this box's build.
 - [ ] Player: start a title directly in Stremio; its poster (2:3) appears within a few seconds; a title with no exact catalogue match keeps the Stremio icon.
 - [ ] Mouse (`M buttons dx dy wheel hscroll`, 45 ms click, x2 drag), keyboard (`K`/`C`), recovery (no HOME/BACK/STOP/PAUSE) and Samsung pairing/volume are unchanged.
+
+## Phase 4: themes, Discover, Player (nothing below has been run on a device or built)
+- [ ] Logo menu -> Themes opens a picker with a live preview per theme; the current one is marked; switching animates and survives an app restart.
+- [ ] Every theme: Remote, Player, Discover, dock, header, menus, sheets (detail, account, connection, keyboard, theme picker), segmented controls and the Samsung panel all restyle. Light Glass and Glass White: all text and icons readable.
+- [ ] Switching theme does not reconnect ADB, restart helpers, or change playback state.
+- [ ] Adaptive: featured artwork on Discover tints accents; a Player poster takes over on the Player/Remote pages; greyscale artwork falls back to neutral; no flashing when posters change. Auto follows the system setting and is NOT artwork-driven.
+- [ ] Ambient backgrounds: each style can be chosen and turned Off; text and glass stay legible; scrolling stays smooth.
+- [ ] Mouse/D-pad selector: tap each half; swipe LEFT -> D-pad, swipe RIGHT -> Mouse; haptic once per change. Dragging and two-finger scrolling inside the trackpad never changes the mode; cursor, clicks (45 ms), drag x2 unchanged.
+- [ ] Discover: vertical scroll works when a swipe starts on a poster or carousel; horizontal carousel scroll works; tapping a poster opens details; carousels do not change the page; genre rows load as they scroll into view.
+- [ ] See All (Popular / Top rated / Newest, genres, library rows): grid, sort and genre menus, Movies/Series switch, loads more at the bottom, empty/error states, tap opens details.
+- [ ] Account: Library, Continue Watching and History counts match Stremio; a title you only watched (not saved) appears under Continue Watching and not under Library.
+- [ ] Player: poster no taller than ~1/3 of the screen, transport bar sits above the dock on small iPhones, nothing overlaps.
