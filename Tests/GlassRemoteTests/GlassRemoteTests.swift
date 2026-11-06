@@ -776,4 +776,25 @@ final class CatalogPagingTests: XCTestCase {
         XCTAssertTrue(rows.dropFirst(6).allSatisfy { $0.source.genre != nil })
         XCTAssertEqual(rows.count, 6 + StremioCatalog.genres.count * 2)
     }
+
+    // MARK: Phase 4.1
+
+    func testPaletteFadesToAndFromNeutralWithoutJumping() {
+        let blue = ArtworkPaletteExtractor.palette(fromRGBA: solid(30, 90, 230))
+        let half = ArtworkPalette.neutral.mixed(to: blue, 0.5)
+        XCTAssertFalse(half.isNeutral)
+        XCTAssertEqual(half.strength, 0.5, accuracy: 0.001)
+        XCTAssertTrue(blue.mixed(to: .neutral, 1).isNeutral)
+        XCTAssertEqual(blue.mixed(to: blue, 0.3).hue, blue.hue, accuracy: 0.0001)
+    }
+
+    func testSecondaryHueIsNeverACopyOfThePrimary() {
+        let blue = ArtworkPaletteExtractor.palette(fromRGBA: solid(30, 90, 230))
+        XCTAssertNotEqual(blue.secondaryHue, blue.hue, accuracy: 0.02)
+    }
+
+    func testCatalogueEligibilityOnlyForFilmApps() {
+        XCTAssertTrue(PlayerArtworkStore.usesCatalogue(package: "com.stremio.one"))
+        XCTAssertFalse(PlayerArtworkStore.usesCatalogue(package: "com.google.android.youtube.tv"))
+    }
 }
