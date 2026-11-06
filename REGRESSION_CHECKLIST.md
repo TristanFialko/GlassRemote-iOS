@@ -24,7 +24,7 @@
 - [ ] Wake (keyevent 224): does it work while the box sleeps, or is ADB unreachable?
 - [ ] Restart launcher: launcher returns, Utility Hub unaffected
 - [ ] Restart box: shell `reboot` works for the shell user; app reconnects by itself (~1–2 min)
-- [ ] Media: Stremio play/pause; title and position correct; Spotify enables prev/next
+- [ ] Media: Nuvio play/pause; title and position correct; Spotify enables prev/next
 - [ ] Keyboard: text, spaces, quotes, URLs, `%s`, newline, Backspace, Paste button
 - [ ] Samsung TV: pairing prompt, token reuse, VOLUP/VOLDOWN/MUTE, does the soundbar respond? ADB fallback when TV is off
 - [ ] Siri/Shortcuts intents launch the app and perform the action
@@ -37,7 +37,7 @@
 - Cursor feel unchanged after PointerBox change.
 
 ## v0.3 Phase 1 additions
-- Switching pages never restarts helpers or changes Stremio playback.
+- Switching pages never restarts helpers or changes Nuvio playback.
 - Live Typing toggle survives failed keystrokes.
 
 ## v0.4 additions
@@ -63,7 +63,7 @@
 - [ ] Samsung: only the trackpad plus Back/Home/Mute and Rewind/Play/Pause/Fast-forward; Input/Guide/Info/TV menu/Channel/Stop under Menu > Samsung TV > TV keys.
 - [ ] Discover: titles without a Cinemeta poster show the placeholder or a Metahub poster.
 
-## Discover / Stremio refactor (nothing below has been run on a device or built)
+## Discover / Nuvio migration (nothing below has been run on a device or built)
 - [ ] Dock shows exactly Remote, Player, Discover, evenly spaced; the Remote icon is the Apple TV remote symbol; swiping pages still works and carousels scroll without changing page.
 - [ ] Header button shows the Glass Remote logo and still opens the menu.
 - [ ] Android: expanding Apps does not change the Samsung remote's size; switching Android -> Samsung -> Android keeps Apps expanded.
@@ -71,9 +71,9 @@
 - [ ] Samsung: a single Play/Pause button; the icon is the last key sent, reset to the neutral glyph after changing target or reconnecting.
 - [ ] Android D-pad: same commands, hit areas, repeat-on-hold and swipe; new glass depth, seams and centre button.
 - [ ] Discover: search is always visible; Movies/Series/All filter; carousels, genre chips, recent searches, empty/error/loading states.
-- [ ] Stremio sign-in: wrong password shows Stremio's own message; success shows Continue Watching and Library; Sign out removes them; an expired session shows "sign in again" and the stored key is gone.
-- [ ] Open in Stremio (movie, series, an episode, Resume, Search in Stremio) each open the right place on the box. The deep-link shapes are from Stremio's docs but unconfirmed on this box's build.
-- [ ] Player: start a title directly in Stremio; its poster (2:3) appears within a few seconds; a title with no exact catalogue match keeps the Stremio icon.
+- [ ] Nuvio device-link sign-in: code appears, approving on nuvio.tv signs in, cancel works, a rejected/expired code shows a clear message; success shows Continue Watching; Sign out removes the Keychain session and leaves Nuvio on the TV signed in; an expired session shows "sign in again". FIRST RUN: confirm https://nuvio.tv/config.js is parsed (the backend URL/key are read at runtime).
+- [ ] Open in Nuvio (movie, series) and Search in Nuvio: either the title/search opens, or the result line says Nuvio was launched instead. Link shapes are unverified on this box (check `am start` output).
+- [ ] Player: start a title directly in Nuvio; its poster (2:3) appears within a few seconds and is larger than in 4.2; a title with no exact catalogue match keeps the Nuvio icon; the Nuvio package on the box is confirmed to be com.nuvio.app.
 - [ ] Mouse (`M buttons dx dy wheel hscroll`, 45 ms click, x2 drag), keyboard (`K`/`C`), recovery (no HOME/BACK/STOP/PAUSE) and Samsung pairing/volume are unchanged.
 
 ## Phase 4: themes, Discover, Player (nothing below has been run on a device or built)
@@ -85,5 +85,11 @@
 - [ ] Mouse/D-pad selector: tap each half; swipe LEFT -> D-pad, swipe RIGHT -> Mouse; haptic once per change. Dragging and two-finger scrolling inside the trackpad never changes the mode; cursor, clicks (45 ms), drag x2 unchanged.
 - [ ] Discover: vertical scroll works when a swipe starts on a poster or carousel; horizontal carousel scroll works; tapping a poster opens details; carousels do not change the page; genre rows load as they scroll into view.
 - [ ] See All (Popular / Top rated / Newest, genres, library rows): grid, sort and genre menus, Movies/Series switch, loads more at the bottom, empty/error states, tap opens details.
-- [ ] Account: Library, Continue Watching and History counts match Stremio; a title you only watched (not saved) appears under Continue Watching and not under Library.
+- [ ] Account: Continue Watching and history match the Nuvio app on the TV (same profile; profile selection is unverified and defaults to the lowest id).
 - [ ] Player: poster no taller than ~1/3 of the screen, transport bar sits above the dock on small iPhones, nothing overlaps.
+
+## Phase 4.3 additions
+- [ ] Discover: hold/press a recent-search chip, a genre chip and a poster; the expanded glass is not clipped top, bottom or at the screen edge.
+- [ ] Continue Watching shows 16:9 cards (backdrop, or whole poster on a dark panel when there is no backdrop); never stretched.
+- [ ] Detail sheet shows a 16:9 backdrop when one exists, otherwise the 2:3 poster.
+- [ ] Remote, trackpad, mouse, keyboard, helpers, Samsung, volume, YouTube launch: unchanged (no input/helper files were edited).
