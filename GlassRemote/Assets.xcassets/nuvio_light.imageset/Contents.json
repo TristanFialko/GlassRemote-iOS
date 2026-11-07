@@ -1,8 +1,9 @@
 {
   "images": [
     {
-      "filename": "stremio.png",
-      "idiom": "universal"
+      "filename": "nuvio_light.png",
+      "idiom": "universal",
+      "scale": "1x"
     }
   ],
   "info": {
