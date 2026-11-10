@@ -14,11 +14,18 @@ import UIKit
 ///   edge strips in the page's side padding start a page swipe.
 /// - Discover / Player: a horizontal-dominant swipe anywhere changes page, EXCEPT one that begins
 ///   inside a horizontal scroll view (a carousel), which scrolls the carousel instead.
+///
+/// Landscape (Phase 6): the dock becomes a vertical glass rail on the leading edge and pages sit
+/// beside it. Rotation only changes values (padding, alignment, the dock's axis); the pages are the
+/// same views, so rotating never rebuilds a page or touches the connection. Touches that land on
+/// the rail never start a page swipe.
 struct RootPagerView: View {
     @StateObject private var navigator = PageNavigator()
     /// Live horizontal finger travel while a page swipe is in progress (0 otherwise).
     @State private var dragX: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.layoutDirection) private var layoutDirection
 
     private let edgeWidth: CGFloat = 16
     private var page: AppPage { navigator.page }
@@ -28,35 +35,62 @@ struct RootPagerView: View {
         GeometryReader { geo in
             let width = geo.size.width
             let safeBottom = geo.safeAreaInsets.bottom
-            let clearance = DockMetrics.clearance(safeBottom: safeBottom)
+            let safeLeading = geo.safeAreaInsets.leading
+            let landscape = LayoutContext.resolve(verticalSizeClass: verticalSizeClass, size: geo.size).isLandscape
+            let clearance = landscape ? DockMetrics.landscapeBottomClearance : DockMetrics.clearance(safeBottom: safeBottom)
+            let leading: CGFloat = landscape ? DockMetrics.railClearance(safeLeading: safeLeading) : 0
+            let context = LayoutContext(isLandscape: landscape,
+                                        size: CGSize(width: max(width - leading, 0), height: geo.size.height))
+            let travel = AppPage.resisted(dragX, on: page)
+            // The rail never grows past the visible height (the keyboard can shrink it in landscape).
+            let railLength = min(DockMetrics.railLength(count: AppPage.allCases.count), max(geo.size.height - 8, 120))
 
-            ZStack(alignment: .bottom) {
+            ZStack(alignment: landscape ? .leading : .bottom) {
                 HStack(spacing: 0) {
                     ForEach(AppPage.allCases) { item in
+                        let depth = PageDepth.distance(of: item, current: page, travel: travel, width: width)
                         content(for: item, clearance: clearance)
+                            // Landscape: pages sit beside the rail. Only a value changes on rotation, never
+                            // the view, so every page (and the Remote's touch state) stays alive.
+                            .padding(.leading, leading)
                             .frame(width: width, height: geo.size.height)
+                            .scaleEffect(PageDepth.scale(depth, reduceMotion: reduceMotion))
+                            .opacity(PageDepth.opacity(depth, reduceMotion: reduceMotion))
                             .allowsHitTesting(item == page)
                             .accessibilityHidden(item != page)
                     }
                 }
                 .frame(width: width * CGFloat(AppPage.allCases.count), alignment: .leading)
-                .offset(x: -CGFloat(page.rawValue) * width + AppPage.resisted(dragX, on: page))
+                .offset(x: -CGFloat(page.rawValue) * width + travel)
                 .frame(width: width, alignment: .leading)
                 .animation(spring, value: page)
                 .clipped()
 
-                PageDock()
-                    .padding(.horizontal, DockMetrics.sideInset)
-                    .padding(.bottom, DockMetrics.baseGap)
-                    // Sinks into the bottom safe area by a measured amount (never into the indicator).
-                    .offset(y: DockMetrics.drop(safeBottom: safeBottom))
+                if landscape {
+                    // The dock stands on end as a glass rail on the leading edge, vertically centred.
+                    PageDock(axis: .vertical)
+                        .frame(height: railLength)
+                        .padding(.leading, DockMetrics.railGap)
+                        .offset(x: -DockMetrics.railDrop(safeLeading: safeLeading))
+                        .transition(.opacity)
+                } else {
+                    PageDock()
+                        .padding(.horizontal, DockMetrics.sideInset)
+                        .padding(.bottom, DockMetrics.baseGap)
+                        // Sinks into the bottom safe area by a measured amount (never into the indicator).
+                        .offset(y: DockMetrics.drop(safeBottom: safeBottom))
+                        .transition(.opacity)
+                }
             }
             .environment(\.dockClearance, clearance)
+            .environment(\.layoutContext, context)
             .background {
                 PagerPan(
                     page: page,
                     edgeWidth: edgeWidth,
-                    dockZone: DockMetrics.topFromScreenBottom(safeBottom: safeBottom) + 8,
+                    dockZone: landscape ? 0 : DockMetrics.topFromScreenBottom(safeBottom: safeBottom) + 8,
+                    railZone: landscape ? DockMetrics.railZone(safeLeading: safeLeading) : 0,
+                    rightToLeft: layoutDirection == .rightToLeft,
                     onChanged: { dragX = $0 },
                     onEnded: { translation, predicted in
                         let target = AppPage.target(from: page, translation: translation, predicted: predicted, width: width)
@@ -91,6 +125,13 @@ enum PagerGesturePolicy {
 
     static func isHorizontalDominant(dx: CGFloat, dy: CGFloat) -> Bool { abs(dx) > abs(dy) * dominance }
 
+    /// Landscape: a touch that lands on the leading rail belongs to the rail (it scrubs by itself).
+    /// `x` is measured from the left of the screen; in right-to-left layouts the rail is on the right.
+    static func inRail(x: CGFloat, width: CGFloat, railZone: CGFloat, rightToLeft: Bool) -> Bool {
+        guard railZone > 0 else { return false }
+        return (rightToLeft ? width - x : x) < railZone
+    }
+
     /// Whether a touch that lands at `x` (of `width`) may start a page swipe on `page`.
     /// Remote pages only from its edge strips; the others anywhere.
     static func acceptsTouch(on page: AppPage, x: CGFloat, width: CGFloat, edgeWidth: CGFloat) -> Bool {
@@ -113,6 +154,9 @@ private struct PagerPan: UIViewRepresentable {
     let edgeWidth: CGFloat
     /// Height from the bottom edge of the screen that belongs to the dock.
     let dockZone: CGFloat
+    /// Landscape: width from the leading edge of the screen that belongs to the rail (0 in portrait).
+    let railZone: CGFloat
+    let rightToLeft: Bool
     let onChanged: (CGFloat) -> Void
     let onEnded: (_ translation: CGFloat, _ predicted: CGFloat) -> Void
     let onCancelled: () -> Void
@@ -137,6 +181,8 @@ private struct PagerPan: UIViewRepresentable {
         context.coordinator.page = page
         context.coordinator.edgeWidth = edgeWidth
         context.coordinator.dockZone = dockZone
+        context.coordinator.railZone = railZone
+        context.coordinator.rightToLeft = rightToLeft
         context.coordinator.onChanged = onChanged
         context.coordinator.onEnded = onEnded
         context.coordinator.onCancelled = onCancelled
@@ -148,6 +194,8 @@ private struct PagerPan: UIViewRepresentable {
         var page: AppPage = .remote
         var edgeWidth: CGFloat = 16
         var dockZone: CGFloat = 90
+        var railZone: CGFloat = 0
+        var rightToLeft = false
         var onChanged: (CGFloat) -> Void = { _ in }
         var onEnded: (CGFloat, CGFloat) -> Void = { _, _ in }
         var onCancelled: () -> Void = {}
@@ -174,6 +222,8 @@ private struct PagerPan: UIViewRepresentable {
             guard let host = gestureRecognizer.view else { return false }
             let point = touch.location(in: host)
             if point.y > host.bounds.height - dockZone { return false }
+            if PagerGesturePolicy.inRail(x: point.x, width: host.bounds.width, railZone: railZone,
+                                         rightToLeft: rightToLeft) { return false }
             guard PagerGesturePolicy.acceptsTouch(on: page, x: point.x, width: host.bounds.width, edgeWidth: edgeWidth) else { return false }
             startedInHorizontalScroller = Self.enclosingHorizontalScroller(of: touch.view) != nil
             return true
@@ -245,19 +295,25 @@ private final class PagerAnchorView: UIView {
 /// The icon / caption labels are drawn above the glass (see `GlassScrubSelector`). The dock follows
 /// the `.dock` contrast rules: its own scrim, ink and edge from the theme, never the accent, so it
 /// stays legible in light themes and over bright artwork.
+/// In landscape the same dock runs vertically as the page rail (`axis: .vertical`).
 struct PageDock: View {
+    var axis: Axis = .horizontal
     @EnvironmentObject private var navigator: PageNavigator
     @Environment(\.glassTheme) private var theme
 
     var body: some View {
+        let vertical = axis == .vertical
         GlassScrubSelector(
             values: AppPage.allCases,
             selection: Binding(get: { navigator.page }, set: { navigator.go($0, haptic: false) }),
-            height: DockMetrics.height, inset: 6, role: .dock
+            height: vertical ? DockMetrics.railWidth : DockMetrics.height,
+            inset: vertical ? DockMetrics.railInset : 6,
+            role: .dock,
+            axis: axis
         ) { item, selected in
-            VStack(spacing: 4) {
-                Image(systemName: item.symbol(selected: selected)).scaledFont(22, .semibold)
-                Text(item.title).scaledFont(10.5, .semibold).lineLimit(1)
+            VStack(spacing: vertical ? 3 : 4) {
+                Image(systemName: item.symbol(selected: selected)).scaledFont(vertical ? 20 : 22, .semibold)
+                Text(item.title).scaledFont(vertical ? 9.5 : 10.5, .semibold).lineLimit(1).minimumScaleFactor(0.8)
             }
             .foregroundStyle(selected ? theme.dockInk : theme.dockInkInactive)
             .accessibilityLabel(item.title)

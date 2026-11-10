@@ -213,35 +213,69 @@ enum ScrubSelectorRole {
 /// the bubble follows it (clamped to the bar) and grows slightly; the selection changes the moment
 /// the bubble's centre crosses the midpoint between two segments, with one soft haptic tick. On
 /// release the bubble settles into the selected segment with a spring.
+///
+/// Phase 6: the bubble is a lens. Labels under it are drawn again, magnified about its centre, so an
+/// icon swells as the bubble passes over it (half of each while it crosses between two). The bubble
+/// stretches along the bar with the finger's speed and relaxes when the finger stops. Native Liquid
+/// Glass (iOS 26) refracts and lights itself; before iOS 26 the material bubble gets drawn light: a rim
+/// highlight that follows its position, a faint chromatic fringe and a sheen. `axis: .vertical` stands
+/// the whole control on end for the landscape page rail; touch rules are identical on both axes.
 struct GlassScrubSelector<Value: Hashable, Label: View>: View {
     let values: [Value]
     @Binding var selection: Value
+    /// Thickness of the bar: its height when horizontal, its width when vertical.
     var height: CGFloat = 40
     var inset: CGFloat = 4
     var haptic: Bool = true
     var role: ScrubSelectorRole = .control
+    var axis: Axis = .horizontal
     @ViewBuilder var label: (Value, Bool) -> Label
 
     @Environment(\.glassTheme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var ns
     @State private var drag: Drag?
 
-    /// `grab` is where in the bubble the finger holds it; `lensX` is the bubble's leading edge.
-    private struct Drag { var grab: CGFloat; var lensX: CGFloat }
+    /// `grab`: where along the bubble the finger holds it. `offset`: the bubble's leading (or top) edge.
+    /// `speed`: smoothed finger speed along the bar in pt/s.
+    private struct Drag {
+        var grab: CGFloat
+        var offset: CGFloat
+        var location: CGFloat
+        var time: Date
+        var speed: CGFloat = 0
+    }
+
+    private var vertical: Bool { axis == .vertical }
 
     var body: some View {
         GeometryReader { geo in
-            let count = max(values.count, 1)
-            let seg = (geo.size.width - inset * 2) / CGFloat(count)
-            let index = values.firstIndex(of: selection) ?? 0
-            let restX = inset + seg * CGFloat(index)
-            let lensX = drag?.lensX ?? restX
-            let dragging = drag != nil
-            let maxLensX = geo.size.width - inset - seg
-            let scrim = role == .dock ? theme.dockScrim : theme.controlScrim
-            let outline = role == .dock ? theme.dockEdge : theme.controlEdge
+            let length: CGFloat = vertical ? geo.size.height : geo.size.width
+            let thickness: CGFloat = vertical ? geo.size.width : geo.size.height
+            let count: Int = max(values.count, 1)
+            let seg: CGFloat = ScrubGeometry.segment(length: length, inset: inset, count: count)
+            let index: Int = values.firstIndex(of: selection) ?? 0
+            let rest: CGFloat = inset + seg * CGFloat(index)
+            let offset: CGFloat = drag?.offset ?? rest
+            let dragging: Bool = drag != nil
+            let stretch: CGFloat = reduceMotion ? 1 : ScrubGeometry.stretch(speed: drag?.speed ?? 0)
+            let grow: CGFloat = dragging && !reduceMotion ? 1.10 : 1
+            let along: CGFloat = grow * stretch
+            let across: CGFloat = grow / stretch.squareRoot()
+            let lensSize: CGSize = vertical ? CGSize(width: thickness - inset * 2, height: seg)
+                                            : CGSize(width: seg, height: thickness - inset * 2)
+            let lensOffset: CGSize = vertical ? CGSize(width: 0, height: offset) : CGSize(width: offset, height: 0)
+            let lens = LensFrame(size: lensSize, offset: lensOffset,
+                                 scaleX: vertical ? across : along, scaleY: vertical ? along : across)
+            let centre: CGFloat = length > 0 ? (offset + seg / 2) / length : 0.5
+            let anchor: UnitPoint = vertical ? UnitPoint(x: 0.5, y: centre) : UnitPoint(x: centre, y: 0.5)
+            let magnify: CGFloat = reduceMotion ? 1 : ScrubGeometry.magnification(dragging: dragging)
+            let progress: CGFloat = ScrubGeometry.progress(offset: offset, inset: inset, length: length, segment: seg)
+            let scrim: Color = role == .dock ? theme.dockScrim : theme.controlScrim
+            let outline: Color = role == .dock ? theme.dockEdge : theme.controlEdge
+            let alignment: Alignment = vertical ? .top : .leading
 
-            ZStack(alignment: .leading) {
+            ZStack(alignment: alignment) {
                 // Contrast underlay (outside the glass container): guarantees the labels a backdrop.
                 Capsule().fill(scrim)
                     .shadow(color: theme.separationShadow, radius: 8, y: 3)
@@ -249,67 +283,186 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
 
                 // Glass only: bar + bubble. Nothing else may live in this container.
                 GlassGroup(spacing: 10) {
-                    ZStack(alignment: .leading) {
+                    ZStack(alignment: alignment) {
                         Color.clear.glassBar(Capsule(), edge: false).glassMorph("bar", in: ns)
                         Color.clear
-                            .frame(width: seg, height: height - inset * 2)
+                            .frame(width: lens.size.width, height: lens.size.height)
                             .glassLens(Capsule())
                             .glassMorph("lens", in: ns)
-                            .scaleEffect(dragging ? 1.10 : 1)
-                            .offset(x: lensX)
-                            .animation(dragging ? .interactiveSpring(response: 0.16, dampingFraction: 0.86)
-                                                : .spring(response: 0.38, dampingFraction: 0.80), value: lensX)
-                            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: dragging)
+                            .lensPlacement(lens)
                     }
                 }
 
                 Capsule().stroke(outline, lineWidth: 0.9).allowsHitTesting(false)
 
-                // Labels above the glass, untouched by refraction.
-                HStack(spacing: 0) {
-                    ForEach(Array(values.enumerated()), id: \.offset) { offset, value in
-                        label(value, offset == index)
-                            .frame(width: seg, height: height)
-                            .accessibilityElement(children: .combine)
-                            .accessibilityAddTraits(offset == index ? [.isButton, .isSelected] : .isButton)
-                            .accessibilityAction { choose(value) }
-                    }
+                if !GlassSupport.isNative {
+                    LensSpecular(progress: progress, vertical: vertical, active: dragging, light: theme.isLight)
+                        .frame(width: lens.size.width, height: lens.size.height)
+                        .lensPlacement(lens)
+                        .allowsHitTesting(false)
                 }
-                .padding(.horizontal, inset)
-                .allowsHitTesting(false)
+
+                // Labels above the glass, untouched by refraction: as they are outside the bubble,
+                // magnified about its centre inside it.
+                labels(index: index, thickness: thickness, seg: seg)
+                    .mask(alignment: alignment) { LensCutout(lens: lens, alignment: alignment) }
+                labels(index: index, thickness: thickness, seg: seg)
+                    .scaleEffect(magnify, anchor: anchor)
+                    .mask(alignment: alignment) {
+                        Capsule().frame(width: lens.size.width, height: lens.size.height).lensPlacement(lens)
+                    }
+                    .accessibilityHidden(true)
             }
+            .modifier(LensMotion(offset: offset, dragging: dragging, stretch: stretch))
             .contentShape(Capsule())
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         ScrubTouch.shared.touch()
-                        let x = value.location.x
+                        let p: CGFloat = vertical ? value.location.y : value.location.x
+                        let now = Date()
                         var state: Drag
                         if let current = drag {
                             state = current
+                            let dt = CGFloat(now.timeIntervalSince(current.time))
+                            if dt > 0.004 { state.speed = current.speed * 0.6 + (p - current.location) / dt * 0.4 }
                         } else {
                             // First contact: grab the bubble in place if the finger is on it, else pick it up under the finger.
-                            let onSelected = x >= restX && x <= restX + seg
-                            let start = onSelected ? restX : min(max(x - seg / 2, inset), maxLensX)
-                            state = Drag(grab: x - start, lensX: start)
+                            let onSelected = p >= rest && p <= rest + seg
+                            let start = onSelected ? rest : ScrubGeometry.clamp(p - seg / 2, inset: inset, length: length, segment: seg)
+                            state = Drag(grab: p - start, offset: start, location: p, time: now)
                         }
-                        state.lensX = min(max(x - state.grab, inset), maxLensX)
+                        state.offset = ScrubGeometry.clamp(p - state.grab, inset: inset, length: length, segment: seg)
+                        state.location = p
+                        state.time = now
                         drag = state
+                        if abs(state.speed) > 1 { relaxStretch(after: now) }
                         // Selection follows the bubble's centre: it flips as the bubble crosses a midpoint.
-                        let centre = state.lensX + seg / 2
-                        let i = min(max(Int((centre - inset) / seg), 0), count - 1)
-                        if values[i] != selection { choose(values[i]) }
+                        let i = ScrubGeometry.index(forOffset: state.offset, inset: inset, segment: seg, count: count)
+                        if i < values.count, values[i] != selection { choose(values[i]) }
                     }
                     .onEnded { _ in drag = nil }
             )
         }
-        .frame(height: height)
+        .frame(width: vertical ? height : nil, height: vertical ? nil : height)
+    }
+
+    private func labels(index: Int, thickness: CGFloat, seg: CGFloat) -> some View {
+        let stack: AnyLayout = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
+        return stack {
+            ForEach(Array(values.enumerated()), id: \.offset) { offset, value in
+                label(value, offset == index)
+                    .frame(width: vertical ? thickness : seg, height: vertical ? seg : thickness)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(offset == index ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityAction { choose(value) }
+            }
+        }
+        .padding(vertical ? Edge.Set.vertical : Edge.Set.horizontal, inset)
+        .allowsHitTesting(false)
+    }
+
+    /// The finger can stop without lifting: once events stop arriving, the stretch relaxes.
+    private func relaxStretch(after stamp: Date) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 90_000_000)
+            guard var current = drag, current.time == stamp, current.speed != 0 else { return }
+            current.speed = 0
+            drag = current
+        }
     }
 
     private func choose(_ value: Value) {
         guard value != selection else { return }
         if haptic { Haptics.soft() }
         selection = value
+    }
+}
+
+/// Where the scrub selector's bubble is, shared by every layer that has to sit exactly on it.
+private struct LensFrame {
+    var size: CGSize
+    var offset: CGSize
+    var scaleX: CGFloat
+    var scaleY: CGFloat
+}
+
+private extension View {
+    func lensPlacement(_ lens: LensFrame) -> some View {
+        scaleEffect(x: lens.scaleX, y: lens.scaleY).offset(lens.offset)
+    }
+}
+
+/// Everything except the bubble (masks the un-magnified labels).
+private struct LensCutout: View {
+    let lens: LensFrame
+    let alignment: Alignment
+
+    var body: some View {
+        Rectangle()
+            .overlay(alignment: alignment) {
+                Capsule()
+                    .frame(width: lens.size.width, height: lens.size.height)
+                    .lensPlacement(lens)
+                    .blendMode(.destinationOut)
+            }
+            .compositingGroup()
+    }
+}
+
+/// One set of curves for every layer that follows the bubble, so glass, light, masks and the
+/// magnified labels always move together.
+private struct LensMotion: ViewModifier {
+    let offset: CGFloat
+    let dragging: Bool
+    let stretch: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .animation(dragging ? .interactiveSpring(response: 0.16, dampingFraction: 0.86)
+                                : .spring(response: 0.38, dampingFraction: 0.80), value: offset)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: dragging)
+            .animation(.interactiveSpring(response: 0.22, dampingFraction: 0.8), value: stretch)
+    }
+}
+
+/// Pre-iOS 26 light on the material bubble (native Liquid Glass lights itself): a rim highlight whose
+/// bright arc slides round the lens as it travels, a faint chromatic fringe where the rim bends light,
+/// a sheen on the lit side and a darker rim on the far side for depth.
+private struct LensSpecular: View {
+    let progress: CGFloat
+    let vertical: Bool
+    let active: Bool
+    let light: Bool
+
+    var body: some View {
+        let peak: Double = light ? 0.85 : 0.6
+        let angle = Angle.degrees(Double(progress) * 140 - 70 + (vertical ? 90 : 0))
+        let fringe: CGFloat = active ? 1.0 : 0.6
+        let litSide: UnitPoint = vertical ? .leading : .top
+        let farSide: UnitPoint = vertical ? .trailing : .bottom
+        let fringeA = CGSize(width: vertical ? 0 : -fringe, height: vertical ? -fringe : 0)
+        let fringeB = CGSize(width: vertical ? 0 : fringe, height: vertical ? fringe : 0)
+        let rim = Gradient(stops: [
+            .init(color: Color.white.opacity(peak), location: 0.00),
+            .init(color: Color.white.opacity(0.04), location: 0.22),
+            .init(color: Color.white.opacity(peak * 0.45), location: 0.50),
+            .init(color: Color.white.opacity(0.04), location: 0.78),
+            .init(color: Color.white.opacity(peak), location: 1.00),
+        ])
+        return ZStack {
+            Capsule()
+                .fill(LinearGradient(colors: [Color.white.opacity(active ? 0.30 : 0.18), Color.white.opacity(0)],
+                                     startPoint: litSide, endPoint: .center))
+                .padding(1.5)
+            Capsule().strokeBorder(Color.cyan.opacity(active ? 0.24 : 0.12), lineWidth: 0.8).offset(fringeA)
+            Capsule().strokeBorder(Color.pink.opacity(active ? 0.20 : 0.10), lineWidth: 0.8).offset(fringeB)
+            Capsule().strokeBorder(AngularGradient(gradient: rim, center: .center, angle: angle), lineWidth: active ? 1.4 : 1.0)
+            Capsule()
+                .strokeBorder(Color.black.opacity(light ? 0.10 : 0.24), lineWidth: 0.8)
+                .mask { LinearGradient(colors: [.clear, .black], startPoint: .center, endPoint: farSide) }
+        }
+        .compositingGroup()
     }
 }
 
