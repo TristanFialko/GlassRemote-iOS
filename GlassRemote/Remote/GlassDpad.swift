@@ -119,7 +119,10 @@ struct GlassDpad: View {
         let v = key.vector
         let isLit = lit == key
         let glyph = min(24, max(17, size * 0.062))
-        return RepeatKey(hitShape: DpadWedge(angle: key.angle, outer: 1.42),
+        // Phase 7.1: the hit area is the pad's own square quarter. The old wedge reached 1.42 radii out,
+        // past the top of the pad and over the Mouse / D-pad selector, so touches meant for the selector
+        // fired Up.
+        return RepeatKey(hitShape: DpadQuadrant(angle: key.angle),
                          onFire: { onKey(key.rawValue) },
                          onPressChange: { setLit(key, $0) }) {
             ZStack {
@@ -212,6 +215,24 @@ struct DpadWedge: Shape {
         if inner > 0 {
             for i in stride(from: steps, through: 0, by: -1) { p.addLine(to: DpadGeometry.point(c, r * inner, at(i))) }
         }
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// Touch area of one arrow (Phase 7.1): the triangle from the centre to the two corners of the pad's
+/// square on either side of `angle`. The four quarters tile the square exactly, so diagonals and
+/// corners still reach the nearest arrow, and nothing ever extends past the pad's frame.
+struct DpadQuadrant: Shape {
+    var angle: Double
+
+    func path(in rect: CGRect) -> Path {
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        let corner = min(rect.width, rect.height) / 2 * CGFloat(2).squareRoot()
+        var p = Path()
+        p.move(to: c)
+        p.addLine(to: DpadGeometry.point(c, corner, angle - 45))
+        p.addLine(to: DpadGeometry.point(c, corner, angle + 45))
         p.closeSubpath()
         return p
     }

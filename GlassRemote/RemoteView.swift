@@ -12,6 +12,23 @@ final class PointerBox {
     var token = 0                 // invalidates a pending touch-and-hold when the touch changes
 }
 
+/// Phase 7.1: drops D-pad input that arrives while a selector is being touched or straight after the
+/// Mouse / D-pad switch, so the touch that changes mode can never also press a key.
+final class RemoteInputGuard {
+    static let settleInterval: TimeInterval = 0.35
+    private(set) var modeChangedAt = Date.distantPast
+
+    func modeChanged(at now: Date = Date()) { modeChangedAt = now }
+
+    func blocksDpad(now: Date = Date(), scrubActive: Bool = ScrubTouch.shared.isActive) -> Bool {
+        Self.blocks(now: now, modeChangedAt: modeChangedAt, scrubActive: scrubActive)
+    }
+
+    static func blocks(now: Date, modeChangedAt: Date, scrubActive: Bool) -> Bool {
+        scrubActive || now.timeIntervalSince(modeChangedAt) < settleInterval
+    }
+}
+
 struct RemoteView: View {
     @EnvironmentObject private var remote: RemoteModel
     @EnvironmentObject private var navigator: PageNavigator
@@ -19,6 +36,7 @@ struct RemoteView: View {
     // Drag position lives in a reference box so updating it on every touch move does NOT invalidate
     // RemoteView's body (a plain @State CGPoint? did). Same values, same order, same behaviour.
     @State private var pointerBox = PointerBox()
+    @State private var inputGuard = RemoteInputGuard()
     private var lastPoint: CGPoint? {
         get { pointerBox.last }
         nonmutating set { pointerBox.last = newValue }
@@ -299,6 +317,7 @@ struct RemoteView: View {
 
     private var modeRow: some View {
         ModeSelector(isMouse: $remote.isTrackpad, segmentHeight: 32)
+            .onChange(of: remote.isTrackpad) { _ in inputGuard.modeChanged() }
     }
 
     // MARK: - Mouse / D-pad surface
@@ -457,7 +476,10 @@ struct RemoteView: View {
         let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
         return GeometryReader { geo in
             let size = max(180, min(420, min(geo.size.width, geo.size.height) - 12))
-            GlassDpad(size: size) { remote.routedKey($0) }
+            GlassDpad(size: size) { key in
+                guard !inputGuard.blocksDpad() else { return }
+                remote.routedKey(key)
+            }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .glassSurface(shape)
@@ -465,6 +487,7 @@ struct RemoteView: View {
         .simultaneousGesture(
             DragGesture(minimumDistance: 28)
                 .onEnded { value in
+                    guard !inputGuard.blocksDpad() else { return }
                     let w = value.translation.width, h = value.translation.height
                     let name = abs(w) > abs(h) ? (w > 0 ? "RIGHT" : "LEFT") : (h > 0 ? "DOWN" : "UP")
                     Haptics.soft()
