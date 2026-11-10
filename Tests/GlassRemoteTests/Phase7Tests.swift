@@ -265,7 +265,8 @@ final class Phase7AddonStoreTests: XCTestCase {
         store.load(profile: a)
 
         let installed = try await store.install(from: "demo.example.com")
-        XCTAssertEqual(installed.id, "org.demo")
+        XCTAssertEqual(installed.manifestID, "org.demo")
+        XCTAssertNotEqual(installed.id, "org.demo", "Installs have their own id, separate from the manifest id")
         XCTAssertEqual(store.addons.count, 1)
 
         do {
@@ -275,8 +276,8 @@ final class Phase7AddonStoreTests: XCTestCase {
             XCTAssertEqual(error as? AddonError, .duplicate("Demo"))
         }
 
-        // A new (configured) link for the same add-on updates it in place.
-        _ = try await store.install(from: "https://demo.example.com/cfg/manifest.json")
+        // Replacing the link (after reconfiguring) updates that install in place.
+        _ = try await store.install(from: "https://demo.example.com/cfg/manifest.json", replacing: installed.id)
         XCTAssertEqual(store.addons.count, 1)
         XCTAssertEqual(store.addons.first?.displayURL, "demo.example.com/\u{2026}")
         XCTAssertEqual(store.streamSources(type: "movie", id: "tt0133093").first?.base.absoluteString, "https://demo.example.com/cfg")
@@ -289,16 +290,16 @@ final class Phase7AddonStoreTests: XCTestCase {
             XCTAssertEqual(error as? AddonError, .unauthorized)
         }
 
-        store.setEnabled("org.demo", false)
+        store.setEnabled(installed.id, false)
         XCTAssertTrue(store.streamSources(type: "movie", id: "tt0133093").isEmpty)
-        store.setEnabled("org.demo", true)
+        store.setEnabled(installed.id, true)
 
         store.load(profile: b)
         XCTAssertTrue(store.addons.isEmpty, "Add-ons belong to one profile")
         store.load(profile: a)
         XCTAssertEqual(store.addons.count, 1)
 
-        store.remove("org.demo")
+        store.remove(installed.id)
         XCTAssertTrue(store.addons.isEmpty)
         _ = try await store.install(from: "demo.example.com")
         store.purge(profile: a)

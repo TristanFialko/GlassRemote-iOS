@@ -24,7 +24,7 @@ struct AddonsPage: View {
                         NavigationLink {
                             AddonDetailPage(addonID: addon.id)
                         } label: {
-                            AddonRow(addon: addon, refreshing: store.refreshing.contains(addon.id))
+                            AddonRow(addon: addon, name: store.displayName(for: addon), refreshing: store.refreshing.contains(addon.id))
                         }
                         .swipeActions(edge: .leading) {
                             Button(addon.enabled ? "Disable" : "Enable") { store.setEnabled(addon.id, !addon.enabled) }
@@ -98,6 +98,8 @@ struct AddonLogo: View {
 
 struct AddonRow: View {
     let addon: InstalledAddon
+    /// Shown instead of the manifest name, e.g. "Torrentio 2" when an add-on is installed twice.
+    var name: String? = nil
     var refreshing = false
 
     var body: some View {
@@ -105,7 +107,7 @@ struct AddonRow: View {
             AddonLogo(manifest: addon.manifest, size: 40)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Text(addon.manifest.name).font(.body.weight(.semibold)).lineLimit(1)
+                    Text(name ?? addon.manifest.name).font(.body.weight(.semibold)).lineLimit(1)
                     if !addon.enabled {
                         Text("Off")
                             .font(.caption2.weight(.bold))
@@ -133,6 +135,8 @@ struct AddonRow: View {
 }
 
 struct AddAddonSheet: View {
+    /// Install id whose link this sheet replaces. Nil adds a new install.
+    var replacing: String? = nil
     @ObservedObject private var store = AddonStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var link = ""
@@ -172,7 +176,7 @@ struct AddAddonSheet: View {
                         HStack(spacing: 12) {
                             AddonLogo(manifest: installed.manifest, size: 44)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(installed.manifest.name).font(.headline)
+                                Text(store.displayName(for: installed)).font(.headline)
                                 Text("Version \(installed.manifest.version)").font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -184,7 +188,7 @@ struct AddAddonSheet: View {
             }
             .scrollContentBackground(.hidden)
             .background { AmbientBackdrop() }
-            .navigationTitle("Add add-on")
+            .navigationTitle(replacing == nil ? "Add add-on" : "Replace link")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -211,7 +215,7 @@ struct AddAddonSheet: View {
         let text = link
         Task {
             do {
-                let addon = try await store.install(from: text)
+                let addon = try await store.install(from: text, replacing: replacing)
                 withAnimation(Motion.snappy) {
                     installed = addon
                     link = ""
@@ -236,6 +240,7 @@ struct AddonDetailPage: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.dismiss) private var dismiss
     @State private var confirmRemove = false
+    @State private var showReplace = false
     @State private var message: String?
 
     var body: some View {
@@ -246,7 +251,8 @@ struct AddonDetailPage: View {
                 Text("This add-on was removed.").foregroundStyle(.secondary)
             }
         }
-        .profileSubpage(store.addon(addonID)?.manifest.name ?? "Add-on")
+        .profileSubpage(store.addon(addonID).map { store.displayName(for: $0) } ?? "Add-on")
+        .sheet(isPresented: $showReplace) { AddAddonSheet(replacing: addonID) }
     }
 
     private func content(_ addon: InstalledAddon) -> some View {
@@ -258,7 +264,7 @@ struct AddonDetailPage: View {
                 HStack(spacing: 14) {
                     AddonLogo(manifest: m, size: 56)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(m.name).font(.title3.weight(.bold))
+                        Text(store.displayName(for: addon)).font(.title3.weight(.bold))
                         Text("Version \(m.version) · \(addon.displayURL)").font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -287,6 +293,9 @@ struct AddonDetailPage: View {
                 if let configure = store.configureURL(for: addon) {
                     Button { openURL(configure) } label: { Label("Configure on the add-on's website", systemImage: "slider.horizontal.3") }
                 }
+                Button { showReplace = true } label: {
+                    Label("Replace link", systemImage: "link")
+                }
                 Button {
                     Task { await store.refresh(addonID) }
                 } label: {
@@ -302,7 +311,7 @@ struct AddonDetailPage: View {
                 }
                 if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
             } footer: {
-                Text("After configuring it on its website, add the new link with Add an add-on; this add-on is then updated in place.")
+                Text("After reconfiguring it on its website, use Replace link to update this add-on in place. Adding a new link with Add an add-on installs a separate copy, so two configurations can be used side by side.")
             }
             Section {
                 Button("Remove add-on", role: .destructive) { confirmRemove = true }

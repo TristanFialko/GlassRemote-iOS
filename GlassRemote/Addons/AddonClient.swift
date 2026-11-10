@@ -9,6 +9,8 @@ enum AddonError: LocalizedError, Equatable {
     case invalidManifest(String)
     case network(String)
     case duplicate(String)
+    case differentAddon(String)
+    case notInstalled
     case noProfile
 
     var errorDescription: String? {
@@ -21,6 +23,8 @@ enum AddonError: LocalizedError, Equatable {
         case .invalidManifest(let reason): return reason
         case .network(let reason): return "Couldn't reach the add-on. \(reason)"
         case .duplicate(let name): return "\(name) is already installed with this link."
+        case .differentAddon(let name): return "That link is for a different add-on, not \(name). Use Add an add-on to install it separately."
+        case .notInstalled: return "That add-on is no longer installed."
         case .noProfile: return "No active profile."
         }
     }

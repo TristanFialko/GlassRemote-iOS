@@ -1,8 +1,12 @@
 import Foundation
 import SwiftUI
 
+/// One installed add-on. `installID` is the identity of this install and `manifest.id` is the
+/// add-on's own id. They are kept apart so the same add-on can be installed more than once with
+/// different configured links (for example two Torrentio configurations), each with its own enabled
+/// state, position and Keychain item.
 struct InstalledAddon: Codable, Identifiable, Equatable {
-    var id: String { manifest.id }
+    var installID: UUID
     var manifest: AddonManifest
     /// Redacted link for display. The full link lives only in the Keychain.
     var displayURL: String
@@ -10,6 +14,57 @@ struct InstalledAddon: Codable, Identifiable, Equatable {
     var installedAt: Date
     var refreshedAt: Date
     var lastError: String?
+    /// Only set on records saved before install ids existed: the Keychain account suffix they used,
+    /// which was the manifest id. AddonStore.load moves the link to the install id and clears this.
+    /// Never saved.
+    var legacySecretKey: String?
+
+    var id: String { installID.uuidString }
+    var manifestID: String { manifest.id }
+
+    init(installID: UUID = UUID(), manifest: AddonManifest, displayURL: String, enabled: Bool,
+         installedAt: Date, refreshedAt: Date, lastError: String? = nil) {
+        self.installID = installID
+        self.manifest = manifest
+        self.displayURL = displayURL
+        self.enabled = enabled
+        self.installedAt = installedAt
+        self.refreshedAt = refreshedAt
+        self.lastError = lastError
+        self.legacySecretKey = nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case installID, manifest, displayURL, enabled, installedAt, refreshedAt, lastError
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        manifest = try c.decode(AddonManifest.self, forKey: .manifest)
+        displayURL = try c.decode(String.self, forKey: .displayURL)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        installedAt = try c.decode(Date.self, forKey: .installedAt)
+        refreshedAt = try c.decode(Date.self, forKey: .refreshedAt)
+        lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
+        if let saved = try c.decodeIfPresent(UUID.self, forKey: .installID) {
+            installID = saved
+            legacySecretKey = nil
+        } else {
+            installID = UUID()
+            legacySecretKey = manifest.id
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(installID, forKey: .installID)
+        try c.encode(manifest, forKey: .manifest)
+        try c.encode(displayURL, forKey: .displayURL)
+        try c.encode(enabled, forKey: .enabled)
+        try c.encode(installedAt, forKey: .installedAt)
+        try c.encode(refreshedAt, forKey: .refreshedAt)
+        try c.encodeIfPresent(lastError, forKey: .lastError)
+    }
 }
 
 /// Where an add-on's full link is kept. Production uses the Keychain; tests use memory.
@@ -32,16 +87,17 @@ struct AddonSecrets {
     }
 }
 
-/// An enabled add-on that can be asked for streams.
+/// An enabled add-on install that can be asked for streams.
 struct StreamSource: Equatable, Sendable {
+    /// The install id (not the manifest id), so two installs of one add-on stay apart.
     let addonID: String
     let name: String
     let base: URL
 }
 
 /// Installed add-ons of the active profile. The list (manifest, enabled state, order) is stored per
-/// profile in Application Support; each add-on's full link, which may include a personal token, is
-/// stored in the Keychain under `addon.<profile>.<manifest id>`.
+/// profile in Application Support; each install's full link, which may include a personal token, is
+/// stored in the Keychain under `addon.<profile>.<install id>`.
 @MainActor
 final class AddonStore: ObservableObject {
     static let shared = AddonStore()
@@ -63,12 +119,37 @@ final class AddonStore: ObservableObject {
 
     var streamAddonCount: Int { addons.filter { $0.enabled && $0.manifest.capabilities.contains(.stream) }.count }
 
+    /// Loads a profile's list. Records saved before install ids existed get one, and their Keychain
+    /// item moves from the manifest-id account to the install-id account.
     func load(profile: UUID) {
         profileID = profile
-        addons = Self.read(fileURL(profile))
+        var list = Self.read(fileURL(profile))
+        var migrated = false
+        for i in list.indices {
+            guard let legacy = list[i].legacySecretKey else { continue }
+            let old = Self.account(profile, legacy)
+            if let link = secrets.read(old) {
+                secrets.write(Self.account(profile, list[i].id), link)
+                secrets.remove(old)
+            }
+            list[i].legacySecretKey = nil
+            migrated = true
+        }
+        addons = list
+        if migrated { save() }
     }
 
+    /// Looks an install up by its install id.
     func addon(_ id: String) -> InstalledAddon? { addons.first { $0.id == id } }
+
+    /// The add-on's name, numbered by install order when the same add-on is installed more than once
+    /// ("Torrentio 1", "Torrentio 2"), so rows, the Play sheet and error lines can be told apart.
+    func displayName(for addon: InstalledAddon) -> String {
+        let copies = addons.filter { $0.manifest.id == addon.manifest.id }
+            .sorted { ($0.installedAt, $0.id) < ($1.installedAt, $1.id) }
+        guard copies.count > 1, let n = copies.firstIndex(where: { $0.id == addon.id }) else { return addon.manifest.name }
+        return "\(addon.manifest.name) \(n + 1)"
+    }
 
     func transportURL(for addon: InstalledAddon) -> URL? {
         guard let profileID, let text = secrets.read(Self.account(profileID, addon.id)) else { return nil }
@@ -80,11 +161,12 @@ final class AddonStore: ObservableObject {
         return AddonURL.configure(base: base)
     }
 
-    /// Validates the link, fetches and checks the manifest, then installs. Installing an add-on that
-    /// is already present with a different link (for example after reconfiguring it) updates it in
-    /// place and keeps its position and enabled state.
+    /// Validates the link, fetches and checks the manifest, then installs it as a new install. A
+    /// link that is already installed is a duplicate; a different link for an add-on that is already
+    /// installed (another configuration) becomes a second install. Pass `replacing` to swap the
+    /// link of one install in place (after reconfiguring it), keeping its position and enabled state.
     @discardableResult
-    func install(from input: String) async throws -> InstalledAddon {
+    func install(from input: String, replacing installID: String? = nil) async throws -> InstalledAddon {
         guard let profile = profileID else { throw AddonError.noProfile }
         let url: URL
         do {
@@ -92,13 +174,17 @@ final class AddonStore: ObservableObject {
         } catch let problem as AddonURLProblem {
             throw AddonError.url(problem)
         }
+        if let existing = installed(withLink: url) { throw AddonError.duplicate(displayName(for: existing)) }
+        if let installID, addon(installID) == nil { throw AddonError.notInstalled }
         let manifest = try await client.manifest(at: url)
         guard profileID == profile else { throw CancellationError() }
-        let account = Self.account(profile, manifest.id)
+        // The list may have changed while the manifest was loading.
+        if let existing = installed(withLink: url) { throw AddonError.duplicate(displayName(for: existing)) }
         let now = Date()
-        if let i = addons.firstIndex(where: { $0.id == manifest.id }) {
-            if transportURL(for: addons[i]) == url { throw AddonError.duplicate(manifest.name) }
-            secrets.write(account, url.absoluteString)
+        if let installID {
+            guard let i = addons.firstIndex(where: { $0.id == installID }) else { throw AddonError.notInstalled }
+            guard addons[i].manifest.id == manifest.id else { throw AddonError.differentAddon(addons[i].manifest.name) }
+            secrets.write(Self.account(profile, installID), url.absoluteString)
             addons[i].manifest = manifest
             addons[i].displayURL = AddonURL.display(url)
             addons[i].refreshedAt = now
@@ -107,8 +193,8 @@ final class AddonStore: ObservableObject {
             return addons[i]
         }
         let addon = InstalledAddon(manifest: manifest, displayURL: AddonURL.display(url), enabled: true,
-                                   installedAt: now, refreshedAt: now, lastError: nil)
-        secrets.write(account, url.absoluteString)
+                                   installedAt: now, refreshedAt: now)
+        secrets.write(Self.account(profile, addon.id), url.absoluteString)
         addons.append(addon)
         save()
         return addon
@@ -140,7 +226,7 @@ final class AddonStore: ObservableObject {
         do {
             let manifest = try await client.manifest(at: url)
             guard profileID == profile, let i = addons.firstIndex(where: { $0.id == id }) else { return }
-            if manifest.id != id {
+            if manifest.id != addons[i].manifest.id {
                 addons[i].lastError = "The add-on now reports a different id. Remove it and add it again."
             } else {
                 addons[i].manifest = manifest
@@ -160,19 +246,22 @@ final class AddonStore: ObservableObject {
         for id in addons.map(\.id) { await refresh(id) }
     }
 
-    /// Enabled add-ons that offer streams for this title, in the user's order.
+    /// Enabled installs that offer streams for this title, in the user's order.
     func streamSources(type: String, id: String) -> [StreamSource] {
         addons.compactMap { addon in
             guard addon.enabled, addon.manifest.supports("stream", type: type, id: id),
                   let url = transportURL(for: addon), let base = AddonURL.base(of: url) else { return nil }
-            return StreamSource(addonID: addon.id, name: addon.manifest.name, base: base)
+            return StreamSource(addonID: addon.id, name: displayName(for: addon), base: base)
         }
     }
 
     /// Removes a deleted profile's add-on list and Keychain items.
     func purge(profile: UUID) {
         let url = fileURL(profile)
-        for addon in Self.read(url) { secrets.remove(Self.account(profile, addon.id)) }
+        for addon in Self.read(url) {
+            secrets.remove(Self.account(profile, addon.id))
+            if let legacy = addon.legacySecretKey { secrets.remove(Self.account(profile, legacy)) }
+        }
         try? FileManager.default.removeItem(at: url)
         if profileID == profile {
             addons = []
@@ -180,8 +269,13 @@ final class AddonStore: ObservableObject {
         }
     }
 
-    nonisolated static func account(_ profile: UUID, _ addonID: String) -> String {
-        "addon.\(profile.uuidString).\(addonID)"
+    /// Keychain account for one install's full link.
+    nonisolated static func account(_ profile: UUID, _ installID: String) -> String {
+        "addon.\(profile.uuidString).\(installID)"
+    }
+
+    private func installed(withLink url: URL) -> InstalledAddon? {
+        addons.first { transportURL(for: $0)?.absoluteString == url.absoluteString }
     }
 
     private func fileURL(_ profile: UUID) -> URL {
