@@ -27,8 +27,11 @@ final class Phase73InputOwnershipTests: XCTestCase {
         XCTAssertTrue(guardian.acceptsPadInput(isTrackpad: false))
         guardian.modeChanged()
         XCTAssertFalse(guardian.acceptsPadInput(isTrackpad: false), "hold-repeat stops at the switch")
-        guardian.padTouchChanged(isTrackpad: false)   // same touch keeps moving
-        XCTAssertTrue(guardian.acceptsPadInput(isTrackpad: false) == false || guardian.epoch > 0)
+        guardian.padTouchChanged(isTrackpad: false)   // the same finger keeps moving
+        XCTAssertFalse(guardian.acceptsPadInput(isTrackpad: false), "a held finger can't win a fresh token")
+        guardian.padTouchEnded()
+        guardian.padTouchChanged(isTrackpad: false)   // a new touch
+        XCTAssertTrue(guardian.acceptsPadInput(isTrackpad: false))
     }
 
     func testTouchHeldWhileTheSelectorIsTouchedIsDropped() {
@@ -37,6 +40,8 @@ final class Phase73InputOwnershipTests: XCTestCase {
         guardian.selectorTouchChanged(true)
         XCTAssertFalse(guardian.acceptsPadInput(isTrackpad: false))
         guardian.selectorTouchChanged(false)
+        XCTAssertFalse(guardian.acceptsPadInput(isTrackpad: false))
+        guardian.padTouchChanged(isTrackpad: false)   // still the same finger
         XCTAssertFalse(guardian.acceptsPadInput(isTrackpad: false))
     }
 
@@ -56,11 +61,11 @@ final class Phase73InputOwnershipTests: XCTestCase {
         XCTAssertFalse(guardian.acceptsPadInput(isTrackpad: false), "a touch that began in Mouse mode has no token")
     }
 
-    func testATouchWhoseEndWasLostCannotBlockTheNextOne() {
+    func testACancelledTouchCannotBlockTheNextOne() {
         let guardian = RemoteInputGuard()
-        guardian.padTouchChanged(isTrackpad: false)   // end never delivered (rotation, view rebuilt)
+        guardian.padTouchChanged(isTrackpad: false)
         guardian.modeChanged()
-        guardian.modeChanged()
+        guardian.padTouchEnded()                      // GestureState reset on cancel, or the pad disappeared
         guardian.padTouchChanged(isTrackpad: false)
         XCTAssertTrue(guardian.acceptsPadInput(isTrackpad: false))
     }

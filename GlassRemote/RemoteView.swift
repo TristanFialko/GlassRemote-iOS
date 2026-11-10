@@ -40,7 +40,8 @@ final class RemoteInputGuard {
         padToken = RemoteInputPolicy.token(epoch: epoch, isTrackpad: isTrackpad, selectorTouchActive: selectorTouchActive)
     }
 
-    /// The touch lifted. Its token stays valid so a tap that fires on lift is still accepted.
+    /// The touch lifted or was cancelled (the pad's GestureState resets on both). Its token stays valid
+    /// so a tap that fires on lift is still accepted.
     func padTouchEnded() { padTouchOpen = false }
 
     func acceptsPadInput(isTrackpad: Bool) -> Bool {
@@ -51,12 +52,14 @@ final class RemoteInputGuard {
     /// Clears everything, for example when the Remote leaves the screen mid-touch.
     func reset() {
         selectorTouchActive = false
+        padTouchOpen = false
         invalidate()
     }
 
+    /// The session stays open: a finger that is still down keeps a nil token until it lifts, so it can't
+    /// pick up a fresh token by moving again.
     private func invalidate() {
         epoch &+= 1
-        padTouchOpen = false   // a touch whose end was never delivered can't keep a stale session open
         padToken = nil
     }
 }
@@ -82,6 +85,9 @@ struct RemoteView: View {
     // RemoteView's body (a plain @State CGPoint? did). Same values, same order, same behaviour.
     @State private var pointerBox = PointerBox()
     @State private var inputGuard = RemoteInputGuard()
+    /// True while a finger is on the pad. GestureState resets on lift and on cancellation, so the pad's
+    /// ownership session always closes (see RemoteInputGuard).
+    @GestureState private var padTouching = false
     private var lastPoint: CGPoint? {
         get { pointerBox.last }
         nonmutating set { pointerBox.last = newValue }
@@ -533,9 +539,12 @@ struct RemoteView: View {
         // alongside the keys and the swipe and never consumes the touch.
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
+                .updating($padTouching) { _, state, _ in state = true }
                 .onChanged { _ in inputGuard.padTouchChanged(isTrackpad: remote.isTrackpad) }
-                .onEnded { _ in inputGuard.padTouchEnded() }
         )
+        .onChange(of: padTouching) { touching in
+            if !touching { inputGuard.padTouchEnded() }
+        }
         // Swipe anywhere on the pad to send an arrow, like the Apple TV remote.
         .simultaneousGesture(
             DragGesture(minimumDistance: 28)
