@@ -2,7 +2,9 @@ name: iOS build
 on:
   workflow_dispatch:
   push:
-    branches: [ main, v0.4-dev ]
+    branches: [ main, v0.4-dev, phase-6-ui-nuvio ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
   build:

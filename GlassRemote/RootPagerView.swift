@@ -56,6 +56,7 @@ struct RootPagerView: View {
                 .simultaneousGesture(dockDrag)
                 .padding(.horizontal, 18)
                 .padding(.bottom, 2)
+                .frame(maxWidth: .infinity)
         }
     }
 
@@ -142,6 +143,7 @@ struct PageDock: View {
             .glassSurface(Capsule(), interactive: true)
             .animation(.spring(response: 0.38, dampingFraction: 0.84), value: page)
         }
+        .frame(maxWidth: 560)
         .frame(height: 42)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Pages")

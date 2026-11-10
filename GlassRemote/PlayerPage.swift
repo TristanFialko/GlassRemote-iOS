@@ -17,28 +17,57 @@ struct PlayerPage: View {
         let app = remote.apps.first(where: { $0.package == media.package })
         let poster = artwork.posterURL(forSessionTitle: media.headline.isEmpty ? media.title : media.headline)
 
-        ZStack {
-            if let poster, cinematic {
-                CachedArtwork(url: poster, contentMode: .fill) { Color.clear }
-                    .blur(radius: 40).opacity(0.35).ignoresSafeArea().allowsHitTesting(false)
-                    .transition(.opacity)
+        GeometryReader { proxy in
+            ZStack {
+                if let poster, cinematic {
+                    CachedArtwork(url: poster, contentMode: .fill) { Color.clear }
+                        .blur(radius: 40).opacity(0.35).ignoresSafeArea().allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+                if proxy.size.width > proxy.size.height {
+                    landscapePlayer(proxy, app: app, media: media, poster: poster)
+                } else {
+                    portraitPlayer(app: app, media: media, poster: poster)
+                }
             }
+        }
+        .foregroundStyle(.white)
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .background { AmbientBackdrop() }
+    }
 
-            VStack(spacing: cinematic ? 14 : 20) {
-                artworkCard(app: app, media: media, poster: poster)
-                    .padding(.top, 8)
+    @ViewBuilder
+    private func portraitPlayer(app: TVApp?, media: MediaState, poster: URL?) -> some View {
+        VStack(spacing: cinematic ? 14 : 20) {
+            artworkCard(app: app, media: media, poster: poster).padding(.top, 8)
+            titleBlock(app: app, media: media)
+            playbackBlock(media: media)
+            transport(media: media)
+            if !media.isActive { emptyHint }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24).padding(.top, 6)
+        .animation(.spring(response: 0.5, dampingFraction: 0.86), value: cinematic)
+    }
+
+    /// Landscape turns the player into a cinema control room: artwork/backdrop on the left, useful
+    /// playback context and transport controls on the right.
+    @ViewBuilder
+    private func landscapePlayer(_ proxy: GeometryProxy, app: TVApp?, media: MediaState, poster: URL?) -> some View {
+        HStack(spacing: 28) {
+            artworkCard(app: app, media: media, poster: poster)
+                .frame(maxWidth: proxy.size.width * 0.42, maxHeight: proxy.size.height - 28)
+            VStack(alignment: .leading, spacing: 16) {
                 titleBlock(app: app, media: media)
                 playbackBlock(media: media)
                 transport(media: media)
                 if !media.isActive { emptyHint }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 6)
-            .animation(.spring(response: 0.5, dampingFraction: 0.86), value: cinematic)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .foregroundStyle(.white)
-        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .padding(.horizontal, 28).padding(.vertical, 14)
+        .animation(.spring(response: 0.5, dampingFraction: 0.86), value: cinematic)
     }
 
     // MARK: Artwork

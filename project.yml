@@ -1,4 +1,3 @@
-
 name: GlassRemote
 options:
   bundleIdPrefix: com.glassremote
@@ -14,7 +13,11 @@ settings:
     INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Glass Remote connects directly to your Android TV over your local Wi-Fi."
     INFOPLIST_KEY_UIUserInterfaceStyle: Dark
     INFOPLIST_KEY_UILaunchScreen_Generation: YES
-    INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
+    INFOPLIST_KEY_UIRequiresFullScreen: NO
+    INFOPLIST_KEY_UISupportedInterfaceOrientations:
+      - UIInterfaceOrientationPortrait
+      - UIInterfaceOrientationLandscapeLeft
+      - UIInterfaceOrientationLandscapeRight
 
 targets:
   GlassRemote:

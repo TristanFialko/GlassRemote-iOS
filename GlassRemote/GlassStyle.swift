@@ -1,10 +1,11 @@
 import SwiftUI
 import UIKit
 
-/// Smoked native Liquid Glass styling shared by the app's interactive surfaces.
+/// Shared material language for Glass Remote.
 ///
-/// iOS 26+ uses Apple's real glass material, with a restrained smoke tint so refraction,
-/// highlights and depth remain visible. Earlier systems get a material-based fallback.
+/// iOS 26+ deliberately uses the system Liquid Glass renderer rather than recreating it with
+/// blur/opacity. That gives interactive surfaces the platform's refraction, specular response,
+/// grouping and accessibility behavior. Older iOS versions keep a restrained material fallback.
 extension View {
     @ViewBuilder
     func glassSurface<S: Shape>(
@@ -15,11 +16,10 @@ extension View {
     ) -> some View {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            let smoke = Glass.regular.tint(
-                Color(white: elevated ? 0.10 : 0.075)
-                    .opacity(elevated ? 0.22 : 0.32)
-            )
-            self.glassEffect(interactive ? smoke.interactive() : smoke, in: shape)
+            let tint = Color(white: elevated ? 0.10 : 0.075)
+                .opacity(elevated ? 0.22 : (accent ? 0.26 : 0.32))
+            let material = Glass.regular.tint(tint)
+            self.glassEffect(interactive ? material.interactive() : material, in: shape)
         } else {
             self.legacyGlass(shape, elevated: elevated || accent)
         }
@@ -66,7 +66,7 @@ extension View {
     }
 }
 
-/// Groups nearby glass elements so native Liquid Glass can blend their silhouettes.
+/// Nearby elements are grouped so native Liquid Glass can merge their silhouettes and light field.
 struct GlassGroup<Content: View>: View {
     let spacing: CGFloat
     @ViewBuilder let content: () -> Content
@@ -85,7 +85,6 @@ struct GlassGroup<Content: View>: View {
 }
 
 struct PressStyle: ButtonStyle {
-    /// The one place a button press gives haptic feedback; actions themselves stay silent.
     var haptic = true
 
     func makeBody(configuration: Configuration) -> some View {
@@ -99,7 +98,6 @@ struct PressStyle: ButtonStyle {
     }
 }
 
-/// Full-width Mouse / D-pad selector. The shell and selected segment are both glass.
 struct ModeSelector: View {
     @Binding var isMouse: Bool
     @Namespace private var pill
@@ -147,7 +145,6 @@ struct ModeSelector: View {
     }
 }
 
-/// Softly lifted charcoal canvas: brighter behind the controls, still near-black at the edges.
 struct AmbientBackdrop: View {
     var body: some View {
         GeometryReader { geo in
@@ -156,12 +153,7 @@ struct AmbientBackdrop: View {
             ZStack {
                 Color.black
                 RadialGradient(
-                    colors: [
-                        Color(white: 0.105),
-                        Color(white: 0.068),
-                        Color(white: 0.045),
-                        .black
-                    ],
+                    colors: [Color(white: 0.105), Color(white: 0.068), Color(white: 0.045), .black],
                     center: UnitPoint(x: 0.5, y: 0.48),
                     startRadius: 0,
                     endRadius: max(w, h) * 0.78
@@ -175,7 +167,7 @@ struct AmbientBackdrop: View {
                     colors: [Color(white: 0.052).opacity(0.72), .clear],
                     center: UnitPoint(x: 0.5, y: 0.80),
                     startRadius: 0,
-                    endRadius: w * 0.90
+                    endRadius: max(w, 1) * 0.90
                 )
             }
         }

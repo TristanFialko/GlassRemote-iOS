@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Page 4: Apps & Controls. Reuses existing model actions (launch, Quick Actions, Samsung keys,
-/// the Connection sheet's device scan). Adds only favourites, which are local UserDefaults.
+/// Apps and device controls use a two-column console in landscape so grids and diagnostics do not
+/// become a long, stretched portrait list.
 struct AppsControlsPage: View {
     @EnvironmentObject private var remote: RemoteModel
     @ObservedObject private var quick = QuickActionStore.shared
@@ -16,24 +16,16 @@ struct AppsControlsPage: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                if !favouriteApps.isEmpty { section("Favourites") { grid(favouriteApps) } }
-                section("Apps") {
-                    grid(remote.apps)
-                    Text("Touch and hold an app for favourite and restart options.")
-                        .scaledFont(12).foregroundStyle(.white.opacity(0.5))
-                }
-                section("Quick Actions", trailing: { Button("Edit") { showQuickEditor = true }.scaledFont(14, .semibold) }) {
-                    quickActions
-                }
-                section("Samsung TV") { samsung }
-                section("Device") { device }
+        GeometryReader { proxy in
+            if proxy.size.width > proxy.size.height {
+                landscape(proxy)
+            } else {
+                portrait
             }
-            .padding(.horizontal, 18).padding(.top, 10).padding(.bottom, 24)
         }
         .foregroundStyle(.white)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .background { AmbientBackdrop() }
         .sheet(isPresented: $showQuickEditor) { QuickActionEditor(store: quick) }
         .confirmationDialog(
             pendingPower?.title ?? "",
@@ -44,7 +36,44 @@ struct AppsControlsPage: View {
         } message: { action in Text(action.message) }
     }
 
-    // MARK: Pieces
+    private var portrait: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                if !favouriteApps.isEmpty { section("Favourites") { grid(favouriteApps) } }
+                section("Apps") { grid(remote.apps); helperText }
+                section("Quick Actions", trailing: { editButton }) { quickActions }
+                section("Samsung TV") { samsung }
+                section("Device") { device }
+            }
+            .padding(.horizontal, 18).padding(.top, 10).padding(.bottom, 24)
+        }
+    }
+
+    private func landscape(_ proxy: GeometryProxy) -> some View {
+        HStack(alignment: .top, spacing: 18) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    if !favouriteApps.isEmpty { section("Favourites") { grid(favouriteApps) } }
+                    section("Apps") { grid(remote.apps); helperText }
+                }
+                .padding(.leading, 18).padding(.vertical, 10)
+            }
+            .frame(width: proxy.size.width * 0.56)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    section("Quick Actions", trailing: { editButton }) { quickActions }
+                    section("Samsung TV") { samsung }
+                    section("Device") { device }
+                }
+                .padding(.trailing, 18).padding(.vertical, 10)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var editButton: some View { Button("Edit") { showQuickEditor = true }.scaledFont(14, .semibold) }
+    private var helperText: some View { Text("Touch and hold an app for favourite and restart options.").scaledFont(12).foregroundStyle(.white.opacity(0.5)) }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         section(title, trailing: { EmptyView() }, content: content)
@@ -67,21 +96,16 @@ struct AppsControlsPage: View {
                         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
                         .shadow(color: .black.opacity(0.34), radius: 6, y: 3)
                         .overlay(alignment: .topTrailing) {
-                            if favourites.contains(app.package) {
-                                Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(.yellow).padding(5)
-                            }
+                            if favourites.contains(app.package) { Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(.yellow).padding(5) }
                         }
                 }
                 .buttonStyle(PressStyle())
                 .accessibilityLabel(app.name)
                 .contextMenu {
                     Button { favourites.toggle(app.package) } label: {
-                        Label(favourites.contains(app.package) ? "Remove favourite" : "Favourite",
-                              systemImage: favourites.contains(app.package) ? "star.slash" : "star")
+                        Label(favourites.contains(app.package) ? "Remove favourite" : "Favourite", systemImage: favourites.contains(app.package) ? "star.slash" : "star")
                     }
-                    Button(role: .destructive) { remote.restartApp(app) } label: {
-                        Label("Restart \(app.name)", systemImage: "arrow.clockwise")
-                    }
+                    Button(role: .destructive) { remote.restartApp(app) } label: { Label("Restart \(app.name)", systemImage: "arrow.clockwise") }
                 }
             }
         }
@@ -89,26 +113,21 @@ struct AppsControlsPage: View {
 
     private var quickActions: some View {
         VStack(spacing: 8) {
-            if quick.actions.isEmpty {
-                Text("No Quick Actions yet.").scaledFont(14).foregroundStyle(.white.opacity(0.6))
-            }
+            if quick.actions.isEmpty { Text("No Quick Actions yet.").scaledFont(14).foregroundStyle(.white.opacity(0.6)) }
             ForEach(quick.actions) { action in
                 Button { remote.runQuickAction(action) } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(action.name).scaledFont(15, .semibold)
-                            Text(action.summary { pkg in remote.apps.first { $0.package == pkg }?.name ?? pkg })
-                                .scaledFont(12).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+                            Text(action.summary { pkg in remote.apps.first { $0.package == pkg }?.name ?? pkg }).scaledFont(12).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
                         }
                         Spacer()
-                        if remote.runningQuickActionID == action.id { ProgressView().tint(.white) }
-                        else { Image(systemName: "play.fill").scaledFont(13) }
+                        if remote.runningQuickActionID == action.id { ProgressView().tint(.white) } else { Image(systemName: "play.fill").scaledFont(13) }
                     }
                     .padding(.horizontal, 16).frame(minHeight: 54)
                     .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: true)
                 }
-                .buttonStyle(PressStyle())
-                .disabled(!remote.connected)
+                .buttonStyle(PressStyle()).disabled(!remote.connected)
             }
         }
     }
@@ -125,8 +144,7 @@ struct AppsControlsPage: View {
             Toggle("Route volume through Samsung TV", isOn: $remote.tvVolumeEnabled)
                 .scaledFont(14).padding(.horizontal, 16).frame(minHeight: 48)
                 .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            Text(remote.samsungStatus).scaledFont(12).foregroundStyle(.white.opacity(0.55))
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(remote.samsungStatus).scaledFont(12).foregroundStyle(.white.opacity(0.55)).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -152,8 +170,7 @@ struct AppsControlsPage: View {
             }
             .padding(.top, 4)
         }
-        .padding(16)
-        .glassSurface(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .padding(16).glassSurface(RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private func row(_ label: String, _ value: String) -> some View {

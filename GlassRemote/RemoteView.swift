@@ -39,25 +39,11 @@ struct RemoteView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 10) {
-                    header
-                    appsSection
-                    nowPlaying
-                    quickActionsRow
-                    ModeSelector(isMouse: $remote.isTrackpad)
-                    controlSurface
-                        .frame(minHeight: 150, maxHeight: appsExpanded ? 210 : CGFloat.infinity)
-                    navRow
-                    volumeBar
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 8)
-                .frame(height: appsExpanded ? nil : proxy.size.height)
+            if proxy.size.width > proxy.size.height {
+                landscapeContent(proxy)
+            } else {
+                portraitContent(proxy)
             }
-            // The page only scrolls while the Apps grid pushes content below the fold.
-            .scrollDisabled(!appsExpanded)
         }
         .background { backdrop }
         .preferredColorScheme(.dark)
@@ -93,6 +79,60 @@ struct RemoteView: View {
                 remote.connect()
             }
         }
+    }
+
+    @ViewBuilder
+    private func portraitContent(_ proxy: GeometryProxy) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 10) {
+                header
+                appsSection
+                nowPlaying
+                quickActionsRow
+                ModeSelector(isMouse: $remote.isTrackpad)
+                controlSurface
+                    .frame(minHeight: 150, maxHeight: appsExpanded ? 210 : CGFloat.infinity)
+                navRow
+                volumeBar
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
+            .frame(height: appsExpanded ? nil : proxy.size.height)
+        }
+        .scrollDisabled(!appsExpanded)
+    }
+
+    /// Landscape is intentionally a two-column control console, not a rotated portrait stack.
+    /// The left rail keeps device/app context visible while the right rail preserves the full-size
+    /// touch surface. No connection state is owned here, so rotation cannot reset ADB or UHID.
+    @ViewBuilder
+    private func landscapeContent(_ proxy: GeometryProxy) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(spacing: 9) {
+                    header
+                    appsSection
+                    nowPlaying
+                    quickActionsRow
+                }
+                .frame(width: min(350, max(285, proxy.size.width * 0.34)))
+
+                VStack(spacing: 9) {
+                    ModeSelector(isMouse: $remote.isTrackpad)
+                    controlSurface
+                        .frame(maxWidth: .infinity, minHeight: max(150, proxy.size.height - 154), maxHeight: 360)
+                        .layoutPriority(1)
+                    navRow
+                    volumeBar
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .frame(minHeight: proxy.size.height - 8, alignment: .top)
+        }
+        .scrollDisabled(!appsExpanded)
     }
 
     // MARK: - Backdrop
