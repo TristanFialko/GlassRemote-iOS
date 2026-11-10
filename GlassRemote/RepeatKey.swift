@@ -2,9 +2,23 @@ import SwiftUI
 
 /// A D-pad key that fires once on a quick tap and auto-repeats (accelerating) while held.
 /// A drag of more than a few points cancels the key so the surrounding swipe gesture can take over.
-struct RepeatKey<Content: View>: View {
+///
+/// `hitShape` limits where the key can be touched (the D-pad's wedges use it so diagonals reach
+/// the nearest arrow). `onPressChange` reports finger down/up so the owner can light the key; it
+/// never delays or changes when the key fires.
+struct RepeatKey<Content: View, HitShape: Shape>: View {
     let onFire: () -> Void
-    @ViewBuilder let label: () -> Content
+    let onPressChange: ((Bool) -> Void)?
+    let hitShape: HitShape
+    let label: () -> Content
+
+    init(hitShape: HitShape, onFire: @escaping () -> Void, onPressChange: ((Bool) -> Void)? = nil,
+         @ViewBuilder label: @escaping () -> Content) {
+        self.hitShape = hitShape
+        self.onFire = onFire
+        self.onPressChange = onPressChange
+        self.label = label
+    }
 
     private final class Box {
         var began = false
@@ -24,7 +38,7 @@ struct RepeatKey<Content: View>: View {
             .scaleEffect(pressed ? 0.96 : 1)
             .opacity(pressed ? 0.88 : 1)
             .animation(.easeOut(duration: 0.12), value: pressed)
-            .contentShape(Rectangle())
+            .contentShape(hitShape)
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
@@ -32,14 +46,14 @@ struct RepeatKey<Content: View>: View {
                             box.began = true
                             box.cancelled = false
                             box.repeating = false
-                            pressed = true
+                            setPressed(true)
                             startHoldTimer()
                         }
                         let moved = max(abs(value.translation.width), abs(value.translation.height))
                         if moved > Self.moveLimit && !box.repeating && !box.cancelled {
                             box.cancelled = true
                             box.task?.cancel()
-                            pressed = false
+                            setPressed(false)
                         }
                     }
                     .onEnded { _ in
@@ -48,9 +62,15 @@ struct RepeatKey<Content: View>: View {
                         if box.began && !box.cancelled && !box.repeating { fire() }
                         box.began = false
                         box.repeating = false
-                        pressed = false
+                        setPressed(false)
                     }
             )
+    }
+
+    private func setPressed(_ value: Bool) {
+        guard pressed != value else { return }
+        pressed = value
+        onPressChange?(value)
     }
 
     private func fire() {
@@ -71,5 +91,13 @@ struct RepeatKey<Content: View>: View {
                 interval = max(0.06, interval * 0.92)   // speeds up the longer it is held
             }
         }
+    }
+}
+
+extension RepeatKey where HitShape == Rectangle {
+    /// The original rectangular key.
+    init(onFire: @escaping () -> Void, onPressChange: ((Bool) -> Void)? = nil,
+         @ViewBuilder label: @escaping () -> Content) {
+        self.init(hitShape: Rectangle(), onFire: onFire, onPressChange: onPressChange, label: label)
     }
 }
