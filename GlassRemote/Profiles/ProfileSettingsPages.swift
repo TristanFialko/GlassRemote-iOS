@@ -138,6 +138,21 @@ struct AppearancePage: View {
                 Text("Each profile remembers its own theme. Adaptive follows the artwork on screen; Auto follows the system appearance.")
             }
             Section {
+                Picker("Artwork", selection: Binding(
+                    get: { profiles.active.settings.posterOrientation },
+                    set: { value in profiles.updateSettings { $0.posterOrientation = value } })) {
+                    ForEach(PosterOrientation.allCases) { option in Text(option.title).tag(option) }
+                }
+                .pickerStyle(.segmented)
+                Toggle("Show Continue Watching", isOn: Binding(
+                    get: { profiles.active.settings.showContinueWatching },
+                    set: { value in profiles.updateSettings { $0.showContinueWatching = value } }))
+            } header: {
+                Text("Discover")
+            } footer: {
+                Text("Automatic uses posters for catalogues and wide artwork for titles in progress. Artwork is never stretched; when the chosen shape is missing, the other image is used.")
+            }
+            Section {
                 Toggle("Reduce interface motion", isOn: Binding(
                     get: { profiles.active.settings.reduceInterfaceMotion },
                     set: { value in profiles.updateSettings { $0.reduceInterfaceMotion = value } }))

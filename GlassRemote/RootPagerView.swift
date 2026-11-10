@@ -64,7 +64,7 @@ struct RootPagerView: View {
                 .offset(x: -CGFloat(page.rawValue) * width + travel)
                 .frame(width: width, alignment: .leading)
                 .animation(spring, value: page)
-                .clipped()
+                .clipShape(HorizontalClip())
 
                 if landscape {
                     // The dock stands on end as a glass rail on the leading edge, vertically centred.
@@ -83,6 +83,7 @@ struct RootPagerView: View {
                 }
             }
             .environment(\.dockClearance, clearance)
+            .environment(\.railClearance, leading)
             .environment(\.layoutContext, context)
             .background {
                 PagerPan(
@@ -321,5 +322,24 @@ struct PageDock: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Pages")
+    }
+}
+
+/// Clips the page strip horizontally only (neighbouring pages stay hidden) and lets content extend
+/// vertically, so Discover's hero can run under the status bar.
+struct HorizontalClip: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX, y: rect.minY - 2000, width: rect.width, height: rect.height + 4000))
+    }
+}
+
+private struct RailClearanceKey: EnvironmentKey { static let defaultValue: CGFloat = 0 }
+
+extension EnvironmentValues {
+    /// Width reserved for the landscape glass rail on the leading edge (0 in portrait). Pages inset their
+    /// content by it; Discover's hero artwork runs underneath the rail.
+    var railClearance: CGFloat {
+        get { self[RailClearanceKey.self] }
+        set { self[RailClearanceKey.self] = newValue }
     }
 }

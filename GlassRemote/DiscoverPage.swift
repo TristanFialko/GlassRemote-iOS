@@ -20,38 +20,75 @@ struct DiscoverPage: View {
     @State private var collection: CollectionRequest?
     @State private var showAccount = false
     @State private var launchNote = ""
+    @State private var heroID: String?
+    @State private var playTarget: MediaTitle?
+    @State private var headerHeight: CGFloat = 104
+    @State private var headerSolid = false
+    @Environment(\.railClearance) private var railClearance
+    @ObservedObject private var profiles = ProfileStore.shared
+    @Namespace private var zoom
+
+    private var settings: ProfileSettings { profiles.active.settings }
+    private var metrics: DiscoverMetrics { DiscoverMetrics(isLandscape: layoutContext.isLandscape) }
+    private var heroTitles: [MediaTitle] { model.featuredPool }
+    private var currentHero: MediaTitle? { heroTitles.first { $0.id == heroID } ?? heroTitles.first }
+    /// The popular rows that feed the hero are still loading, so its space is reserved (no layout jump).
+    private var heroLoading: Bool {
+        model.rows.contains { $0.source.catalog == "top" && $0.source.genre == nil && ($0.phase == .idle || $0.phase == .loading) }
+    }
+    private var showsHero: Bool { !model.isSearching && (!heroTitles.isEmpty || heroLoading) }
 
     private let columns = [GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 12, alignment: .top)]
+    private let wideColumns = [GridItem(.adaptive(minimum: 200, maximum: 300), spacing: 12, alignment: .top)]
 
     var body: some View {
-        VStack(spacing: 10) {
-            // Search stays pinned above the scrolling content so it is reachable at all times. In landscape the
-            // filter sits beside it (one row); `AnyLayout` keeps the field's identity, so focus survives rotation.
-            header {
-                HStack(spacing: 10) {
-                    searchField
-                    accountButton
-                }
-                GlassSegmented(
-                    items: [GlassSegmented<DiscoverModel.Filter>.Item(value: .all, title: "All", symbol: nil),
-                            GlassSegmented<DiscoverModel.Filter>.Item(value: .movies, title: "Movies", symbol: nil),
-                            GlassSegmented<DiscoverModel.Filter>.Item(value: .series, title: "Series", symbol: nil)],
-                    selection: $model.filter, height: 36)
-                .frame(maxWidth: layoutContext.isLandscape ? 300 : .infinity)
-            }
-            .padding(.horizontal, 16).padding(.top, layoutContext.isLandscape ? 6 : 10)
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 22) {
-                    if model.isSearching { searchContent } else { home }
-                    if !launchNote.isEmpty {
-                        Text(launchNote).scaledFont(12).foregroundStyle(Color.inkAlpha(0.7)).frame(maxWidth: .infinity)
+        GeometryReader { proxy in
+            let insets = proxy.safeAreaInsets
+            let heroWidth = proxy.size.width + railClearance
+            let heroHeight = DiscoverHeroLayout.height(width: heroWidth, height: proxy.size.height + insets.top,
+                                                       isLandscape: layoutContext.isLandscape)
+            let solidAfter = heroHeight - insets.top - headerHeight - 12
+            ZStack(alignment: .top) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        Color.clear.frame(height: 0).background {
+                            GeometryReader { g in
+                                Color.clear.preference(key: DiscoverScrollOffsetKey.self, value: g.frame(in: .named(DiscoverHero.space)).minY)
+                            }
+                        }
+                        if showsHero {
+                            hero(width: heroWidth, height: heroHeight)
+                        } else {
+                            // Room for the floating search bar when there is no hero behind it.
+                            Color.clear.frame(height: insets.top + headerHeight + 8)
+                        }
+                        LazyVStack(alignment: .leading, spacing: 22) {
+                            if model.isSearching { searchContent } else { home }
+                            if !launchNote.isEmpty {
+                                Text(launchNote).scaledFont(12).foregroundStyle(Color.inkAlpha(0.7)).frame(maxWidth: .infinity)
+                            }
+                        }
+                        .padding(.top, showsHero ? 4 : 0)
+                        .padding(.leading, railClearance)
+                        .padding(.bottom, dockClearance + 16)
                     }
                 }
-                .padding(.top, 6)
-                .padding(.bottom, dockClearance + 16)
+                .coordinateSpace(name: DiscoverHero.space)
+                .scrollDismissesKeyboard(.interactively)
+                // The hero runs under the status bar and, in landscape, under the glass rail.
+                .padding(.leading, -railClearance)
+                .ignoresSafeArea(.container, edges: .top)
+
+                headerBar
+                    .background {
+                        GeometryReader { g in Color.clear.preference(key: DiscoverHeaderHeightKey.self, value: g.size.height) }
+                    }
             }
-            .scrollDismissesKeyboard(.interactively)
+            .onPreferenceChange(DiscoverHeaderHeightKey.self) { headerHeight = $0 }
+            .onPreferenceChange(DiscoverScrollOffsetKey.self) { y in
+                let solid = -y > solidAfter
+                if solid != headerSolid { headerSolid = solid }
+            }
         }
         .foregroundStyle(Color.ink)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
@@ -61,6 +98,11 @@ struct DiscoverPage: View {
                 navigator.go(.remote)
             })
             .environmentObject(RemoteModel.shared)
+            .modifier(DetailZoomDestination(id: item.sourceID, namespace: zoom))
+        }
+        .sheet(item: $playTarget) { title in
+            StreamPickerSheet(title: title, onHandoff: { launchNote = $0 })
+                .environmentObject(RemoteModel.shared)
         }
         .sheet(isPresented: $showAccount) { NuvioAccountSheet() }
         .fullScreenCover(item: $collection) { request in
@@ -70,6 +112,7 @@ struct DiscoverPage: View {
         // Adaptive theme: the featured artwork (or the title being viewed) feeds the ONE shared palette.
         .onChange(of: model.featured?.id) { _ in publishArtwork() }
         .onChange(of: target?.id) { _ in publishArtwork() }
+        .onChange(of: heroID) { _ in publishArtwork() }
         .task { if account.state == .signedIn, account.libraryPhase == .idle { await account.refresh() } }
         // Search shortcut from the Remote page: wait for the page slide, then bring up the keyboard.
         .onChange(of: navigator.searchFocusToken) { _ in
@@ -80,13 +123,41 @@ struct DiscoverPage: View {
         }
     }
 
+    /// Floating glass header over the hero. Search stays reachable at all times; in landscape the filter
+    /// sits beside it (one row). AnyLayout keeps the field's identity, so focus survives rotation.
+    /// Once rows scroll beneath it a canvas-coloured veil fades in behind it for legibility.
+    private var headerBar: some View {
+        let solid = headerSolid || !showsHero
+        return header {
+            HStack(spacing: 10) {
+                searchField
+                accountButton
+            }
+            GlassSegmented(
+                items: [GlassSegmented<DiscoverModel.Filter>.Item(value: .all, title: "All", symbol: nil),
+                        GlassSegmented<DiscoverModel.Filter>.Item(value: .movies, title: "Movies", symbol: nil),
+                        GlassSegmented<DiscoverModel.Filter>.Item(value: .series, title: "Series", symbol: nil)],
+                selection: $model.filter, height: 36)
+            .frame(maxWidth: layoutContext.isLandscape ? 300 : .infinity)
+        }
+        .padding(.horizontal, 16).padding(.top, layoutContext.isLandscape ? 6 : 10).padding(.bottom, 8)
+        .background {
+            LinearGradient(colors: [theme.canvasTop.opacity(0.94), theme.canvasTop.opacity(0)], startPoint: .top, endPoint: .bottom)
+                .padding(.bottom, -18)
+                .ignoresSafeArea(.container, edges: .top)
+                .opacity(solid ? 1 : 0)
+                .animation(.easeInOut(duration: 0.2), value: solid)
+                .allowsHitTesting(false)
+        }
+    }
+
     /// Portrait: search row above the filter. Landscape: one row, so more of the catalogue is visible.
     private var header: AnyLayout {
         layoutContext.isLandscape ? AnyLayout(HStackLayout(spacing: 12)) : AnyLayout(VStackLayout(spacing: 10))
     }
 
     private func publishArtwork() {
-        let shown = target?.title ?? model.featured
+        let shown = target?.title ?? currentHero
         themeStore.submitArtwork(shown?.backgroundURL ?? shown?.posterURL, for: .discover)
     }
 
@@ -134,52 +205,32 @@ struct DiscoverPage: View {
 
     @ViewBuilder
     private var home: some View {
-        if let featured = model.featured { hero(featured) }
         accountSections
         if !model.recents.isEmpty { recentChips }
+        let rows = model.visibleRows
+        // Popular / Top rated / Newest first, then genre browsing, then the genre collections.
+        ForEach(rows.filter { $0.source.genre == nil }) { row in carousel(row) }
         genreChips
-        ForEach(model.visibleRows) { row in carousel(row) }
+        ForEach(rows.filter { $0.source.genre != nil }) { row in carousel(row) }
     }
 
-    private func hero(_ title: MediaTitle) -> some View {
-        Button { open(title) } label: {
-            ZStack(alignment: .bottomLeading) {
-                // Fixed-size base with the artwork in an overlay. A 16:9 backdrop filled to 210pt tall is
-                // wider than a phone's content width; as the base it pushed the card past the screen edge.
-                Color.clear
-                    .frame(height: layoutContext.isLandscape ? 170 : 210).frame(maxWidth: .infinity)
-                    .overlay {
-                        CachedArtwork(url: title.backgroundURL ?? title.posterURL, contentMode: .fill) {
-                            Color.white.opacity(0.06)
-                        }
-                    }
-                    .clipped()
-                LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .center, endPoint: .bottom)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Featured").scaledFont(11, .semibold).foregroundStyle(Color.white.opacity(0.7)).textCase(.uppercase)
-                    Text(title.name).scaledFont(24, .bold).lineLimit(2)
-                    heroMeta(title)
-                        .lineLimit(1)
-                        .scaledFont(12, .medium).foregroundStyle(Color.white.opacity(0.8))
-                }
-                .foregroundStyle(Color.white)
-                .padding(16)
+    @ViewBuilder
+    private func hero(width: CGFloat, height: CGFloat) -> some View {
+        if heroTitles.isEmpty {
+            ZStack {
+                LinearGradient(colors: [theme.accent.opacity(0.2), Color.clear], startPoint: .top, endPoint: .bottom)
+                ProgressView().tint(Color.inkAlpha(0.6))
             }
-            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 0.8))
-            .shadow(color: .black.opacity(0.5), radius: 14, y: 8)
-            .padding(.horizontal, 16)
+            .frame(width: width, height: height)
+            .accessibilityLabel("Loading featured titles")
+        } else {
+            DiscoverHero(titles: heroTitles, selection: $heroID, size: CGSize(width: width, height: height),
+                         isLandscape: layoutContext.isLandscape, leadingInset: railClearance,
+                         onOpen: { open($0) },
+                         onPlay: { title in
+                             if title.kind == .movie { searching = false; playTarget = title } else { open(title) }
+                         })
         }
-        .buttonStyle(PosterButtonStyle())
-        .accessibilityLabel("Featured: \(title.name)")
-    }
-
-    /// "Movie · 2026 · ★ 7.4" as one line of text, so every gap is the same spaced dot.
-    private func heroMeta(_ title: MediaTitle) -> Text {
-        let line = DiscoverMetaLine.kindAndYear(title.kind, year: title.year)
-        let rating = title.rating.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rating.isEmpty else { return Text(line) }
-        return Text("\(line)\(DiscoverMetaLine.separator)\(Image(systemName: "star.fill")) \(rating)")
     }
 
     // MARK: Account sections (Continue Watching, Library)
@@ -194,7 +245,7 @@ struct DiscoverPage: View {
         case .signedIn:
             switch account.libraryPhase {
             case .idle, .loading:
-                if account.items.isEmpty { skeletonRow(title: "Continue Watching") }
+                if account.items.isEmpty { skeletonRow(title: "Continue Watching", usage: .progress) }
                 else { loadedAccountRows }
             case .failed(let message):
                 VStack(spacing: 8) {
@@ -213,14 +264,14 @@ struct DiscoverPage: View {
     @ViewBuilder
     private var loadedAccountRows: some View {
         let cw = account.continueWatching.filter { model.filter == .all || ($0.title == .movie) == (model.filter == .movies) }
-        if !cw.isEmpty {
+        if !cw.isEmpty && settings.showContinueWatching {
             sectionHeader("Continue Watching", count: cw.count, seeAll: { collection = CollectionRequest(title: "Continue Watching", local: cw.compactMap(\.asTitle)) })
             UnclippedHScroll {
-                LazyHStack(alignment: .top, spacing: 12) {
+                LazyHStack(alignment: .top, spacing: metrics.spacing) {
                     ForEach(cw) { item in
                         if let t = item.asTitle {
-                            Button { target = DetailTarget(title: t, libraryItem: item) } label: {
-                                LandscapeCard(title: t, progress: item.progress, caption: continueCaption(item))
+                            Button { target = DetailTarget(title: t, libraryItem: item, sourceID: "cw|\(t.id)") } label: {
+                                card(t, usage: .progress, progress: item.progress, caption: continueCaption(item), zoomID: "cw|\(t.id)")
                             }.buttonStyle(PosterButtonStyle())
                         }
                     }
@@ -234,11 +285,13 @@ struct DiscoverPage: View {
             sectionHeader("Recently watched", count: history.count,
                           seeAll: { collection = CollectionRequest(title: "Recently watched", local: history.compactMap(\.asTitle)) })
             UnclippedHScroll {
-                LazyHStack(alignment: .top, spacing: 12) {
+                LazyHStack(alignment: .top, spacing: metrics.spacing) {
                     ForEach(history.prefix(30)) { item in
                         if let t = item.asTitle {
-                            Button { target = DetailTarget(title: t, libraryItem: item) } label: { PosterCard(title: t) }
-                                .buttonStyle(PosterButtonStyle())
+                            Button { target = DetailTarget(title: t, libraryItem: item, sourceID: "hist|\(t.id)") } label: {
+                                card(t, zoomID: "hist|\(t.id)")
+                            }
+                            .buttonStyle(PosterButtonStyle())
                         }
                     }
                 }.padding(.horizontal, 16)
@@ -340,7 +393,7 @@ struct DiscoverPage: View {
                 collection = CollectionRequest(title: row.title, kind: row.kind, catalog: row.source.catalog, genre: row.source.genre)
             })
             switch row.phase {
-            case .idle, .loading: skeletonStrip
+            case .idle, .loading: skeletonStrip()
             case .failed:
                 HStack {
                     Text("Couldn't load this row.").scaledFont(12).foregroundStyle(Color.inkAlpha(0.5))
@@ -348,9 +401,12 @@ struct DiscoverPage: View {
                 }.padding(.horizontal, 16)
             case .loaded:
                 UnclippedHScroll {
-                    LazyHStack(alignment: .top, spacing: 12) {
+                    LazyHStack(alignment: .top, spacing: metrics.spacing) {
                         ForEach(row.items) { item in
-                            Button { open(item) } label: { PosterCard(title: item) }.buttonStyle(PosterButtonStyle())
+                            Button { open(item, zoomID: "\(row.id)|\(item.id)") } label: {
+                                card(item, zoomID: "\(row.id)|\(item.id)")
+                            }
+                            .buttonStyle(PosterButtonStyle())
                         }
                     }.padding(.horizontal, 16)
                 }
@@ -360,12 +416,28 @@ struct DiscoverPage: View {
         .task { await model.loadRowIfNeeded(row.id) }
     }
 
-    private var skeletonStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
+    /// One card in the profile's artwork orientation; zoomID ties it to the detail page's zoom transition.
+    @ViewBuilder
+    private func card(_ t: MediaTitle, usage: DiscoverCardShape.Usage = .catalog, progress: Double? = nil,
+                      caption: String? = nil, zoomID: String) -> some View {
+        Group {
+            switch DiscoverCardShape.resolve(settings.posterOrientation, usage: usage) {
+            case .portrait: PosterCard(title: t, progress: progress, caption: caption, cardWidth: metrics.poster)
+            case .landscape: LandscapeCard(title: t, progress: progress, caption: caption, cardWidth: metrics.landscape)
+            }
+        }
+        .modifier(DetailZoomSource(id: zoomID, namespace: zoom))
+    }
+
+    /// Placeholder cards with the same shape and size as the cards that will replace them.
+    private func skeletonStrip(_ usage: DiscoverCardShape.Usage = .catalog) -> some View {
+        let portrait = DiscoverCardShape.resolve(settings.posterOrientation, usage: usage) == .portrait
+        let width = portrait ? metrics.poster : metrics.landscape
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: metrics.spacing) {
                 ForEach(0..<5, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.ink.opacity(0.06))
-                        .frame(width: PosterCard.width, height: PosterCard.width * 1.5)
+                    RoundedRectangle(cornerRadius: portrait ? 16 : 18, style: .continuous).fill(Color.ink.opacity(0.06))
+                        .frame(width: width, height: portrait ? width * 1.5 : width * 9 / 16)
                         .overlay(ProgressView().tint(Color.inkAlpha(0.5)))
                 }
             }.padding(.horizontal, 16)
@@ -373,8 +445,8 @@ struct DiscoverPage: View {
         .disabled(true).accessibilityLabel("Loading")
     }
 
-    private func skeletonRow(title: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) { sectionHeader(title); skeletonStrip }
+    private func skeletonRow(title: String, usage: DiscoverCardShape.Usage = .catalog) -> some View {
+        VStack(alignment: .leading, spacing: 10) { sectionHeader(title); skeletonStrip(usage) }
     }
 
     // MARK: Search results
@@ -382,6 +454,8 @@ struct DiscoverPage: View {
     @ViewBuilder
     private var searchContent: some View {
         switch model.phase {
+        case .searching where model.hasResults:
+            results(updating: true)
         case .idle, .searching:
             VStack(alignment: .leading, spacing: 12) {
                 suggestionList
@@ -404,13 +478,56 @@ struct DiscoverPage: View {
                 note(model.filter == .movies ? "film" : "tv", model.filter == .movies ? "No movies" : "No series",
                      "Try “All” to see everything that matched.", searchInNuvio: false)
             } else {
-                VStack(alignment: .leading, spacing: 14) {
-                    suggestionList
-                    searchInNuvioButton
-                    grid("Movies", model.visibleMovies)
-                    grid("Series", model.visibleSeries)
-                }
+                results(updating: false)
             }
+        }
+    }
+
+    /// Ranked results. While a newer query loads, the previous results stay with a small progress badge.
+    private func results(updating: Bool) -> some View {
+        let top = model.topResult
+        return VStack(alignment: .leading, spacing: 14) {
+            suggestionList
+            if let top { topResultCard(top) }
+            searchInNuvioButton
+            grid("Movies", model.visibleMovies.filter { $0.id != top?.id })
+            grid("Series", model.visibleSeries.filter { $0.id != top?.id })
+        }
+        .overlay(alignment: .top) {
+            if updating {
+                ProgressView().tint(Color.inkAlpha(0.7)).padding(8).glassSurface(Circle())
+                    .transition(.opacity).accessibilityLabel("Updating results")
+            }
+        }
+    }
+
+    private func topResultCard(_ t: MediaTitle) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("Top result")
+            Button { open(t, zoomID: "top|\(t.id)") } label: {
+                HStack(spacing: 14) {
+                    Color.clear.frame(width: 84, height: 126)
+                        .overlay {
+                            CachedArtwork(url: t.posterURL, fallbackURL: t.fallbackPosterURL, contentMode: .fill) { Color.ink.opacity(0.06) }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(t.name).scaledFont(18, .bold).lineLimit(2).multilineTextAlignment(.leading)
+                        Text(DiscoverMetaLine.kindAndYear(t.kind, year: t.year)).scaledFont(13).foregroundStyle(Color.inkAlpha(0.6))
+                        if !t.overview.isEmpty {
+                            Text(t.overview).scaledFont(12).foregroundStyle(Color.inkAlpha(0.7)).lineLimit(3).multilineTextAlignment(.leading)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").scaledFont(13, .semibold).foregroundStyle(Color.inkAlpha(0.4))
+                }
+                .padding(12)
+                .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: true)
+                .modifier(DetailZoomSource(id: "top|\(t.id)", namespace: zoom))
+            }
+            .buttonStyle(PosterButtonStyle())
+            .padding(.horizontal, 16)
+            .accessibilityLabel("Top result: \(t.name)")
         }
     }
 
@@ -448,25 +565,44 @@ struct DiscoverPage: View {
     @ViewBuilder
     private func grid(_ title: String, _ items: [MediaTitle]) -> some View {
         if !items.isEmpty {
+            let portrait = DiscoverCardShape.resolve(settings.posterOrientation, usage: .catalog) == .portrait
             sectionHeader(title, count: items.count)
-            LazyVGrid(columns: columns, spacing: 16) {
+            LazyVGrid(columns: portrait ? columns : wideColumns, spacing: 16) {
                 ForEach(items) { item in
-                    Button { open(item) } label: { PosterCard(title: item, fixedWidth: false) }
-                        .buttonStyle(PosterButtonStyle())
+                    Button { open(item, zoomID: "grid|\(item.id)") } label: {
+                        Group {
+                            if portrait { PosterCard(title: item, fixedWidth: false) }
+                            else { LandscapeCard(title: item, cardWidth: nil) }
+                        }
+                        .modifier(DetailZoomSource(id: "grid|\(item.id)", namespace: zoom))
+                    }
+                    .buttonStyle(PosterButtonStyle())
                 }
             }.padding(.horizontal, 16)
         }
     }
 
-    private func open(_ title: MediaTitle) {
+    private func open(_ title: MediaTitle, zoomID: String? = nil) {
         searching = false; launchNote = ""
-        target = DetailTarget(title: title, libraryItem: account.item(id: title.id))
+        target = DetailTarget(title: title, libraryItem: account.item(id: title.id), sourceID: zoomID)
     }
+}
+
+private struct DiscoverHeaderHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct DiscoverScrollOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 struct DetailTarget: Identifiable {
     let title: MediaTitle
     let libraryItem: NuvioWatchItem?
+    /// The card the detail page zooms out of (nil: standard sheet).
+    var sourceID: String? = nil
     var id: String { title.id }
 }
 
@@ -496,6 +632,7 @@ struct PosterCard: View {
     var progress: Double? = nil
     var caption: String? = nil
     var fixedWidth = true
+    var cardWidth: CGFloat = PosterCard.width
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -523,7 +660,7 @@ struct PosterCard: View {
                 Text(title.year).scaledFont(11).foregroundStyle(Color.inkAlpha(0.55))
             }
         }
-        .frame(width: fixedWidth ? Self.width : nil, alignment: .topLeading)
+        .frame(width: fixedWidth ? cardWidth : nil, alignment: .topLeading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title.name)\(title.year.isEmpty ? "" : ", \(title.year)")")
     }
@@ -557,8 +694,9 @@ enum DiscoverMetaLine {
 struct PosterButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .opacity(configuration.isPressed ? 0.85 : 1)
-            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.965 : 1)
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(configuration.isPressed ? .easeOut(duration: 0.12) : Motion.snappy, value: configuration.isPressed)
     }
 }
 
@@ -595,18 +733,24 @@ struct LandscapeCard: View {
     let title: MediaTitle
     var progress: Double? = nil
     var caption: String? = nil
+    /// Nil fills the available width (grids); the 16:9 shape is kept either way.
+    var cardWidth: CGFloat? = LandscapeCard.width
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                if let background = title.backgroundURL {
-                    CachedArtwork(url: background, contentMode: .fill) { Color.ink.opacity(0.06) }
-                } else {
-                    Color.black.opacity(0.5)
-                    CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fit) { Color.clear }.padding(6)
+            Color.clear
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .frame(width: cardWidth)
+                .overlay {
+                    ZStack {
+                        if let background = title.backgroundURL {
+                            CachedArtwork(url: background, contentMode: .fill) { Color.ink.opacity(0.06) }
+                        } else {
+                            Color.black.opacity(0.5)
+                            CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fit) { Color.clear }.padding(6)
+                        }
+                    }
                 }
-            }
-            .frame(width: Self.width, height: Self.width * 9 / 16)
             .overlay(alignment: .bottom) {
                 if let progress, progress > 0 {
                     ProgressView(value: progress).tint(Color.white).padding(8)
@@ -621,7 +765,7 @@ struct LandscapeCard: View {
                 Text(caption).scaledFont(11).foregroundStyle(Color.inkAlpha(0.6)).lineLimit(1)
             }
         }
-        .frame(width: Self.width, alignment: .topLeading)
+        .frame(width: cardWidth, alignment: .topLeading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title.name)\(caption.map { ", \($0)" } ?? "")")
     }
