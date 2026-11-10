@@ -20,6 +20,8 @@ struct DiscoverHero: View {
     let leadingInset: CGFloat
     let onOpen: (MediaTitle) -> Void
     let onPlay: (MediaTitle) -> Void
+    /// Phase 7.4: bottom of Discover's floating header (global). A tap above it belongs to the header.
+    var headerBottom: CGFloat = 0
 
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -36,7 +38,11 @@ struct DiscoverHero: View {
         ZStack(alignment: .bottomLeading) {
             backdrop
                 .contentShape(Rectangle())
-                .onTapGesture { if let current { onOpen(current) } }
+                .gesture(SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
+                    guard DiscoverTouchPolicy.heroMayOpen(tapY: tap.location.y, headerBottom: headerBottom),
+                          let current else { return }
+                    onOpen(current)
+                })
             if let current {
                 info(current)
                     .id(current.id)
@@ -266,4 +272,11 @@ enum HeroSwipePolicy {
     static func follow(_ dx: CGFloat) -> CGFloat {
         max(-maxFollow, min(maxFollow, dx * followFactor))
     }
+}
+
+/// Phase 7.4: the floating search header sits over the hero. A tap inside it (or within a finger's
+/// slop of its bottom edge) never opens the featured title.
+enum DiscoverTouchPolicy {
+    static let headerSlop: CGFloat = 6
+    static func heroMayOpen(tapY: CGFloat, headerBottom: CGFloat) -> Bool { tapY > headerBottom + headerSlop }
 }

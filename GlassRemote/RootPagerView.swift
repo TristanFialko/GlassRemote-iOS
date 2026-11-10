@@ -62,6 +62,8 @@ struct RootPagerView: View {
                 }
                 .frame(width: width * CGFloat(AppPage.allCases.count), alignment: .leading)
                 .offset(x: -CGFloat(page.rawValue) * width + travel)
+                // Phase 7.4: reports when the slide has actually finished (Discover's search focus waits for it).
+                .modifier(PageSettleObserver(page: page) { navigator.pageSettled($0) })
                 .frame(width: width, alignment: .leading)
                 .animation(spring, value: page)
                 .clipShape(HorizontalClip())

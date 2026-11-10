@@ -5,9 +5,15 @@ import SwiftUI
 /// connection, helpers or polling, and never sends TV input.
 @MainActor
 final class PageNavigator: ObservableObject {
-    @Published var page: AppPage = .landing
-    /// Bumped to ask Discover to focus its search field (keyboard appears).
-    @Published private(set) var searchFocusToken = 0
+    @Published var page: AppPage = .landing {
+        didSet { if page != oldValue { searchFocus.pageChanged(to: page) } }
+    }
+    /// Phase 7.4: the page the pager has finished sliding to (reported by RootPagerView's
+    /// PageSettleObserver). Not published: nothing renders from it.
+    private(set) var settledPage: AppPage?
+    /// Bumped only when Discover should focus its search field now (see SearchFocusPolicy).
+    @Published private(set) var searchFocusFire = 0
+    private var searchFocus = SearchFocusPolicy(page: .landing)
 
     func go(_ target: AppPage, haptic: Bool = true) {
         guard target != page else { return }
@@ -16,10 +22,110 @@ final class PageNavigator: ObservableObject {
     }
 
     /// Remote page's Search shortcut: open Discover and focus its search field.
+    /// The keyboard comes up only once Discover has finished sliding in and its field is mounted;
+    /// no fixed delay. Repeated taps make one request; navigating away or backgrounding cancels it.
     func openSearch() {
+        searchFocus.request()
         go(.discover)
-        searchFocusToken += 1
+        fireSearchFocusIfReady()
     }
+
+    /// The pager's slide reached `settled`. A report for an earlier target is ignored.
+    func pageSettled(_ settled: AppPage) {
+        guard settled == page else { return }
+        settledPage = settled
+        searchFocus.pageSettled(settled)
+        fireSearchFocusIfReady()
+    }
+
+    func searchFieldMounted(_ mounted: Bool) {
+        searchFocus.setFieldMounted(mounted)
+        fireSearchFocusIfReady()
+    }
+
+    func sceneActiveChanged(_ active: Bool) {
+        searchFocus.setSceneActive(active)
+    }
+
+    private func fireSearchFocusIfReady() {
+        if searchFocus.consumeIfReady() { searchFocusFire &+= 1 }
+    }
+}
+
+/// Phase 7.4: pure state machine for the Remote's Search shortcut (unit tested). Focus fires once per
+/// request, only when Discover is the target page, the slide has finished, the field is mounted and the
+/// app is active. Leaving Discover or going to the background cancels a pending request, so a stale
+/// request can never steal focus later.
+struct SearchFocusPolicy: Equatable {
+    private(set) var pending = false
+    private(set) var page: AppPage
+    private(set) var settled: AppPage?
+    private(set) var fieldMounted = false
+    private(set) var sceneActive = true
+
+    init(page: AppPage) { self.page = page }
+
+    mutating func request() { pending = true }
+
+    mutating func pageChanged(to newPage: AppPage) {
+        page = newPage
+        settled = nil                         // moving: not settled until the pager says so
+        if newPage != .discover { pending = false }
+    }
+
+    mutating func pageSettled(_ settledPage: AppPage) {
+        if settledPage == page { settled = settledPage }
+    }
+
+    mutating func setFieldMounted(_ mounted: Bool) { fieldMounted = mounted }
+
+    mutating func setSceneActive(_ active: Bool) {
+        sceneActive = active
+        if !active { pending = false }
+    }
+
+    /// True exactly once per request, when everything is ready.
+    mutating func consumeIfReady() -> Bool {
+        guard pending, page == .discover, settled == .discover, fieldMounted, sceneActive else { return false }
+        pending = false
+        return true
+    }
+}
+
+/// Phase 7.4: iOS 16 has no animation completion, so the pager animates this modifier with the page
+/// index and reports when the interpolated value reaches the target (the slide is visually finished).
+/// With Reduce Motion (no animation) it reports on the same update.
+struct PageSettleObserver: AnimatableModifier {
+    var position: CGFloat
+    let target: CGFloat
+    let page: AppPage
+    let onSettle: (AppPage) -> Void
+
+    init(page: AppPage, onSettle: @escaping (AppPage) -> Void) {
+        let index = CGFloat(page.rawValue)
+        position = index
+        target = index
+        self.page = page
+        self.onSettle = onSettle
+    }
+
+    var animatableData: CGFloat {
+        get { position }
+        set { position = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        if PageSettlePolicy.isSettled(position: position, target: target) {
+            let page = page, onSettle = onSettle
+            DispatchQueue.main.async { onSettle(page) }   // out of the view update, not a delay
+        }
+        return content
+    }
+}
+
+enum PageSettlePolicy {
+    static let epsilon: CGFloat = 0.001
+    static func isSettled(position: CGFloat, target: CGFloat) -> Bool { abs(position - target) < epsilon }
 }
 
 /// Geometry of the floating page dock. Everything is derived from the real bottom safe-area inset
