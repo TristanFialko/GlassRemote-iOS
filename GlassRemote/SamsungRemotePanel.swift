@@ -69,13 +69,18 @@ struct SamsungRemotePanel: View {
         } else if state == .unreachable || state == .off {
             bannerRow("wifi.exclamationmark", state.label, "Reconnect") { remote.reconnectTV() }
         } else if state == .connecting {
-            bannerRow("arrow.triangle.2.circlepath", "Connecting to the TV…", nil, nil)
+            bannerRow(nil, "Connecting to the TV…", nil, nil)   // nil symbol: live spinner
         }
     }
 
-    private func bannerRow(_ symbol: String, _ text: String, _ action: String?, _ run: (() -> Void)?) -> some View {
+    /// `symbol == nil` shows a small spinner instead, for a state that is still in progress.
+    private func bannerRow(_ symbol: String?, _ text: String, _ action: String?, _ run: (() -> Void)?) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: symbol).scaledFont(15, .medium)
+            if let symbol {
+                Image(systemName: symbol).scaledFont(15, .medium)
+            } else {
+                ProgressView().controlSize(.small).tint(Color.ink)
+            }
             Text(text).scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
             Spacer(minLength: 0)
             if let action, let run {

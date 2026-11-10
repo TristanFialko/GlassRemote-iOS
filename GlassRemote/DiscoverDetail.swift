@@ -44,8 +44,11 @@ struct TitleDetailView: View {
     private var artwork: some View {
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
         if let background = detail?.background ?? title.backgroundURL {
-            CachedArtwork(url: background, contentMode: .fill) { Color.ink.opacity(0.06) }
+            // True 16:9 base with the backdrop in an overlay, so artwork that isn't exactly 16:9 can't
+            // resize the frame or push the sheet wider than the screen.
+            Color.clear
                 .frame(maxWidth: .infinity).aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .overlay { CachedArtwork(url: background, contentMode: .fill) { Color.ink.opacity(0.06) } }
                 .clipShape(shape)
                 .overlay(shape.stroke(Color.ink.opacity(0.2), lineWidth: 0.8))
                 .shadow(color: .black.opacity(0.5), radius: 16, y: 10)

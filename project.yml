@@ -59,6 +59,6 @@ targets:
 packages:
   SwiftADB:
     url: https://github.com/akshaynexus/SwiftADB.git
-    # TODO: pin to a commit. The CI run prints the resolved commit in its summary;
-    # replace the next line with `revision: <that SHA>` so upstream changes can't break the build.
-    branch: main
+    # Pinned to SwiftADB main's head since 2026-06-17 (what the green Phase-5 CI runs built against),
+    # so upstream changes can't break the build. To update: change the SHA and let CI verify it.
+    revision: 1044bec57ee3aef4b7c556fce2e76b24257769e5

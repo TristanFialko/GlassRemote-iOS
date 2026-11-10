@@ -69,7 +69,7 @@ struct SamsungTrackpad: View {
             .glassSurface(shape, elevated: true)
             .overlay(alignment: .bottom) {
                 Text("Slide to move focus · tap to select · two-finger tap for Back")
-                    .scaledFont(12).foregroundStyle(Color.inkFaint(0.42))
+                    .scaledFont(12).foregroundStyle(Color.ink.opacity(0.7))   // same as the Android trackpad hint
                     .padding(.bottom, 16).allowsHitTesting(false)
             }
             .contentShape(shape)
@@ -103,7 +103,15 @@ struct SamsungTrackpad: View {
                     Haptics.light()
                     remote.samsungKey(.enter)
                 })
+            // One VoiceOver element with real actions (this surface has no arrow buttons to point to).
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel("Samsung trackpad")
-            .accessibilityHint("Use the arrow buttons for precise control")
+            .accessibilityHint("Selects on the TV. Actions move the focus; scrub to go back.")
+            .accessibilityAction { _ = remote.samsungKey(.enter) }
+            .accessibilityAction(.escape) { _ = remote.samsungKey(.back) }
+            .accessibilityAction(named: "Move up") { _ = remote.samsungKey(.up) }
+            .accessibilityAction(named: "Move down") { _ = remote.samsungKey(.down) }
+            .accessibilityAction(named: "Move left") { _ = remote.samsungKey(.left) }
+            .accessibilityAction(named: "Move right") { _ = remote.samsungKey(.right) }
     }
 }

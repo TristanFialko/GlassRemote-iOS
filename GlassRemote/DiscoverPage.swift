@@ -132,20 +132,23 @@ struct DiscoverPage: View {
     private func hero(_ title: MediaTitle) -> some View {
         Button { open(title) } label: {
             ZStack(alignment: .bottomLeading) {
-                CachedArtwork(url: title.backgroundURL ?? title.posterURL, contentMode: .fill) {
-                    Color.white.opacity(0.06)
-                }
-                .frame(height: 210).frame(maxWidth: .infinity).clipped()
+                // Fixed-size base with the artwork in an overlay. A 16:9 backdrop filled to 210pt tall is
+                // wider than a phone's content width; as the base it pushed the card past the screen edge.
+                Color.clear
+                    .frame(height: 210).frame(maxWidth: .infinity)
+                    .overlay {
+                        CachedArtwork(url: title.backgroundURL ?? title.posterURL, contentMode: .fill) {
+                            Color.white.opacity(0.06)
+                        }
+                    }
+                    .clipped()
                 LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .center, endPoint: .bottom)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Featured").scaledFont(11, .semibold).foregroundStyle(Color.white.opacity(0.7)).textCase(.uppercase)
                     Text(title.name).scaledFont(24, .bold).lineLimit(2)
-                    HStack(spacing: 8) {
-                        Text(title.kind == .movie ? "Movie" : "Series")
-                        if !title.year.isEmpty { Text("· \(title.year)") }
-                        if !title.rating.isEmpty { Label(title.rating, systemImage: "star.fill").labelStyle(.titleAndIcon) }
-                    }
-                    .scaledFont(12, .medium).foregroundStyle(Color.white.opacity(0.8))
+                    heroMeta(title)
+                        .lineLimit(1)
+                        .scaledFont(12, .medium).foregroundStyle(Color.white.opacity(0.8))
                 }
                 .foregroundStyle(Color.white)
                 .padding(16)
@@ -157,6 +160,14 @@ struct DiscoverPage: View {
         }
         .buttonStyle(PosterButtonStyle())
         .accessibilityLabel("Featured: \(title.name)")
+    }
+
+    /// "Movie · 2026 · ★ 7.4" as one line of text, so every gap is the same spaced dot.
+    private func heroMeta(_ title: MediaTitle) -> Text {
+        let line = DiscoverMetaLine.kindAndYear(title.kind, year: title.year)
+        let rating = title.rating.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rating.isEmpty else { return Text(line) }
+        return Text("\(line)\(DiscoverMetaLine.separator)\(Image(systemName: "star.fill")) \(rating)")
     }
 
     // MARK: Account sections (Continue Watching, Library)
@@ -476,8 +487,13 @@ struct PosterCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fill) { placeholder }
+            // Exact 2:3 base with the artwork in an overlay: catalogue posters are often slightly wider
+            // than 2:3, and as the base a filled poster grew the card past its width once it loaded.
+            Color.clear
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                .overlay {
+                    CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fill) { placeholder }
+                }
                 .overlay(alignment: .bottom) {
                     if let progress, progress > 0 {
                         ProgressView(value: progress).tint(Color.white).padding(8)
@@ -508,6 +524,19 @@ struct PosterCard: View {
                 Text(title.name).scaledFont(11, .medium).lineLimit(3).multilineTextAlignment(.center).padding(.horizontal, 8)
             }.foregroundStyle(Color.ink.opacity(0.4))
         }
+    }
+}
+
+/// Pure text for the Discover hero's meta line (unit tested).
+enum DiscoverMetaLine {
+    /// One spaced middle dot between parts, so every gap on the line is the same width.
+    static let separator = " · "
+
+    /// "Movie · 2026", or just "Series" when the catalogue has no year (no dangling dot).
+    static func kindAndYear(_ kind: MediaTitle.Kind, year: String) -> String {
+        [kind == .movie ? "Movie" : "Series", year.trimmingCharacters(in: .whitespacesAndNewlines)]
+            .filter { !$0.isEmpty }
+            .joined(separator: separator)
     }
 }
 

@@ -3,8 +3,9 @@
 Native iPhone remote for an ARRIS VIP7802 Android TV box running Glass Launcher, plus a Samsung TV
 link. Always Dark Mode, native Liquid Glass on iOS 26+ (material fallback earlier), iOS 16 deployment target.
 
-> **Not built or run.** The latest changes (Phase 4: themes, Discover, Player) were only statically
-> reviewed. Build with the GitHub Actions workflow and use `REGRESSION_CHECKLIST.md` on the real devices.
+> **Build status.** GitHub Actions builds every push to `main`, `v0.4-dev` and `Phase-*` branches for the
+> simulator and a generic iPhone, and runs the unit tests. Device behaviour is still checked by hand with
+> `REGRESSION_CHECKLIST.md` on the real Android TV box and Samsung TV.
 
 ## Pages (floating dock)
 - **Remote**: Android TV or Samsung TV (explicit selector). Android: Apps panel, now playing, Mouse / D-pad, Back / Home / Sources / Search / Keyboard, volume. Samsung: trackpad and a short key set with one Play/Pause button. Header: Glass Remote logo (menu), Box/TV status, power menu.

@@ -2,7 +2,8 @@ name: iOS build
 on:
   workflow_dispatch:
   push:
-    branches: [ main, v0.4-dev ]
+    # Phase branches build on every push too, so each phase is verified as it lands.
+    branches: [ main, v0.4-dev, 'Phase-*' ]
 
 jobs:
   build:
@@ -114,7 +115,7 @@ jobs:
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           cat "$RESOLVED" >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "Pin SwiftADB by putting its revision above into project.yml (revision: ...)." >> "$GITHUB_STEP_SUMMARY"
+          echo "SwiftADB is pinned by revision in project.yml; change it there to move to a newer commit." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Locate SwiftADB source
         run: find build -name AdbConnection.swift -print
@@ -159,33 +160,41 @@ jobs:
           PY
 
       - name: Build for iPhone simulator
+        shell: bash
         run: |
+          set -o pipefail
+          mkdir -p build/ci-logs
           xcodebuild -project GlassRemote.xcodeproj \
             -scheme GlassRemote \
             -sdk iphonesimulator \
             -configuration Debug \
             -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO build
+            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build/ci-logs/simulator-build.log
 
       - name: Run unit tests
         shell: bash
         run: |
           DEVICE="$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [0-9A-Za-z ]+' | sed 's/ *$//')"
           echo "Testing on: $DEVICE"
+          set -o pipefail
+          mkdir -p build/ci-logs
           xcodebuild test -project GlassRemote.xcodeproj \
             -scheme GlassRemote \
             -destination "platform=iOS Simulator,name=$DEVICE" \
             -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci-logs/unit-tests.log
 
       - name: Build for physical iPhone
+        shell: bash
         run: |
+          set -o pipefail
+          mkdir -p build/ci-logs
           xcodebuild -project GlassRemote.xcodeproj \
             -scheme GlassRemote \
             -destination 'generic/platform=iOS' \
             -configuration Release \
             -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO build
+            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build/ci-logs/device-build.log
 
       - name: Bundle and verify helpers
         run: |
@@ -225,6 +234,58 @@ jobs:
           name: glassremote-unsigned-ipa
           path: GlassRemote-unsigned.ipa
           if-no-files-found: error
+
+      - name: Summarise compiler and test errors
+        if: failure()
+        shell: bash
+        run: |
+          # Diagnostics only: turns "path:line:col: error:" lines from the xcodebuild logs into
+          # annotations on the run page plus a short job summary. It never fails the job itself.
+          set +e +o pipefail
+          shopt -s nullglob
+          logs=(build/ci-logs/*.log)
+          if [ ${#logs[@]} -eq 0 ]; then
+            echo "No xcodebuild logs were captured (the failure happened before the Xcode build)."
+            exit 0
+          fi
+          grep -hE '^/[^:]+:[0-9]+(:[0-9]+)?: (fatal )?error: ' "${logs[@]}" | sort -u > build/ci-logs/errors.txt
+          count=$(wc -l < build/ci-logs/errors.txt | tr -d ' ')
+          echo "Distinct error lines: $count"
+          head -n 10 build/ci-logs/errors.txt | while IFS= read -r line; do
+            file="${line%%:*}"
+            rest="${line#*:}"
+            num="${rest%%:*}"
+            rel="${file#"$GITHUB_WORKSPACE"/}"
+            msg="$(printf '%s' "${line#*error: }" | sed 's/%/%25/g')"
+            echo "::error file=${rel},line=${num},title=xcodebuild::${msg}"
+          done
+          {
+            echo "### Build or test errors"
+            echo
+            if [ "$count" -gt 0 ]; then
+              echo '```'
+              head -n 40 build/ci-logs/errors.txt | sed "s|$GITHUB_WORKSPACE/||"
+              echo '```'
+            else
+              echo "No file-level errors found. Last lines of each xcodebuild log:"
+              for log in "${logs[@]}"; do
+                echo
+                echo "**$(basename "$log")**"
+                echo '```'
+                tail -n 25 "$log"
+                echo '```'
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$count" -eq 0 ]; then
+            for log in "${logs[@]}"; do
+              last="$(grep -E 'error:|\*\* .* FAILED \*\*' "$log" | tail -n 1 | cut -c1-300 | sed 's/%/%25/g')"
+              if [ -n "$last" ]; then
+                echo "::error title=$(basename "$log")::${last}"
+              fi
+            done
+          fi
+          exit 0
 
       - name: Upload build logs
         if: failure()
