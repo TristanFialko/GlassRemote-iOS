@@ -10,6 +10,10 @@ struct MediaTitle: Identifiable, Hashable {
     let posterURL: URL?
     let rating: String
     var backgroundURL: URL? = nil
+    /// Catalogue extras used by the Discover hero (empty when a source omits them).
+    var overview: String = ""
+    var genres: [String] = []
+    var logoURL: URL? = nil
 
     /// Used only when Cinemeta supplies no poster (Metahub image host). Not verified from this build environment (no network); if it
     /// has no image either, the placeholder is shown.
@@ -60,9 +64,26 @@ enum CinemetaCatalog {
         let background: String?
         let releaseInfo: String?
         let imdbRating: String?
+        let description: LossyText?
+        let genres: LossyStrings?
+        let genre: LossyStrings?
+        let logo: LossyText?
     }
 
-    private static func https(_ text: String?) -> URL? {
+    /// Optional extras are decoded leniently: one odd field must not drop the whole row.
+    private struct LossyText: Decodable {
+        let value: String?
+        init(from decoder: Decoder) throws { value = try? decoder.singleValueContainer().decode(String.self) }
+    }
+    private struct LossyStrings: Decodable {
+        let values: [String]
+        init(from decoder: Decoder) throws {
+            let c = try decoder.singleValueContainer()
+            values = (try? c.decode([String].self)) ?? ((try? c.decode(String.self)).map { [$0] } ?? [])
+        }
+    }
+
+    static func https(_ text: String?) -> URL? {
         text.flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
     }
 
@@ -72,23 +93,26 @@ enum CinemetaCatalog {
             guard let id = meta.id, let name = meta.name, !name.isEmpty else { return nil }
             return MediaTitle(id: id, kind: kind, name: name, year: meta.releaseInfo ?? "",
                                 posterURL: https(meta.poster), rating: meta.imdbRating ?? "",
-                                backgroundURL: https(meta.background))
+                                backgroundURL: https(meta.background),
+                                overview: (meta.description?.value ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                                genres: meta.genres?.values ?? meta.genre?.values ?? [],
+                                logoURL: https(meta.logo?.value))
         }
     }
 
-    private static func fetch(_ url: URL, session: URLSession) async throws -> Data {
+    static func fetch(_ url: URL, session: URLSession) async throws -> Data {
         let (data, response) = try await session.data(from: url)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
         return data
     }
 
+    /// Movies and series are requested in parallel; cancelling the calling task cancels both requests.
     static func search(_ query: String, session: URLSession = .shared) async throws -> [MediaTitle] {
-        var all: [MediaTitle] = []
-        for kind in [MediaTitle.Kind.movie, .series] {
-            guard let url = searchURL(kind: kind, query: query) else { return [] }
-            all += parse(try await fetch(url, session: session), kind: kind)
-        }
-        return all
+        guard let movieURL = searchURL(kind: .movie, query: query),
+              let seriesURL = searchURL(kind: .series, query: query) else { return [] }
+        async let movies = fetch(movieURL, session: session)
+        async let series = fetch(seriesURL, session: session)
+        return parse(try await movies, kind: .movie) + parse(try await series, kind: .series)
     }
 
     // MARK: Browse (Cinemeta catalogues: "top" = popular, "imdbRating" = top rated)
@@ -118,73 +142,6 @@ enum CinemetaCatalog {
         return parse(try await fetch(url, session: session), kind: kind)
     }
 
-    // MARK: Detail (Cinemeta /meta)
-
-    struct Episode: Identifiable, Hashable {
-        let id: String          // video id "tt…:season:episode"
-        let season: Int
-        let number: Int
-        let title: String
-        let released: Date?
-    }
-
-    struct Detail: Equatable {
-        var overview = ""
-        var runtime = ""
-        var genres: [String] = []
-        var cast: [String] = []
-        var directors: [String] = []
-        var background: URL?
-        var episodes: [Episode] = []
-        var seasons: [Int] { Array(Set(episodes.map(\.season))).filter { $0 > 0 }.sorted() }
-    }
-
-    private struct MetaResponse: Decodable { let meta: FullMeta? }
-    private struct FullMeta: Decodable {
-        let description: String?
-        let runtime: String?
-        let genres: [String]?
-        let cast: [String]?
-        let director: [String]?
-        let background: String?
-        let videos: [Video]?
-    }
-    private struct Video: Decodable {
-        let id: String?
-        let season: Int?
-        let episode: Int?
-        let number: Int?
-        let title: String?
-        let name: String?
-        let released: String?
-    }
-
-    static func detailURL(kind: MediaTitle.Kind, id: String) -> URL? {
-        guard id.range(of: #"^tt[0-9]{5,10}$"#, options: .regularExpression) != nil else { return nil }
-        return URL(string: "\(base)/meta/\(kind.rawValue)/\(id).json")
-    }
-
-    static func parseDetail(_ data: Data) -> Detail? {
-        guard let meta = (try? JSONDecoder().decode(MetaResponse.self, from: data))?.meta else { return nil }
-        var detail = Detail()
-        detail.overview = meta.description ?? ""
-        detail.runtime = meta.runtime ?? ""
-        detail.genres = meta.genres ?? []
-        detail.cast = meta.cast ?? []
-        detail.directors = meta.director ?? []
-        detail.background = https(meta.background)
-        detail.episodes = (meta.videos ?? []).compactMap { v in
-            guard let id = v.id, let season = v.season, let number = v.episode ?? v.number else { return nil }
-            return Episode(id: id, season: season, number: number, title: v.title ?? v.name ?? "",
-                           released: DateParsing.iso(v.released))
-        }.sorted { ($0.season, $0.number) < ($1.season, $1.number) }
-        return detail
-    }
-
-    static func detail(kind: MediaTitle.Kind, id: String, session: URLSession = .shared) async throws -> Detail? {
-        guard let url = detailURL(kind: kind, id: id) else { return nil }
-        return parseDetail(try await fetch(url, session: session))
-    }
 }
 
 /// Last few searches (local only). Pure helper so ordering and limits are testable.
@@ -240,6 +197,7 @@ final class DiscoverModel: ObservableObject {
     @Published private(set) var series: [MediaTitle] = []
     @Published private(set) var rows: [DiscoverRow] = DiscoverModel.makeRows()
     private var task: Task<Void, Never>?
+    private var cache = SearchCache()
 
     /// Popular, top rated and newest first, then every genre. Genre rows are only requested when
     /// they scroll into view, so the page can be long without being expensive.
@@ -257,11 +215,16 @@ final class DiscoverModel: ObservableObject {
     var visibleMovies: [MediaTitle] { filter == .series ? [] : movies }
     var visibleSeries: [MediaTitle] { filter == .movies ? [] : series }
     var visibleRows: [DiscoverRow] { rows.filter { filter == .all || ($0.kind == .movie) == (filter == .movies) } }
-    /// Featured: the first popular title that has real backdrop artwork. Nothing is invented.
-    var featured: MediaTitle? {
-        let pool = rows.first { $0.source.catalog == "top" && $0.source.genre == nil && (filter == .all || ($0.kind == .movie) == (filter == .movies)) }
-        return pool?.items.first { $0.backgroundURL != nil }
+    /// Hero titles: popular movies and series that have real backdrop artwork, alternated. Nothing is invented.
+    var featuredPool: [MediaTitle] {
+        let pools = rows.filter { $0.source.catalog == "top" && $0.source.genre == nil
+            && (filter == .all || ($0.kind == .movie) == (filter == .movies)) }
+            .map { row in row.items.filter { $0.backgroundURL != nil } }
+        return DiscoverHeroLayout.interleave(pools)
     }
+    var featured: MediaTitle? { featuredPool.first }
+    /// One confident title match shown above the grids.
+    var topResult: MediaTitle? { SearchRanking.topResult([visibleMovies, visibleSeries], query: query) }
     var isSearching: Bool { query.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 }
 
     func useRecent(_ text: String) { query = text; queryChanged() }
@@ -301,16 +264,26 @@ final class DiscoverModel: ObservableObject {
 
     // MARK: Search
 
-    /// Debounced; a new keystroke cancels the previous request.
+    /// Live search. A cached query shows at once; otherwise a short debounce, and each keystroke cancels
+    /// the request in flight. The previous results stay on screen while the next ones load.
     func queryChanged() {
         task?.cancel()
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard text.count >= 2 else { movies = []; series = []; phase = .idle; return }
+        if let hit = cache.value(for: text) { apply(hit, for: text); return }
         task = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 450_000_000)
+            try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
             await self?.run(text)
         }
+    }
+
+    var hasResults: Bool { !movies.isEmpty || !series.isEmpty }
+
+    private func apply(_ found: [MediaTitle], for text: String) {
+        movies = SearchRanking.rank(found.filter { $0.kind == .movie }, query: text)
+        series = SearchRanking.rank(found.filter { $0.kind == .series }, query: text)
+        phase = found.isEmpty ? .empty : .results
     }
 
     func retrySearch() { queryChanged() }
@@ -319,10 +292,10 @@ final class DiscoverModel: ObservableObject {
         phase = .searching
         do {
             let found = try await CinemetaCatalog.search(text)
-            guard !Task.isCancelled else { return }
-            movies = found.filter { $0.kind == .movie }
-            series = found.filter { $0.kind == .series }
-            phase = found.isEmpty ? .empty : .results
+            // A stale response (the text changed meanwhile) is dropped even if it was not cancelled in time.
+            guard !Task.isCancelled, text == query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            cache.store(found, for: text)
+            apply(found, for: text)
             if !found.isEmpty {
                 recents = RecentSearches.adding(recents, text)
                 UserDefaults.standard.set(recents, forKey: RecentSearches.key)

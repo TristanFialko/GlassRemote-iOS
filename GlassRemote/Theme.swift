@@ -584,7 +584,7 @@ final class ThemeStore: ObservableObject {
     private var activeURL: URL? {
         switch page {
         case .discover: return sources[.discover] ?? sources[.player]
-        case .player, .remote: return sources[.player] ?? sources[.discover]
+        case .player, .remote, .profile: return sources[.player] ?? sources[.discover]
         }
     }
 

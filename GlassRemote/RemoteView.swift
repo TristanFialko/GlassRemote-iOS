@@ -457,36 +457,8 @@ struct RemoteView: View {
         let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
         return GeometryReader { geo in
             let size = max(180, min(420, min(geo.size.width, geo.size.height) - 12))
-            ZStack {
-                Color.clear.glassSurface(Circle(), elevated: true)
-                    .frame(width: size, height: size)
-                    // Depth: soft top light falling to a darker lower edge.
-                    .overlay(Circle().fill(RadialGradient(colors: [Color.white.opacity(0.10), .clear],
-                                                          center: .init(x: 0.5, y: 0.12), startRadius: 4, endRadius: size * 0.7))
-                        .allowsHitTesting(false))
-                    // Fine rim highlight (bright on top, dark underneath) plus a hairline inner edge.
-                    .overlay(Circle().strokeBorder(LinearGradient(colors: [Color.white.opacity(0.34), Color.white.opacity(0.06), Color.black.opacity(0.5)],
-                                                                  startPoint: .top, endPoint: .bottom), lineWidth: 1.2))
-                    .overlay(Circle().stroke(Color.black.opacity(0.45), lineWidth: 0.8).padding(1.8))
-                    // Directional separation: four hairline seams on the diagonals, stopping short of the centre.
-                    .overlay(DpadSeams().stroke(Color.ink.opacity(0.12), lineWidth: 0.8).padding(size * 0.06)
-                        .allowsHitTesting(false))
-                    .overlay(Circle().stroke(Color.ink.opacity(0.12), lineWidth: 0.8).frame(width: size * 0.36, height: size * 0.36)
-                        .allowsHitTesting(false))
-                    .shadow(color: .black.opacity(0.5), radius: 14, y: 8)
-                VStack(spacing: 0) {
-                    HStack(spacing: 0) { Color.clear; dpadKey("chevron.up", "UP", "Up"); Color.clear }
-                    HStack(spacing: 0) {
-                        dpadKey("chevron.left", "LEFT", "Left")
-                        dpadKey("circle.fill", "OK", "Select", ok: true)
-                        dpadKey("chevron.right", "RIGHT", "Right")
-                    }
-                    HStack(spacing: 0) { Color.clear; dpadKey("chevron.down", "DOWN", "Down"); Color.clear }
-                }
-                .padding(10)
-                .frame(width: size, height: size)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            GlassDpad(size: size) { remote.routedKey($0) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .glassSurface(shape)
         // Swipe anywhere on the pad to send an arrow, like the Apple TV remote.
@@ -501,28 +473,6 @@ struct RemoteView: View {
         )
         .allowsHitTesting(!androidExpanded)
         .opacity(androidExpanded ? 0.6 : 1)
-    }
-
-    private func dpadKey(_ icon: String, _ key: String, _ label: String, ok: Bool = false) -> some View {
-        // Tap = one press; hold = auto-repeat (arrows only, so OK never repeats into a double-select).
-        RepeatKey(onFire: { remote.routedKey(key) }) {
-            Image(systemName: icon)
-                .scaledFont(ok ? 12 : 22, .medium)
-                .foregroundStyle(Color.ink)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background {
-                    if ok {
-                        Color.clear.glassSurface(Circle(), interactive: true, elevated: true, accent: true).padding(6)
-                            .overlay(Circle().strokeBorder(LinearGradient(colors: [Color.white.opacity(0.4), Color.white.opacity(0.05)],
-                                                                          startPoint: .top, endPoint: .bottom), lineWidth: 1).padding(6))
-                            .shadow(color: .black.opacity(0.4), radius: 5, y: 3)
-                    }
-                }
-                .contentShape(Rectangle())
-        }
-        .accessibilityLabel(label)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { remote.routedKey(key) }
     }
 
     // MARK: - Navigation and volume
@@ -558,20 +508,5 @@ struct RemoteView: View {
                 externalVolumeEcho = reading
                 volumeSliderValue = reading
             }
-    }
-}
-
-/// Four short diagonal seams between the D-pad's directional areas (visual only: hit areas are unchanged).
-private struct DpadSeams: Shape {
-    func path(in rect: CGRect) -> Path {
-        let c = CGPoint(x: rect.midX, y: rect.midY)
-        let r = min(rect.width, rect.height) / 2
-        var p = Path()
-        for angle in [45.0, 135.0, 225.0, 315.0] {
-            let a = angle * .pi / 180
-            p.move(to: CGPoint(x: c.x + cos(a) * r * 0.36, y: c.y + sin(a) * r * 0.36))
-            p.addLine(to: CGPoint(x: c.x + cos(a) * r * 0.98, y: c.y + sin(a) * r * 0.98))
-        }
-        return p
     }
 }

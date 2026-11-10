@@ -4,6 +4,8 @@ import SwiftUI
 struct GlassRemoteApp: App {
     // One shared model so Shortcuts / Siri intents use the same ADB connection as the UI.
     @StateObject private var remote = RemoteModel.shared
+    // Phase 7: restores the last active profile (its theme, motion preference and add-ons) at launch.
+    @StateObject private var profiles = ProfileStore.shared
 
     var body: some Scene {
         WindowGroup {
