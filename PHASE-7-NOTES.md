@@ -27,3 +27,16 @@ Branch: Phase-7 (from phase-6-ui-nuvio-rebuild at adc2ec0). PR #2 is tracking-on
 - Real Liquid Glass rendering, rotation, safe areas and touch feel need on-device checks.
 - Plain-http LAN add-ons may be blocked by App Transport Security (no NSAllowsLocalNetworking key is set).
 - Still open on this branch: a visual and landscape pass on the Player tab; checking that the other poster surfaces (search results, collections) follow the orientation preference; CI results for the latest commits; on-device checks of the card-to-detail transition, the D-pad feel and Liquid Glass rendering.
+
+## Phase 7.1 polish pass (branch Phase-7.1, child of Phase-7)
+
+Progress is logged here as each item lands. Nothing below has been checked on a physical iPhone or TV.
+
+### Done
+- Add-on install identity (Addons/AddonStore.swift, AddonClient.swift, AddonsPage.swift). Each install has its own UUID (installID), separate from the manifest id, so two differently configured links of the same add-on (for example two Torrentio configurations) can be installed side by side. Each install has its own Keychain item (addon.<profile>.<install id>), enabled state and position. The same link twice is still a duplicate. "Replace link" on the add-on page swaps one install's link in place after reconfiguring it; a link for a different add-on is rejected there. When an add-on is installed more than once it is numbered by install order ("Torrentio 1", "Torrentio 2") in the list, the detail page, the Play sheet groups and the failure lines. Lists saved before this change are migrated on load: each record gets an install id and its Keychain item is moved from the manifest-id account to the install-id account. Full links are still only in the Keychain; the saved list holds the redacted host. Tests: Phase71AddonIdentityTests (side-by-side install, duplicate link, replace, legacy migration); the Phase 7 store test now uses install ids.
+
+### Still to do on this branch
+- Gesture and input bugs: Mouse/D-pad switch leaking a tap into the D-pad, filter swipes fighting the pager, the detail close button, Search opening the hero title.
+- Remote redesign (portrait and landscape), moving Themes/Connections/Devices into Profile.
+- Discover/search/detail polish, Liquid Glass material variants, theme and motion polish, performance pass.
+- CI: results for each Phase-7.1 push need checking in GitHub Actions.
