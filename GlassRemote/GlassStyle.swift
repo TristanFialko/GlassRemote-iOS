@@ -514,7 +514,17 @@ struct ModeSelector: View {
     @Binding var isMouse: Bool
     /// Height of each segment. The Android remote uses a compact value so the pad gets the room.
     var segmentHeight: CGFloat = 38
+    /// Phase 7.3: true while a finger is on the selector, false on lift or cancellation (GestureState
+    /// resets itself), so the Remote can keep that touch away from the pad. See RemoteInputGuard.
+    var onTouchChange: ((Bool) -> Void)?
     private let inset: CGFloat = 4
+    @GestureState private var touching = false
+
+    init(isMouse: Binding<Bool>, segmentHeight: CGFloat = 38, onTouchChange: ((Bool) -> Void)? = nil) {
+        self._isMouse = isMouse
+        self.segmentHeight = segmentHeight
+        self.onTouchChange = onTouchChange
+    }
 
     var body: some View {
         GlassScrubSelector(
@@ -532,6 +542,11 @@ struct ModeSelector: View {
             }
             .foregroundStyle(selected ? Color.ink : Color.inkAlpha(0.72))
         }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0).updating($touching) { _, state, _ in state = true }
+        )
+        .onChange(of: touching) { active in onTouchChange?(active) }
+        .onDisappear { onTouchChange?(false) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Mouse or D-pad")
         .accessibilityValue(isMouse ? "Mouse" : "D-pad")

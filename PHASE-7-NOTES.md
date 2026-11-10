@@ -59,3 +59,8 @@ Phase-7.1 is left as it was. Nothing below has been checked on a physical iPhone
 - Check CI for this push (tracking PR for Phase-7.2, do not merge).
 - 2.3: replace RemoteInputGuard's 0.35 s timing with explicit touch ownership.
 - 2.5 to 2.7: search taps, detail close button, hero swipe ownership. Then section 3.
+
+## Phase 7.3 continuous pass (still on branch Phase-7.2)
+
+### Done
+- Mouse / D-pad ownership (RemoteView.swift RemoteInputGuard + RemoteInputPolicy, GlassStyle.swift ModeSelector, RepeatKey.swift). The 0.35 s settle delay is gone. Input path traced: the selector's drag flips remote.isTrackpad mid-drag, which swaps the mouse surface and the pad. Real leaks were (a) a pad touch or hold-repeat already down when the selector was touched or the mode changed, and (b) RepeatKey's repeat task kept firing when its key left the screen mid-hold, because the gesture's end never arrived. Now ModeSelector reports its touch through a self-resetting GestureState; every pad touch takes a token for the current ownership epoch; the epoch moves on with selector touch start/end and mode changes; input is accepted only with a current token, outside Mouse mode, with no selector touch. RepeatKey cancels its repeat and unlights on disappear (mode switch, rotation). Tests: Phase73InputOwnershipTests; the old timing test is removed.

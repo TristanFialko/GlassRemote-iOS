@@ -12,20 +12,65 @@ final class PointerBox {
     var token = 0                 // invalidates a pending touch-and-hold when the touch changes
 }
 
-/// Phase 7.1: drops D-pad input that arrives while a selector is being touched or straight after the
-/// Mouse / D-pad switch, so the touch that changes mode can never also press a key.
+/// Phase 7.3: explicit touch ownership between the Mouse / D-pad selector and the pad (replaces the
+/// Phase 7.1 0.35 s settle delay). Every touch on the pad gets a token for the current ownership
+/// epoch. The epoch moves on when a selector touch starts or ends and when the mode changes, so:
+/// - a touch on the selector never sends a D-pad key, and neither does its lift;
+/// - a pad touch (or hold-repeat) that was already down when the selector or mode changed is dropped;
+/// - the first deliberate touch after the switch works immediately, with no waiting period.
+/// Mouse mode never produces D-pad input. Main thread only; intentionally not observable.
 final class RemoteInputGuard {
-    static let settleInterval: TimeInterval = 0.35
-    private(set) var modeChangedAt = Date.distantPast
+    private(set) var selectorTouchActive = false
+    private(set) var epoch = 0
+    private(set) var padToken: Int?
+    private var padTouchOpen = false
 
-    func modeChanged(at now: Date = Date()) { modeChangedAt = now }
-
-    func blocksDpad(now: Date = Date(), scrubActive: Bool = ScrubTouch.shared.isActive) -> Bool {
-        Self.blocks(now: now, modeChangedAt: modeChangedAt, scrubActive: scrubActive)
+    func selectorTouchChanged(_ active: Bool) {
+        guard active != selectorTouchActive else { return }
+        selectorTouchActive = active
+        invalidate()
     }
 
-    static func blocks(now: Date, modeChangedAt: Date, scrubActive: Bool) -> Bool {
-        scrubActive || now.timeIntervalSince(modeChangedAt) < settleInterval
+    func modeChanged() { invalidate() }
+
+    /// Called on every movement of a touch on the pad; only the first call of a touch takes a token.
+    func padTouchChanged(isTrackpad: Bool) {
+        guard !padTouchOpen else { return }
+        padTouchOpen = true
+        padToken = RemoteInputPolicy.token(epoch: epoch, isTrackpad: isTrackpad, selectorTouchActive: selectorTouchActive)
+    }
+
+    /// The touch lifted. Its token stays valid so a tap that fires on lift is still accepted.
+    func padTouchEnded() { padTouchOpen = false }
+
+    func acceptsPadInput(isTrackpad: Bool) -> Bool {
+        RemoteInputPolicy.accepts(token: padToken, epoch: epoch, isTrackpad: isTrackpad,
+                                  selectorTouchActive: selectorTouchActive)
+    }
+
+    /// Clears everything, for example when the Remote leaves the screen mid-touch.
+    func reset() {
+        selectorTouchActive = false
+        invalidate()
+    }
+
+    private func invalidate() {
+        epoch &+= 1
+        padTouchOpen = false   // a touch whose end was never delivered can't keep a stale session open
+        padToken = nil
+    }
+}
+
+/// The pure rule behind `RemoteInputGuard`.
+enum RemoteInputPolicy {
+    /// The ownership token for a pad touch starting now, or nil when the pad must not own it.
+    static func token(epoch: Int, isTrackpad: Bool, selectorTouchActive: Bool) -> Int? {
+        (isTrackpad || selectorTouchActive) ? nil : epoch
+    }
+
+    static func accepts(token: Int?, epoch: Int, isTrackpad: Bool, selectorTouchActive: Bool) -> Bool {
+        guard let token, !isTrackpad, !selectorTouchActive else { return false }
+        return token == epoch
     }
 }
 
@@ -316,7 +361,8 @@ struct RemoteView: View {
     // MARK: - Mode selector
 
     private var modeRow: some View {
-        ModeSelector(isMouse: $remote.isTrackpad, segmentHeight: 32)
+        ModeSelector(isMouse: $remote.isTrackpad, segmentHeight: 32,
+                     onTouchChange: { inputGuard.selectorTouchChanged($0) })
             .onChange(of: remote.isTrackpad) { _ in inputGuard.modeChanged() }
     }
 
@@ -477,17 +523,24 @@ struct RemoteView: View {
         return GeometryReader { geo in
             let size = max(180, min(420, min(geo.size.width, geo.size.height) - 12))
             GlassDpad(size: size) { key in
-                guard !inputGuard.blocksDpad() else { return }
+                guard inputGuard.acceptsPadInput(isTrackpad: remote.isTrackpad) else { return }
                 remote.routedKey(key)
             }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .glassSurface(shape)
+        // Phase 7.3: every touch on the pad opens an ownership session (see RemoteInputGuard). It runs
+        // alongside the keys and the swipe and never consumes the touch.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in inputGuard.padTouchChanged(isTrackpad: remote.isTrackpad) }
+                .onEnded { _ in inputGuard.padTouchEnded() }
+        )
         // Swipe anywhere on the pad to send an arrow, like the Apple TV remote.
         .simultaneousGesture(
             DragGesture(minimumDistance: 28)
                 .onEnded { value in
-                    guard !inputGuard.blocksDpad() else { return }
+                    guard inputGuard.acceptsPadInput(isTrackpad: remote.isTrackpad) else { return }
                     let w = value.translation.width, h = value.translation.height
                     let name = abs(w) > abs(h) ? (w > 0 ? "RIGHT" : "LEFT") : (h > 0 ? "DOWN" : "UP")
                     Haptics.soft()
@@ -496,6 +549,7 @@ struct RemoteView: View {
         )
         .allowsHitTesting(!androidExpanded)
         .opacity(androidExpanded ? 0.6 : 1)
+        .onDisappear { inputGuard.padTouchEnded() }
     }
 
     // MARK: - Navigation and volume

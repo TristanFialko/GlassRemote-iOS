@@ -109,14 +109,6 @@ final class Phase71GestureTests: XCTestCase {
         }
     }
 
-    func testModeSwitchBlocksTheDpadBriefly() {
-        let t0 = Date(timeIntervalSince1970: 1_000)
-        XCTAssertTrue(RemoteInputGuard.blocks(now: t0.addingTimeInterval(0.1), modeChangedAt: t0, scrubActive: false))
-        XCTAssertFalse(RemoteInputGuard.blocks(now: t0.addingTimeInterval(0.5), modeChangedAt: t0, scrubActive: false))
-        XCTAssertTrue(RemoteInputGuard.blocks(now: t0.addingTimeInterval(5), modeChangedAt: t0, scrubActive: true))
-        XCTAssertFalse(RemoteInputGuard.blocks(now: t0, modeChangedAt: .distantPast, scrubActive: false))
-    }
-
     func testPagerIgnoresTouchesOnSelectors() {
         let filter = CGRect(x: 16, y: 120, width: 343, height: 36)
         XCTAssertTrue(PagerGesturePolicy.inExcludedZone(CGPoint(x: 200, y: 138), zones: [filter]))
