@@ -142,6 +142,11 @@ enum PagerGesturePolicy {
         zones.contains { $0.insetBy(dx: -slop, dy: -slop).contains(point) }
     }
 
+    /// Phase 7.3: only zones with a real size that are at least partly on screen count.
+    static func visibleZones(_ zones: [CGRect], in bounds: CGRect) -> [CGRect] {
+        zones.filter { !$0.isNull && !$0.isInfinite && $0.width > 0 && $0.height > 0 && $0.intersects(bounds) }
+    }
+
     /// Whether a touch that lands at `x` (of `width`) may start a page swipe on `page`.
     /// Remote pages only from its edge strips; the others anywhere.
     static func acceptsTouch(on page: AppPage, x: CGFloat, width: CGFloat, edgeWidth: CGFloat) -> Bool {

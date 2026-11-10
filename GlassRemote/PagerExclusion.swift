@@ -17,11 +17,23 @@ final class PagerExclusionRegistry {
     func remove(_ view: UIView) { views.remove(view) }
 
     /// Frames of every zone on the same window as `host`, in `host`'s coordinates.
+    /// Phase 7.3: every page stays alive in the pager, so zones of off-screen pages (and hidden ones) are
+    /// dropped; only zones that are on screen now can block a page swipe.
     func frames(in host: UIView) -> [CGRect] {
-        views.allObjects.compactMap { view in
-            guard let window = view.window, window === host.window, !view.isHidden else { return nil }
+        let frames: [CGRect] = views.allObjects.compactMap { view in
+            guard let window = view.window, window === host.window, Self.isShown(view) else { return nil }
             return view.convert(view.bounds, to: host)
         }
+        return PagerGesturePolicy.visibleZones(frames, in: host.bounds)
+    }
+
+    private static func isShown(_ view: UIView) -> Bool {
+        var current: UIView? = view
+        while let candidate = current {
+            if candidate.isHidden || candidate.alpha < 0.01 { return false }
+            current = candidate.superview
+        }
+        return true
     }
 }
 
