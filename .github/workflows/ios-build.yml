@@ -3,11 +3,17 @@ on:
   workflow_dispatch:
   push:
     # Phase branches build on every push too, so each phase is verified as it lands.
-    branches: [ main, v0.4-dev, 'Phase-*' ]
+    # The Phase 6 rebuild branch is lower-case, so it is listed explicitly (filters are case-sensitive).
+    branches: [ main, v0.4-dev, 'Phase-*', 'phase-6-ui-nuvio-rebuild' ]
 
 jobs:
   build:
     runs-on: macos-26   # Xcode 26 SDK is required for native Liquid Glass (glassEffect)
+    permissions:
+      contents: read
+      # Only used by the final report step, which comments on the open PR for this branch.
+      pull-requests: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -98,7 +104,11 @@ jobs:
           done
 
       - name: Generate Xcode project
-        run: xcodegen generate
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build/ci-logs
+          xcodegen generate 2>&1 | tee build/ci-logs/xcodegen.log
 
       - name: Resolve Swift packages
         run: |
@@ -294,3 +304,58 @@ jobs:
           name: glassremote-build-logs
           path: build
           if-no-files-found: ignore
+
+      - name: Report results on the Phase 6 pull request
+        if: ${{ always() && github.ref_name == 'phase-6-ui-nuvio-rebuild' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # Diagnostics only: posts a short build/test report on the open pull request for this
+          # branch, so results can be reviewed without opening the Actions UI. Never fails the job.
+          set +e +o pipefail
+          shopt -s nullglob
+          PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq '.[0].number // empty')"
+          if [ -z "$PR" ]; then
+            echo "No open pull request for $GITHUB_REF_NAME; skipping report."
+            exit 0
+          fi
+          mkdir -p build
+          report=build/ci-report.md
+          {
+            echo "### CI ${JOB_STATUS}: \`${GITHUB_SHA:0:7}\`"
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            if [ -s GlassRemote-unsigned.ipa ]; then
+              echo
+              echo "Unsigned IPA: $(du -h GlassRemote-unsigned.ipa | cut -f1), artifact \`glassremote-unsigned-ipa\`"
+            fi
+            logs=(build/ci-logs/*.log)
+            if [ ${#logs[@]} -eq 0 ]; then
+              echo
+              echo "No build logs were captured; the failure happened before the Xcode steps."
+            fi
+            for log in "${logs[@]}"; do
+              name="$(basename "$log")"
+              result="$(grep -E '\*\* [A-Z ]+ (SUCCEEDED|FAILED) \*\*' "$log" | tail -n 1)"
+              tests="$(grep -E 'Executed [0-9]+ tests?' "$log" | tail -n 1)"
+              echo
+              echo "**${name}**: ${result:-no result line}"
+              if [ -n "$tests" ]; then
+                echo
+                echo "${tests}"
+              fi
+              problems="$(grep -E '(^|[^a-zA-Z])(fatal )?error:|Undefined symbol|Test Case .* failed|Testing failed' "$log" \
+                | sed "s|${GITHUB_WORKSPACE}/||g" | awk '!seen[$0]++' | head -n 60)"
+              if [ -n "$problems" ]; then
+                echo
+                echo '```'
+                printf '%s\n' "$problems" | cut -c1-400
+                echo '```'
+              fi
+            done
+          } > "$report"
+          head -c 60000 "$report" > build/ci-report-trimmed.md
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file build/ci-report-trimmed.md || echo "Could not post the report."
+          exit 0
