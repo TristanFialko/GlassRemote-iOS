@@ -96,7 +96,7 @@ struct DiscoverPage: View {
             TitleDetailView(title: item.title, libraryItem: item.libraryItem, onShowRemote: {
                 target = nil
                 navigator.go(.remote)
-            })
+            }, onClose: { target = nil })
             .environmentObject(RemoteModel.shared)
             .modifier(DetailZoomDestination(id: item.sourceID, namespace: zoom))
         }
@@ -141,6 +141,9 @@ struct DiscoverPage: View {
             .frame(maxWidth: layoutContext.isLandscape ? 300 : .infinity)
         }
         .padding(.horizontal, 16).padding(.top, layoutContext.isLandscape ? 6 : 10).padding(.bottom, 8)
+        // Phase 7.1: taps in the gaps of the floating header stop here instead of reaching the hero below.
+        .contentShape(Rectangle())
+        .onTapGesture {}
         .background {
             LinearGradient(colors: [theme.canvasTop.opacity(0.94), theme.canvasTop.opacity(0)], startPoint: .top, endPoint: .bottom)
                 .padding(.bottom, -18)
@@ -184,6 +187,10 @@ struct DiscoverPage: View {
         .scaledFont(16)
         .padding(.horizontal, 16).frame(height: 48)
         .glassBar(Capsule())
+        // Phase 7.1: the whole capsule is the search field. Before, only the text line took touches and
+        // a tap on the rest of the capsule fell through to the hero and opened its title.
+        .contentShape(Capsule())
+        .onTapGesture { searching = true }
     }
 
     private var accountButton: some View {

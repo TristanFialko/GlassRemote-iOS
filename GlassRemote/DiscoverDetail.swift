@@ -10,6 +10,8 @@ struct TitleDetailView: View {
     let libraryItem: NuvioWatchItem?
     /// Phase 6: set by Discover to close the sheet and show the Remote page after a Nuvio handoff.
     var onShowRemote: (() -> Void)? = nil
+    /// Phase 7.1: closes the page by clearing the presenter's own state (falls back to dismiss()).
+    var onClose: (() -> Void)? = nil
 
     @EnvironmentObject private var remote: RemoteModel
     @Environment(\.glassTheme) private var theme
@@ -25,10 +27,12 @@ struct TitleDetailView: View {
     @State private var showStreams = false
     @State private var opened: MediaTitle?
 
-    init(title: MediaTitle, libraryItem: NuvioWatchItem?, onShowRemote: (() -> Void)? = nil) {
+    init(title: MediaTitle, libraryItem: NuvioWatchItem?, onShowRemote: (() -> Void)? = nil,
+         onClose: (() -> Void)? = nil) {
         self.title = title
         self.libraryItem = libraryItem
         self.onShowRemote = onShowRemote
+        self.onClose = onClose
         _model = StateObject(wrappedValue: TitleDetailModel(title: title))
     }
 
@@ -50,7 +54,7 @@ struct TitleDetailView: View {
             }
             .coordinateSpace(name: Self.space)
             .overlay(alignment: .topTrailing) {
-                closeButton.padding(.top, 14).padding(.trailing, inset)
+                closeButton.padding(.top, 10).padding(.trailing, max(inset - 4, 0))
             }
         }
         .foregroundStyle(Color.ink)
@@ -69,7 +73,7 @@ struct TitleDetailView: View {
                 .environmentObject(remote)
         }
         .sheet(item: $opened) { other in
-            TitleDetailView(title: other, libraryItem: nil, onShowRemote: onShowRemote)
+            TitleDetailView(title: other, libraryItem: nil, onShowRemote: onShowRemote, onClose: { opened = nil })
                 .environmentObject(remote)
         }
     }
@@ -397,16 +401,24 @@ struct TitleDetailView: View {
         return "\(pct)% watched"
     }
 
+    /// Phase 7.1: a 44 pt target (the glyph stays 36 pt) on non-interactive glass, so the glass effect
+    /// and the sheet's drag never take the touch, and it closes through the presenter's state.
     private var closeButton: some View {
-        Button { dismiss() } label: {
+        Button(action: close) {
             Image(systemName: "xmark")
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(Color.ink)
                 .frame(width: 36, height: 36)
-                .glassSurface(Circle(), interactive: true)
+                .glassSurface(Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
         }
         .buttonStyle(PressStyle())
         .accessibilityLabel("Close")
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     /// The season being watched when the catalogue lists it, otherwise the first season.
