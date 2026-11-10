@@ -341,6 +341,8 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
             )
         }
         .frame(width: vertical ? height : nil, height: vertical ? nil : height)
+        // Phase 7.1: a page swipe never starts on a selector (see PagerExclusion.swift).
+        .background { PagerExclusionZone() }
     }
 
     private func labels(index: Int, thickness: CGFloat, seg: CGFloat) -> some View {

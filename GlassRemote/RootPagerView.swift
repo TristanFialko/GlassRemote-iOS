@@ -134,6 +134,14 @@ enum PagerGesturePolicy {
         return (rightToLeft ? width - x : x) < railZone
     }
 
+    /// Extra room around a selector that still counts as the selector (fingers are wider than its edge).
+    static let exclusionSlop: CGFloat = 6
+
+    /// Phase 7.1: a touch inside (or just outside) any selector's frame never starts a page swipe.
+    static func inExcludedZone(_ point: CGPoint, zones: [CGRect], slop: CGFloat = exclusionSlop) -> Bool {
+        zones.contains { $0.insetBy(dx: -slop, dy: -slop).contains(point) }
+    }
+
     /// Whether a touch that lands at `x` (of `width`) may start a page swipe on `page`.
     /// Remote pages only from its edge strips; the others anywhere.
     static func acceptsTouch(on page: AppPage, x: CGFloat, width: CGFloat, edgeWidth: CGFloat) -> Bool {
@@ -226,6 +234,8 @@ private struct PagerPan: UIViewRepresentable {
             if point.y > host.bounds.height - dockZone { return false }
             if PagerGesturePolicy.inRail(x: point.x, width: host.bounds.width, railZone: railZone,
                                          rightToLeft: rightToLeft) { return false }
+            // Phase 7.1: a touch that lands on a selector belongs to it, decided before any movement.
+            if PagerGesturePolicy.inExcludedZone(point, zones: PagerExclusionRegistry.shared.frames(in: host)) { return false }
             guard PagerGesturePolicy.acceptsTouch(on: page, x: point.x, width: host.bounds.width, edgeWidth: edgeWidth) else { return false }
             startedInHorizontalScroller = Self.enclosingHorizontalScroller(of: touch.view) != nil
             return true
