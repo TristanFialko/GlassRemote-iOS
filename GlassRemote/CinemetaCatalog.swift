@@ -83,7 +83,7 @@ enum CinemetaCatalog {
         }
     }
 
-    private static func https(_ text: String?) -> URL? {
+    static func https(_ text: String?) -> URL? {
         text.flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
     }
 
@@ -100,7 +100,7 @@ enum CinemetaCatalog {
         }
     }
 
-    private static func fetch(_ url: URL, session: URLSession) async throws -> Data {
+    static func fetch(_ url: URL, session: URLSession) async throws -> Data {
         let (data, response) = try await session.data(from: url)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
         return data
@@ -142,73 +142,6 @@ enum CinemetaCatalog {
         return parse(try await fetch(url, session: session), kind: kind)
     }
 
-    // MARK: Detail (Cinemeta /meta)
-
-    struct Episode: Identifiable, Hashable {
-        let id: String          // video id "tt…:season:episode"
-        let season: Int
-        let number: Int
-        let title: String
-        let released: Date?
-    }
-
-    struct Detail: Equatable {
-        var overview = ""
-        var runtime = ""
-        var genres: [String] = []
-        var cast: [String] = []
-        var directors: [String] = []
-        var background: URL?
-        var episodes: [Episode] = []
-        var seasons: [Int] { Array(Set(episodes.map(\.season))).filter { $0 > 0 }.sorted() }
-    }
-
-    private struct MetaResponse: Decodable { let meta: FullMeta? }
-    private struct FullMeta: Decodable {
-        let description: String?
-        let runtime: String?
-        let genres: [String]?
-        let cast: [String]?
-        let director: [String]?
-        let background: String?
-        let videos: [Video]?
-    }
-    private struct Video: Decodable {
-        let id: String?
-        let season: Int?
-        let episode: Int?
-        let number: Int?
-        let title: String?
-        let name: String?
-        let released: String?
-    }
-
-    static func detailURL(kind: MediaTitle.Kind, id: String) -> URL? {
-        guard id.range(of: #"^tt[0-9]{5,10}$"#, options: .regularExpression) != nil else { return nil }
-        return URL(string: "\(base)/meta/\(kind.rawValue)/\(id).json")
-    }
-
-    static func parseDetail(_ data: Data) -> Detail? {
-        guard let meta = (try? JSONDecoder().decode(MetaResponse.self, from: data))?.meta else { return nil }
-        var detail = Detail()
-        detail.overview = meta.description ?? ""
-        detail.runtime = meta.runtime ?? ""
-        detail.genres = meta.genres ?? []
-        detail.cast = meta.cast ?? []
-        detail.directors = meta.director ?? []
-        detail.background = https(meta.background)
-        detail.episodes = (meta.videos ?? []).compactMap { v in
-            guard let id = v.id, let season = v.season, let number = v.episode ?? v.number else { return nil }
-            return Episode(id: id, season: season, number: number, title: v.title ?? v.name ?? "",
-                           released: DateParsing.iso(v.released))
-        }.sorted { ($0.season, $0.number) < ($1.season, $1.number) }
-        return detail
-    }
-
-    static func detail(kind: MediaTitle.Kind, id: String, session: URLSession = .shared) async throws -> Detail? {
-        guard let url = detailURL(kind: kind, id: id) else { return nil }
-        return parseDetail(try await fetch(url, session: session))
-    }
 }
 
 /// Last few searches (local only). Pure helper so ordering and limits are testable.
