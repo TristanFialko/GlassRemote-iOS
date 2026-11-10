@@ -46,3 +46,16 @@ Progress is logged here as each item lands. Nothing below has been checked on a 
 - Remote redesign (portrait and landscape), moving Themes/Connections/Devices into Profile.
 - Discover/search/detail polish, Liquid Glass material variants, theme and motion polish, performance pass.
 - CI: results for each Phase-7.1 push need checking in GitHub Actions.
+
+## Phase 7.2 completion pass (branch Phase-7.2, child of Phase-7.1 at 02de88f)
+
+Phase-7.1 is left as it was. Nothing below has been checked on a physical iPhone or TV.
+
+### Done
+- D-pad hit geometry (Remote/GlassDpad.swift). CI run #157 failed one test: Phase71GestureTests.testEveryPointOnThePadBelongsToAnArrow, point (5, 5). Cause: the four DpadQuadrant triangles share their edges on the exact diagonals, and (5, 5) lies on one, so Path.contains gave it to neither. The test also checked the square's corners, which are not part of the visible pad. Decision: the visible disc is the touch area. DpadQuadrant is removed. Each arrow's hit shape is now its quarter of the disc (DpadWedge, inner 0, outer 1), and DpadHitPolicy states the rule: OK inside the OK touch radius, nothing beyond the pad's radius (corners included), otherwise the nearest axis by |dx| / |dy|, with exact diagonal ties going to the horizontal arrow. The hit area still never leaves the pad's frame, so the selector above can't fire Up.
+- Tests: the square-grid test is replaced by testEveryPointOnTheVisibleRingBelongsToExactlyOneArrow (shape and policy must agree on every sampled ring point). New tests cover screen-coordinate directions, the OK centre, inactive corners, points just outside the pad, diagonal ties and scaling. Phase7DpadTests uses the real hit shape now (a point outside the disc is inactive).
+
+### Next
+- Check CI for this push (tracking PR for Phase-7.2, do not merge).
+- 2.3: replace RemoteInputGuard's 0.35 s timing with explicit touch ownership.
+- 2.5 to 2.7: search taps, detail close button, hero swipe ownership. Then section 3.

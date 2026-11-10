@@ -2,13 +2,13 @@ import SwiftUI
 import XCTest
 @testable import GlassRemote
 
-/// Phase 7 D-pad redesign: the keys still send the Phase 5 ADB names, and the new wedge hit areas give
-/// every point on the ring to exactly one arrow.
+/// Phase 7 D-pad redesign: the keys still send the Phase 5 ADB names, and the arrow hit areas (Phase 7.2:
+/// quarters of the visible disc) give every point on the ring to exactly one arrow.
 final class Phase7DpadTests: XCTestCase {
     private let rect = CGRect(x: 0, y: 0, width: 200, height: 200)
 
     private func owners(of point: CGPoint) -> [DpadKey] {
-        DpadKey.arrows.filter { DpadWedge(angle: $0.angle, outer: 1.42).path(in: rect).contains(point) }
+        DpadKey.arrows.filter { DpadWedge(angle: $0.angle, inner: 0, outer: 1).path(in: rect).contains(point) }
     }
 
     func testKeysSendTheSameNamesAsBefore() {
@@ -30,8 +30,8 @@ final class Phase7DpadTests: XCTestCase {
         XCTAssertEqual(owners(of: CGPoint(x: 160, y: 60)), [.right])   // -34°
         XCTAssertEqual(owners(of: CGPoint(x: 60, y: 170)), [.down])    // 120°
         XCTAssertEqual(owners(of: CGPoint(x: 40, y: 150)), [.left])    // 140°, nearer left than down
-        XCTAssertEqual(owners(of: CGPoint(x: 195, y: 160)), [.right])  // outside the disc, still reachable
-        XCTAssertEqual(owners(of: CGPoint(x: 5, y: 40)), [.left])
+        XCTAssertEqual(owners(of: CGPoint(x: 195, y: 160)), [])        // outside the disc: inactive (Phase 7.2)
+        XCTAssertEqual(owners(of: CGPoint(x: 12, y: 60)), [.left])     // near the rim, nearer left than up
     }
 
     func testHighlightWedgeLeavesTheCentreToOK() {

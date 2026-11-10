@@ -48,9 +48,9 @@ enum DpadKey: String, CaseIterable {
 /// directional wedges around a raised OK "pebble".
 ///
 /// Touch: every key keeps `RepeatKey`'s behaviour (tap = one press, hold = accelerating repeat, a
-/// small drag cancels so the pad's swipe gesture can take over). Each arrow owns a full quarter of the
-/// pad, so a touch anywhere on the ring (diagonals included) goes to the nearest arrow, and the centre
-/// belongs to OK. Decorative layers never take touches, and nothing here waits on an animation.
+/// small drag cancels so the pad's swipe gesture can take over). Each arrow owns a quarter of the visible
+/// disc (Phase 7.2), so a touch anywhere on the ring goes to the nearest arrow, the centre belongs to OK,
+/// and the square's corners outside the disc are inactive. `DpadHitPolicy` is the single rule for this. Decorative layers never take touches, and nothing here waits on an animation.
 struct GlassDpad: View {
     let size: CGFloat
     let onKey: (String) -> Void
@@ -119,10 +119,10 @@ struct GlassDpad: View {
         let v = key.vector
         let isLit = lit == key
         let glyph = min(24, max(17, size * 0.062))
-        // Phase 7.1: the hit area is the pad's own square quarter. The old wedge reached 1.42 radii out,
-        // past the top of the pad and over the Mouse / D-pad selector, so touches meant for the selector
-        // fired Up.
-        return RepeatKey(hitShape: DpadQuadrant(angle: key.angle),
+        // Phase 7.2: the hit area is this arrow's quarter of the visible disc (a sector meeting at the
+        // centre, radius = the pad's radius). It never leaves the pad's frame, so the Mouse / D-pad selector
+        // above can't fire Up, and it matches DpadHitPolicy exactly. OK sits on top and owns the centre.
+        return RepeatKey(hitShape: DpadWedge(angle: key.angle, inner: 0, outer: 1),
                          onFire: { onKey(key.rawValue) },
                          onPressChange: { setLit(key, $0) }) {
             ZStack {
@@ -220,21 +220,26 @@ struct DpadWedge: Shape {
     }
 }
 
-/// Touch area of one arrow (Phase 7.1): the triangle from the centre to the two corners of the pad's
-/// square on either side of `angle`. The four quarters tile the square exactly, so diagonals and
-/// corners still reach the nearest arrow, and nothing ever extends past the pad's frame.
-struct DpadQuadrant: Shape {
-    var angle: Double
+/// Which key owns a touch on the pad (Phase 7.2). This is the rule the hit shapes implement:
+/// - within the OK touch radius: OK;
+/// - beyond the pad's radius (including the square's corners): nothing;
+/// - otherwise the arrow whose axis is closest, using |dx| and |dy| from the centre.
+/// Screen coordinates: +y is down. An exact diagonal tie goes to the horizontal arrow, so the answer is
+/// always deterministic.
+enum DpadHitPolicy {
+    /// OK's touch radius as a fraction of the pad's radius (`Metrics.okHit` is a fraction of the diameter).
+    static var okRadius: CGFloat { GlassDpad.Metrics.okHit }
 
-    func path(in rect: CGRect) -> Path {
-        let c = CGPoint(x: rect.midX, y: rect.midY)
-        let corner = min(rect.width, rect.height) / 2 * CGFloat(2).squareRoot()
-        var p = Path()
-        p.move(to: c)
-        p.addLine(to: DpadGeometry.point(c, corner, angle - 45))
-        p.addLine(to: DpadGeometry.point(c, corner, angle + 45))
-        p.closeSubpath()
-        return p
+    static func key(at point: CGPoint, in rect: CGRect) -> DpadKey? {
+        let radius = min(rect.width, rect.height) / 2
+        guard radius > 0 else { return nil }
+        let dx = point.x - rect.midX
+        let dy = point.y - rect.midY
+        let distance = (dx * dx + dy * dy).squareRoot()
+        if distance > radius { return nil }
+        if distance <= radius * okRadius { return .ok }
+        if abs(dx) >= abs(dy) { return dx >= 0 ? .right : .left }
+        return dy >= 0 ? .down : .up
     }
 }
 
