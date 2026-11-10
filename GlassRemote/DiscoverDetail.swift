@@ -10,12 +10,14 @@ struct TitleDetailView: View {
     var onShowRemote: (() -> Void)? = nil
 
     @EnvironmentObject private var remote: RemoteModel
+    @Environment(\.glassTheme) private var theme
     @State private var detail: CinemetaCatalog.Detail?
     @State private var loading = true
     @State private var failed = false
     @State private var season = 1
     @State private var result = ""
     @State private var handedOff = false
+    @State private var showStreams = false
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
@@ -47,6 +49,11 @@ struct TitleDetailView: View {
         .presentationDragIndicator(.visible)
         .themedSheet()
         .task { await load() }
+        .sheet(isPresented: $showStreams) {
+            StreamPickerSheet(title: title, episodes: detail?.episodes ?? [], initialSeason: season,
+                              onHandoff: { _ in handedOff = true })
+                .environmentObject(remote)
+        }
     }
 
     /// Title, metadata, progress, the Nuvio action and the catalogue details: centred under the artwork
@@ -143,7 +150,21 @@ struct TitleDetailView: View {
 
     private var actions: some View {
         VStack(spacing: 10) {
-            button("Open in Nuvio", "arrow.up.forward.app", prominent: true) {
+            // Phase 7: Play asks the profile's stream add-ons first; the picker always offers
+            // Open in Nuvio too, so Play works (and reports what happened) even without add-ons.
+            Button {
+                Haptics.soft()
+                showStreams = true
+            } label: {
+                Label("Play", systemImage: "play.fill").scaledFont(16, .semibold)
+                    .foregroundStyle(Color.white)
+                    .frame(maxWidth: .infinity).frame(height: 52)
+                    .background(Capsule().fill(theme.accent))
+                    .glassSurface(Capsule(), interactive: true)
+            }
+            .buttonStyle(GlassPressStyle())
+            .accessibilityHint("Finds streams from your add-ons, or opens the title in Nuvio on the TV.")
+            button("Open in Nuvio", "arrow.up.forward.app", prominent: false) {
                 let message = await remote.openInNuvio(title)
                 handedOff = true
                 return message
