@@ -41,21 +41,37 @@ struct RemoteView: View {
     /// `appsExpanded` itself is kept, so the state survives a round trip to Samsung and back.
     private var androidExpanded: Bool { appsExpanded && remote.target == .android }
 
+    @Environment(\.layoutContext) private var layoutContext
+
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
 
     /// Short screens (iPhone SE / mini class): tighter gaps so the larger pad never pushes the
     /// navigation keys or the volume bar out of reach.
     private func compact(_ proxy: GeometryProxy) -> Bool { proxy.size.height < 600 }
 
+    /// Portrait keeps the Phase 5 stack exactly. Landscape puts the controls in a column beside a
+    /// full-height pad. Both go through `AnyLayout`, so rotating re-arranges the same views instead of
+    /// rebuilding them: the trackpad, its recognisers, a held button and the mouse session survive.
+    private func surfaceLayout(_ proxy: GeometryProxy) -> AnyLayout {
+        let spacing: CGFloat = compact(proxy) ? 6 : 8
+        if layoutContext.isLandscape {
+            return AnyLayout(RemoteLandscapeLayout(spacing: spacing, columnSpacing: 14, maxColumnWidth: 340,
+                                                   padMinHeight: 200, padMaxHeight: androidExpanded ? 250 : nil))
+        }
+        return AnyLayout(VStackLayout(spacing: spacing))
+    }
+
     var body: some View {
         GeometryReader { proxy in
+            let surface = surfaceLayout(proxy)
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: compact(proxy) ? 6 : 8) {
+                surface {
                     header
                     deviceSelector
                     if remote.target == .samsung {
                         // Samsung mode: a permanent trackpad and a short key set replace the Android controls.
                         SamsungRemotePanel()
+                            .layoutValue(key: RemotePadSlot.self, value: true)
                     } else {
                         appsSection
                         modeRow
@@ -64,9 +80,12 @@ struct RemoteView: View {
                         controlSurface
                             .frame(minHeight: compact(proxy) ? 200 : 250, maxHeight: androidExpanded ? 250 : CGFloat.infinity)
                             .layoutPriority(1)
+                            .layoutValue(key: RemotePadSlot.self, value: true)
                         navRow
+                            .layoutValue(key: RemoteBottomSlot.self, value: true)
                     }
                     volumeBar
+                        .layoutValue(key: RemoteBottomSlot.self, value: true)
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
@@ -77,8 +96,9 @@ struct RemoteView: View {
             .scrollDisabled(!androidExpanded)
         }
         .themedSheet()
-        // Text follows Dynamic Type, capped so the fixed remote layout keeps fitting.
-        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        // Text follows Dynamic Type, capped so the fixed remote layout keeps fitting (tighter in
+        // landscape, where the control column has less height).
+        .dynamicTypeSize(layoutContext.isLandscape ? ...DynamicTypeSize.xLarge : ...DynamicTypeSize.xxxLarge)
         .sheet(isPresented: $remote.showConnection) { ConnectionSheet().environmentObject(remote) }
         .sheet(isPresented: $showThemes) { ThemePickerSheet() }
         .sheet(isPresented: $showKeyboard) { KeyboardSheet().environmentObject(remote) }
