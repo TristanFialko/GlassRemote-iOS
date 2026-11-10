@@ -8,6 +8,7 @@ import SwiftUI
 /// A catalogue result never means a stream exists.
 struct DiscoverPage: View {
     @Environment(\.dockClearance) private var dockClearance
+    @Environment(\.layoutContext) private var layoutContext
     @EnvironmentObject private var navigator: PageNavigator
     @Environment(\.glassTheme) private var theme
     @StateObject private var model = DiscoverModel()
@@ -24,8 +25,9 @@ struct DiscoverPage: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            // Search stays pinned above the scrolling content so it is reachable at all times.
-            VStack(spacing: 10) {
+            // Search stays pinned above the scrolling content so it is reachable at all times. In landscape the
+            // filter sits beside it (one row); `AnyLayout` keeps the field's identity, so focus survives rotation.
+            header {
                 HStack(spacing: 10) {
                     searchField
                     accountButton
@@ -35,8 +37,9 @@ struct DiscoverPage: View {
                             GlassSegmented<DiscoverModel.Filter>.Item(value: .movies, title: "Movies", symbol: nil),
                             GlassSegmented<DiscoverModel.Filter>.Item(value: .series, title: "Series", symbol: nil)],
                     selection: $model.filter, height: 36)
+                .frame(maxWidth: layoutContext.isLandscape ? 300 : .infinity)
             }
-            .padding(.horizontal, 16).padding(.top, 10)
+            .padding(.horizontal, 16).padding(.top, layoutContext.isLandscape ? 6 : 10)
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
@@ -53,7 +56,11 @@ struct DiscoverPage: View {
         .foregroundStyle(Color.ink)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .sheet(item: $target) { item in
-            TitleDetailView(title: item.title, libraryItem: item.libraryItem).environmentObject(RemoteModel.shared)
+            TitleDetailView(title: item.title, libraryItem: item.libraryItem, onShowRemote: {
+                target = nil
+                navigator.go(.remote)
+            })
+            .environmentObject(RemoteModel.shared)
         }
         .sheet(isPresented: $showAccount) { NuvioAccountSheet() }
         .fullScreenCover(item: $collection) { request in
@@ -71,6 +78,11 @@ struct DiscoverPage: View {
                 searching = true
             }
         }
+    }
+
+    /// Portrait: search row above the filter. Landscape: one row, so more of the catalogue is visible.
+    private var header: AnyLayout {
+        layoutContext.isLandscape ? AnyLayout(HStackLayout(spacing: 12)) : AnyLayout(VStackLayout(spacing: 10))
     }
 
     private func publishArtwork() {
@@ -135,7 +147,7 @@ struct DiscoverPage: View {
                 // Fixed-size base with the artwork in an overlay. A 16:9 backdrop filled to 210pt tall is
                 // wider than a phone's content width; as the base it pushed the card past the screen edge.
                 Color.clear
-                    .frame(height: 210).frame(maxWidth: .infinity)
+                    .frame(height: layoutContext.isLandscape ? 170 : 210).frame(maxWidth: .infinity)
                     .overlay {
                         CachedArtwork(url: title.backgroundURL ?? title.posterURL, contentMode: .fill) {
                             Color.white.opacity(0.06)

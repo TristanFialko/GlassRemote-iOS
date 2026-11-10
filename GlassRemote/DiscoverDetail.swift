@@ -6,6 +6,8 @@ import SwiftUI
 struct TitleDetailView: View {
     let title: MediaTitle
     let libraryItem: NuvioWatchItem?
+    /// Phase 6: set by Discover to close the sheet and show the Remote page after a Nuvio handoff.
+    var onShowRemote: (() -> Void)? = nil
 
     @EnvironmentObject private var remote: RemoteModel
     @State private var detail: CinemetaCatalog.Detail?
@@ -13,22 +15,31 @@ struct TitleDetailView: View {
     @State private var failed = false
     @State private var season = 1
     @State private var result = ""
+    @State private var handedOff = false
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: 14) {
-                artwork
-                Text(title.name).scaledFont(24, .bold).multilineTextAlignment(.center)
-                chips
-                if let libraryItem, libraryItem.progress > 0 { progressBlock(libraryItem) }
-                actions
-                if !result.isEmpty { Text(result).scaledFont(13).foregroundStyle(Color.ink.opacity(0.75)).multilineTextAlignment(.center) }
-                about
-                if title.kind == .series, let detail, !detail.seasons.isEmpty { episodes(detail) }
-                Text("This is a catalogue listing. It doesn't mean a stream is available for it.")
-                    .scaledFont(11).foregroundStyle(Color.inkFaint(0.4)).multilineTextAlignment(.center).padding(.top, 6)
+        GeometryReader { proxy in
+            if LayoutContext.resolve(verticalSizeClass: verticalSizeClass, size: proxy.size).isLandscape {
+                // Landscape: the artwork stays in view on the leading side; the details scroll beside it.
+                HStack(alignment: .center, spacing: 26) {
+                    artwork(landscape: true, availableHeight: proxy.size.height)
+                        .frame(width: min(max(proxy.size.width * 0.4, 220), 420))
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 14) { summary(alignment: .leading) }
+                            .padding(.vertical, 24)
+                    }
+                }
+                .padding(.horizontal, 24)
+            } else {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 14) {
+                        artwork(landscape: false, availableHeight: proxy.size.height)
+                        summary(alignment: .center)
+                    }
+                    .padding(.horizontal, 22).padding(.bottom, 24)
+                }
             }
-            .padding(.horizontal, 22).padding(.bottom, 24)
         }
         .foregroundStyle(Color.ink)
         .background { AmbientBackdrop() }
@@ -38,10 +49,33 @@ struct TitleDetailView: View {
         .task { await load() }
     }
 
+    /// Title, metadata, progress, the Nuvio action and the catalogue details: centred under the artwork
+    /// in portrait, leading-aligned beside it in landscape.
+    @ViewBuilder
+    private func summary(alignment: HorizontalAlignment) -> some View {
+        let leading = alignment == .leading
+        let text: TextAlignment = leading ? .leading : .center
+        let frame: Alignment = leading ? .leading : .center
+        Text(title.name).scaledFont(24, .bold).multilineTextAlignment(text).frame(maxWidth: .infinity, alignment: frame)
+        chips.frame(maxWidth: .infinity, alignment: frame)
+        if let libraryItem, libraryItem.progress > 0 { progressBlock(libraryItem) }
+        actions
+        if !result.isEmpty {
+            Text(result).scaledFont(13).foregroundStyle(Color.ink.opacity(0.75)).multilineTextAlignment(text)
+                .frame(maxWidth: .infinity, alignment: frame)
+        }
+        about
+        if title.kind == .series, let detail, !detail.seasons.isEmpty { episodes(detail) }
+        Text("This is a catalogue listing. It doesn't mean a stream is available for it.")
+            .scaledFont(11).foregroundStyle(Color.inkFaint(0.4)).multilineTextAlignment(text).padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: frame)
+    }
+
     /// Landscape artwork (backdrop) in a 16:9 frame when the catalogue has one, otherwise the portrait
     /// poster in an exact 2:3 frame. Each source keeps its own aspect ratio; nothing is stretched.
+    /// In landscape the poster is sized to the sheet's height so it is always fully visible.
     @ViewBuilder
-    private var artwork: some View {
+    private func artwork(landscape: Bool, availableHeight: CGFloat) -> some View {
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
         if let background = detail?.background ?? title.backgroundURL {
             // True 16:9 base with the backdrop in an overlay, so artwork that isn't exactly 16:9 can't
@@ -52,14 +86,15 @@ struct TitleDetailView: View {
                 .clipShape(shape)
                 .overlay(shape.stroke(Color.ink.opacity(0.2), lineWidth: 0.8))
                 .shadow(color: .black.opacity(0.5), radius: 16, y: 10)
-                .padding(.top, 28)
+                .padding(.top, landscape ? 0 : 28)
         } else {
+            let height: CGFloat = landscape ? min(300, max(availableHeight - 56, 160)) : 300
             CachedArtwork(url: title.posterURL, fallbackURL: title.fallbackPosterURL, contentMode: .fill) { Color.ink.opacity(0.06) }
-                .frame(width: 200, height: 300)
+                .frame(width: height * 2 / 3, height: height)
                 .clipShape(shape)
                 .overlay(shape.stroke(Color.ink.opacity(0.2), lineWidth: 0.8))
                 .shadow(color: .black.opacity(0.5), radius: 16, y: 10)
-                .padding(.top, 24)
+                .padding(.top, landscape ? 0 : 24)
         }
     }
 
@@ -109,13 +144,32 @@ struct TitleDetailView: View {
     private var actions: some View {
         VStack(spacing: 10) {
             button("Open in Nuvio", "arrow.up.forward.app", prominent: true) {
-                await remote.openInNuvio(title)
+                let message = await remote.openInNuvio(title)
+                handedOff = true
+                return message
             }
             if let item = libraryItem, item.isContinueWatching {
                 Text("Opens this title in Nuvio on the TV box. Playback never starts automatically; Nuvio resumes from your synced position when you play it there.")
                     .scaledFont(11).foregroundStyle(Color.inkFaint(0.45)).multilineTextAlignment(.center)
             }
+            // Phase 6: after the handoff, one tap closes the sheet and opens the Remote page, where the
+            // stream (or episode) is picked in Nuvio on the TV with the D-pad.
+            if handedOff, let onShowRemote {
+                Button {
+                    Haptics.soft()
+                    onShowRemote()
+                } label: {
+                    Label("Continue on the TV with the remote", systemImage: "av.remote")
+                        .scaledFont(14, .semibold)
+                        .frame(maxWidth: .infinity).frame(height: 44)
+                        .glassSurface(Capsule(), interactive: true)
+                }
+                .buttonStyle(PressStyle())
+                .transition(.opacity.combined(with: .move(edge: .top)))
+                .accessibilityHint("Closes this page and opens the Remote, to pick a stream in Nuvio on the TV.")
+            }
         }
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: handedOff)
     }
 
     private func button(_ label: String, _ symbol: String, prominent: Bool, action: @escaping () async -> String) -> some View {

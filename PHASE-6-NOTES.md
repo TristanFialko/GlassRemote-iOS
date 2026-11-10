@@ -27,7 +27,16 @@
   The same views are re-arranged, so the trackpad, its recognisers and the mouse session survive
   rotation. Navigation keys and volume anchor to the bottom of the column. Dynamic Type is capped one
   step lower in landscape so the column always fits.
-- Discover, Player, details and sheets: laid out beside the rail with landscape clearances.
+- Discover: the filter moves beside the search field (one header row; the same views through
+  `AnyLayout`, so keyboard focus survives rotation) and the featured card is shorter, so more of the
+  catalogue is visible.
+- Title details: the artwork stays on the leading side at the sheet's height while the details
+  scroll beside it. Portrait keeps the Phase 5 stacked layout.
+- Player: artwork beside the title, playback state and transport bar; the info column scrolls only
+  at the largest text sizes.
+- The Apps grid and controls live in the Remote's landscape column. Sheets and forms (connection,
+  pairing, settings, keyboard, screenshot, device info, Nuvio account) use the system landscape
+  sheet behaviour and were not individually restyled.
 
 ## Liquid Glass
 
@@ -56,6 +65,9 @@
   AIOStreams) and SubSense are personal installs whose manifest URLs embed their configuration,
   including debrid keys. That configuration lives in Nuvio on the TV. Glass Remote does not read,
   store or query it, and shows no stream or subtitle results.
+- Handoff flow (Phase 6): after "Open in Nuvio" the detail sheet offers "Continue on the TV with the
+  remote", which closes the sheet and opens the Remote page, so the stream or episode can be picked
+  in Nuvio with the D-pad.
 - Provider-agnostic by design: the phone only ever sends a title's type and IMDb id; Nuvio resolves
   streams with whatever debrid service its addons use. Moving from Real-Debrid to Torbox is a change
   inside Nuvio's addon configuration only; Glass Remote needs no change.

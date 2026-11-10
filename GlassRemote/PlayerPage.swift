@@ -13,6 +13,7 @@ struct PlayerPage: View {
     @Environment(\.glassTheme) private var theme
 
     @Environment(\.dockClearance) private var dockClearance
+    @Environment(\.layoutContext) private var layoutContext
 
     var body: some View {
         let media = remote.media
@@ -24,31 +25,36 @@ struct PlayerPage: View {
         let isLandscape = portraitURL == nil && landscapeURL != nil
 
         GeometryReader { proxy in
-            // Phase 4.3: modestly larger than Phase 4.2 (0.38 / 0.31, max 320): 42 % of the height on tall
-            // phones (34 % on small ones), between 170 and 350 pt.
-            // The transport bar is pinned just above the dock so nothing can sit under it.
-            let posterHeight = min(max(proxy.size.height * (proxy.size.height < 700 ? 0.34 : 0.42), 170), 350)
-            VStack(spacing: 0) {
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 12) {
-                        artworkCard(app: app, media: media, poster: poster, height: posterHeight, landscape: isLandscape, maxWidth: proxy.size.width - 48)
-                            .padding(.top, 4)
-                        Group {
-                            titleBlock(app: app, media: media)
-                            playbackBlock(media: media)
+            if layoutContext.isLandscape {
+                landscapeLayout(proxy: proxy, app: app, media: media, poster: poster,
+                                artworkIsLandscape: isLandscape, sessionTitle: sessionTitle)
+            } else {
+                // Phase 4.3: modestly larger than Phase 4.2 (0.38 / 0.31, max 320): 42 % of the height on tall
+                // phones (34 % on small ones), between 170 and 350 pt.
+                // The transport bar is pinned just above the dock so nothing can sit under it.
+                let posterHeight = min(max(proxy.size.height * (proxy.size.height < 700 ? 0.34 : 0.42), 170), 350)
+                VStack(spacing: 0) {
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 12) {
+                            artworkCard(app: app, media: media, poster: poster, height: posterHeight, landscape: isLandscape, maxWidth: proxy.size.width - 48)
+                                .padding(.top, 4)
+                            Group {
+                                titleBlock(app: app, media: media)
+                                playbackBlock(media: media)
+                            }
+                            .id(sessionTitle + media.package)        // new title = soft cross-fade
+                            .transition(.opacity)
+                            if !media.isActive { emptyHint }
                         }
-                        .id(sessionTitle + media.package)        // new title = soft cross-fade
-                        .transition(.opacity)
-                        if !media.isActive { emptyHint }
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 8)
+                        .animation(.easeInOut(duration: 0.35), value: sessionTitle)
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 8)
-                    .animation(.easeInOut(duration: 0.35), value: sessionTitle)
+                    transport(media: media)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 6)
+                        .padding(.bottom, dockClearance + 6)
                 }
-                transport(media: media)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 6)
-                    .padding(.bottom, dockClearance + 6)
             }
         }
         .background { ambientLight }
@@ -63,6 +69,42 @@ struct PlayerPage: View {
         // Adaptive theme: this page only reports its artwork; the shared palette decides the colours.
         .onChange(of: poster) { ThemeStore.shared.submitArtwork($0, for: .player) }
         .onAppear { ThemeStore.shared.submitArtwork(poster, for: .player) }
+    }
+
+    /// Landscape: the artwork stands at the page's height on the leading side; title, playback state and
+    /// the transport bar sit beside it, so the controls stay in reach without scrolling.
+    private func landscapeLayout(proxy: GeometryProxy, app: TVApp?, media: MediaState, poster: URL?,
+                                 artworkIsLandscape: Bool, sessionTitle: String) -> some View {
+        let column = min(proxy.size.width * 0.5, 440)
+        let artMax = max(proxy.size.width - 48 - 28 - column, 120)
+        // Capped by the column too: app artwork is 0.72 x height wide, posters 2/3.
+        let artHeight = min(max(proxy.size.height - dockClearance - 40, 150), 320, artMax / 0.72)
+        let infoHeight = max(proxy.size.height - 12 - (dockClearance + 6) - 80 - 10, 0)
+        return HStack(spacing: 28) {
+            artworkCard(app: app, media: media, poster: poster, height: artHeight, landscape: artworkIsLandscape, maxWidth: artMax)
+                .frame(maxWidth: .infinity)
+            VStack(spacing: 10) {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 12) {
+                        Group {
+                            titleBlock(app: app, media: media)
+                            playbackBlock(media: media)
+                        }
+                        .id(sessionTitle + media.package)        // new title = soft cross-fade
+                        .transition(.opacity)
+                        if !media.isActive { emptyHint }
+                    }
+                    // Centred while it fits, scrolls at the largest text sizes.
+                    .frame(maxWidth: .infinity, minHeight: infoHeight)
+                    .animation(.easeInOut(duration: 0.35), value: sessionTitle)
+                }
+                transport(media: media)
+            }
+            .frame(width: column)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 12)
+        .padding(.bottom, dockClearance + 6)
     }
 
     /// Soft light pooled behind the artwork, from the shared theme (the accent when Adaptive).
