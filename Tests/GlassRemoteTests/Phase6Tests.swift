@@ -69,7 +69,10 @@ final class Phase6Tests: XCTestCase {
         XCTAssertEqual(ScrubGeometry.progress(offset: 300 - 6 - seg, inset: 6, length: 300, segment: seg), 1, accuracy: 0.001)
         XCTAssertEqual(ScrubGeometry.stretch(speed: 0), 1, accuracy: 0.001)
         XCTAssertEqual(ScrubGeometry.stretch(speed: -100_000), 1.16, accuracy: 0.001)
-        XCTAssertGreaterThan(ScrubGeometry.magnification(dragging: true), ScrubGeometry.magnification(dragging: false))
+        // Phase 7: no magnification; the dock reflection follows the bubble, travelling less than it.
+        XCTAssertEqual(ScrubGeometry.sheenCentre(progress: 0), 0.12, accuracy: 0.001)
+        XCTAssertEqual(ScrubGeometry.sheenCentre(progress: 1), 0.88, accuracy: 0.001)
+        XCTAssertEqual(ScrubGeometry.sheenCentre(progress: 5), 0.88, accuracy: 0.001)
         // The vertical rail uses the same maths along its length.
         let railSeg = ScrubGeometry.segment(length: DockMetrics.railLength(count: 3), inset: DockMetrics.railInset, count: 3)
         XCTAssertEqual(railSeg, DockMetrics.railSegment, accuracy: 0.001)

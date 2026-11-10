@@ -163,43 +163,70 @@ struct PowerMenuButton: View {
 
 /// Connection details and diagnostics (moved here from the old Apps page).
 struct DeviceInfoSheet: View {
-    @EnvironmentObject private var remote: RemoteModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Android TV box") {
-                    row("Address", "\(remote.host):\(remote.port)")
-                    row("Link", remote.connected ? "Connected" : "Not connected")
-                    row("Keyboard helper", remote.keyboardStatus)
-                    row("Pointer helper", remote.cursorStatus)
-                }
-                Section("Samsung TV") {
-                    row("Control", remote.tvVolumeEnabled ? "On" : "Off")
-                    if remote.tvVolumeEnabled {
-                        row("Address", remote.samsungHost)
-                        row("Link", remote.samsungState.label)
-                        row("Status", remote.samsungStatus)
-                        row("Volume range", "\(remote.volumeCalibration.lo)–\(remote.volumeCalibration.hi)")
-                    }
-                }
-                Section("Diagnostics") {
-                    row("Last status", remote.status)
-                    row("Samsung keys", remote.samsungDiagnostics)
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background { AmbientBackdrop() }
-            .navigationTitle("Device information")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            DeviceInfoList()
+                .navigationTitle("Device information")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .presentationDetents([.large])
         .themedSheet()
     }
+}
 
-    private func row(_ label: String, _ value: String) -> some View {
+/// TV box, Samsung TV and diagnostics information. Shown by the Remote menu's sheet and by
+/// Profile > Devices, which appends a section about this iPhone and the app.
+struct DeviceInfoList<Extra: View>: View {
+    @EnvironmentObject private var remote: RemoteModel
+    private let extra: Extra
+
+    init(@ViewBuilder extra: () -> Extra) { self.extra = extra() }
+
+    var body: some View {
+        List {
+            Section("Android TV box") {
+                DeviceInfoRow("Address", "\(remote.host):\(remote.port)")
+                DeviceInfoRow("Link", remote.connected ? "Connected" : "Not connected")
+                DeviceInfoRow("Keyboard helper", remote.keyboardStatus)
+                DeviceInfoRow("Pointer helper", remote.cursorStatus)
+            }
+            Section("Samsung TV") {
+                DeviceInfoRow("Control", remote.tvVolumeEnabled ? "On" : "Off")
+                if remote.tvVolumeEnabled {
+                    DeviceInfoRow("Address", remote.samsungHost)
+                    DeviceInfoRow("Link", remote.samsungState.label)
+                    DeviceInfoRow("Status", remote.samsungStatus)
+                    DeviceInfoRow("Volume range", "\(remote.volumeCalibration.lo)–\(remote.volumeCalibration.hi)")
+                }
+            }
+            Section("Diagnostics") {
+                DeviceInfoRow("Last status", remote.status)
+                DeviceInfoRow("Samsung keys", remote.samsungDiagnostics)
+            }
+            extra
+        }
+        .scrollContentBackground(.hidden)
+        .background { AmbientBackdrop() }
+    }
+}
+
+extension DeviceInfoList where Extra == EmptyView {
+    init() { self.init { EmptyView() } }
+}
+
+struct DeviceInfoRow: View {
+    let label: String
+    let value: String
+
+    init(_ label: String, _ value: String) {
+        self.label = label
+        self.value = value
+    }
+
+    var body: some View {
         HStack(alignment: .top) {
             Text(label).foregroundStyle(.secondary)
             Spacer(minLength: 12)

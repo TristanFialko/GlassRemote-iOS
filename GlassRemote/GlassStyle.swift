@@ -267,9 +267,6 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
             let lensOffset: CGSize = vertical ? CGSize(width: 0, height: offset) : CGSize(width: offset, height: 0)
             let lens = LensFrame(size: lensSize, offset: lensOffset,
                                  scaleX: vertical ? across : along, scaleY: vertical ? along : across)
-            let centre: CGFloat = length > 0 ? (offset + seg / 2) / length : 0.5
-            let anchor: UnitPoint = vertical ? UnitPoint(x: 0.5, y: centre) : UnitPoint(x: centre, y: 0.5)
-            let magnify: CGFloat = reduceMotion ? 1 : ScrubGeometry.magnification(dragging: dragging)
             let progress: CGFloat = ScrubGeometry.progress(offset: offset, inset: inset, length: length, segment: seg)
             let scrim: Color = role == .dock ? theme.dockScrim : theme.controlScrim
             let outline: Color = role == .dock ? theme.dockEdge : theme.controlEdge
@@ -302,16 +299,15 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
                         .allowsHitTesting(false)
                 }
 
-                // Labels above the glass, untouched by refraction: as they are outside the bubble,
-                // magnified about its centre inside it.
+                // Phase 7 dock light: a rim reflection that slides with the bubble plus an inner depth
+                // shade. There is no magnification; the glass bubble itself carries the selection.
+                if role == .dock {
+                    DockSheen(progress: progress, vertical: vertical, active: dragging, light: theme.isLight)
+                        .allowsHitTesting(false)
+                }
+
+                // Labels sit above the glass, untouched by refraction.
                 labels(index: index, thickness: thickness, seg: seg)
-                    .mask(alignment: alignment) { LensCutout(lens: lens, alignment: alignment) }
-                labels(index: index, thickness: thickness, seg: seg)
-                    .scaleEffect(magnify, anchor: anchor)
-                    .mask(alignment: alignment) {
-                        Capsule().frame(width: lens.size.width, height: lens.size.height).lensPlacement(lens)
-                    }
-                    .accessibilityHidden(true)
             }
             .modifier(LensMotion(offset: offset, dragging: dragging, stretch: stretch))
             .contentShape(Capsule())
@@ -393,25 +389,9 @@ private extension View {
     }
 }
 
-/// Everything except the bubble (masks the un-magnified labels).
-private struct LensCutout: View {
-    let lens: LensFrame
-    let alignment: Alignment
-
-    var body: some View {
-        Rectangle()
-            .overlay(alignment: alignment) {
-                Capsule()
-                    .frame(width: lens.size.width, height: lens.size.height)
-                    .lensPlacement(lens)
-                    .blendMode(.destinationOut)
-            }
-            .compositingGroup()
-    }
-}
 
 /// One set of curves for every layer that follows the bubble, so glass, light, masks and the
-/// magnified labels always move together.
+/// dock sheen always move together.
 private struct LensMotion: ViewModifier {
     let offset: CGFloat
     let dragging: Bool

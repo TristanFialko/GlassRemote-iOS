@@ -121,8 +121,9 @@ enum ScrubGeometry {
     /// Liquid stretch along the bar from the finger's speed (pt/s): 1 at rest, at most 1.16.
     static func stretch(speed: CGFloat) -> CGFloat { 1 + min(abs(speed) / 2400, 1) * 0.16 }
 
-    /// Magnification of whatever label sits under the lens.
-    static func magnification(dragging: Bool) -> CGFloat { dragging ? 1.16 : 1.05 }
+    /// Where along the bar (0...1) the dock's reflected highlight sits. It follows the bubble but
+    /// travels less than it, like a reflection on a curved surface.
+    static func sheenCentre(progress: CGFloat) -> CGFloat { 0.12 + min(max(progress, 0), 1) * 0.76 }
 }
 
 // MARK: - Glass support

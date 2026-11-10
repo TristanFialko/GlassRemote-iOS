@@ -29,7 +29,7 @@ struct RootPagerView: View {
 
     private let edgeWidth: CGFloat = 16
     private var page: AppPage { navigator.page }
-    private var spring: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.42, dampingFraction: 0.86) }
+    private var spring: Animation { Motion.resolve(Motion.page, reduceMotion: reduceMotion) }
 
     var body: some View {
         GeometryReader { geo in
@@ -112,6 +112,7 @@ struct RootPagerView: View {
         case .remote: RemoteView().padding(.bottom, clearance)
         case .player: PlayerPage()
         case .discover: DiscoverPage()
+        case .profile: ProfilePage()
         }
     }
 }

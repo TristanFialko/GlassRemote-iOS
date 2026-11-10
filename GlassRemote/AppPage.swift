@@ -1,9 +1,9 @@
 import SwiftUI
 import UIKit
 
-/// The three primary pages. Order here is the swipe order. Remote is the default landing page.
+/// The four primary pages. Order here is the swipe order. Remote is the default landing page.
 enum AppPage: Int, CaseIterable, Identifiable {
-    case remote, player, discover
+    case remote, player, discover, profile
 
     var id: Int { rawValue }
     static let landing: AppPage = .remote
@@ -13,6 +13,7 @@ enum AppPage: Int, CaseIterable, Identifiable {
         case .remote: return "Remote"
         case .player: return "Player"
         case .discover: return "Discover"
+        case .profile: return "Profile"
         }
     }
 
@@ -40,6 +41,7 @@ enum AppPage: Int, CaseIterable, Identifiable {
         case .remote: return selected ? AppPage.remoteSymbols.fill : AppPage.remoteSymbols.outline
         case .player: return selected ? AppPage.playerSymbolFilled : AppPage.playerSymbolOutline
         case .discover: return "magnifyingglass"
+        case .profile: return selected ? "person.crop.circle.fill" : "person.crop.circle"
         }
     }
 
