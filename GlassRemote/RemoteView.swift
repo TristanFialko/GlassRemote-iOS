@@ -12,20 +12,68 @@ final class PointerBox {
     var token = 0                 // invalidates a pending touch-and-hold when the touch changes
 }
 
-/// Phase 7.1: drops D-pad input that arrives while a selector is being touched or straight after the
-/// Mouse / D-pad switch, so the touch that changes mode can never also press a key.
+/// Phase 7.3: explicit touch ownership between the Mouse / D-pad selector and the pad (replaces the
+/// Phase 7.1 0.35 s settle delay). Every touch on the pad gets a token for the current ownership
+/// epoch. The epoch moves on when a selector touch starts or ends and when the mode changes, so:
+/// - a touch on the selector never sends a D-pad key, and neither does its lift;
+/// - a pad touch (or hold-repeat) that was already down when the selector or mode changed is dropped;
+/// - the first deliberate touch after the switch works immediately, with no waiting period.
+/// Mouse mode never produces D-pad input. Main thread only; intentionally not observable.
 final class RemoteInputGuard {
-    static let settleInterval: TimeInterval = 0.35
-    private(set) var modeChangedAt = Date.distantPast
+    private(set) var selectorTouchActive = false
+    private(set) var epoch = 0
+    private(set) var padToken: Int?
+    private var padTouchOpen = false
 
-    func modeChanged(at now: Date = Date()) { modeChangedAt = now }
-
-    func blocksDpad(now: Date = Date(), scrubActive: Bool = ScrubTouch.shared.isActive) -> Bool {
-        Self.blocks(now: now, modeChangedAt: modeChangedAt, scrubActive: scrubActive)
+    func selectorTouchChanged(_ active: Bool) {
+        guard active != selectorTouchActive else { return }
+        selectorTouchActive = active
+        invalidate()
     }
 
-    static func blocks(now: Date, modeChangedAt: Date, scrubActive: Bool) -> Bool {
-        scrubActive || now.timeIntervalSince(modeChangedAt) < settleInterval
+    func modeChanged() { invalidate() }
+
+    /// Called on every movement of a touch on the pad; only the first call of a touch takes a token.
+    func padTouchChanged(isTrackpad: Bool) {
+        guard !padTouchOpen else { return }
+        padTouchOpen = true
+        padToken = RemoteInputPolicy.token(epoch: epoch, isTrackpad: isTrackpad, selectorTouchActive: selectorTouchActive)
+    }
+
+    /// The touch lifted or was cancelled (the pad's GestureState resets on both). Its token stays valid
+    /// so a tap that fires on lift is still accepted.
+    func padTouchEnded() { padTouchOpen = false }
+
+    func acceptsPadInput(isTrackpad: Bool) -> Bool {
+        RemoteInputPolicy.accepts(token: padToken, epoch: epoch, isTrackpad: isTrackpad,
+                                  selectorTouchActive: selectorTouchActive)
+    }
+
+    /// Clears everything, for example when the Remote leaves the screen mid-touch.
+    func reset() {
+        selectorTouchActive = false
+        padTouchOpen = false
+        invalidate()
+    }
+
+    /// The session stays open: a finger that is still down keeps a nil token until it lifts, so it can't
+    /// pick up a fresh token by moving again.
+    private func invalidate() {
+        epoch &+= 1
+        padToken = nil
+    }
+}
+
+/// The pure rule behind `RemoteInputGuard`.
+enum RemoteInputPolicy {
+    /// The ownership token for a pad touch starting now, or nil when the pad must not own it.
+    static func token(epoch: Int, isTrackpad: Bool, selectorTouchActive: Bool) -> Int? {
+        (isTrackpad || selectorTouchActive) ? nil : epoch
+    }
+
+    static func accepts(token: Int?, epoch: Int, isTrackpad: Bool, selectorTouchActive: Bool) -> Bool {
+        guard let token, !isTrackpad, !selectorTouchActive else { return false }
+        return token == epoch
     }
 }
 
@@ -37,91 +85,66 @@ struct RemoteView: View {
     // RemoteView's body (a plain @State CGPoint? did). Same values, same order, same behaviour.
     @State private var pointerBox = PointerBox()
     @State private var inputGuard = RemoteInputGuard()
+    /// True while a finger is on the pad. GestureState resets on lift and on cancellation, so the pad's
+    /// ownership session always closes (see RemoteInputGuard).
+    @GestureState private var padTouching = false
     private var lastPoint: CGPoint? {
         get { pointerBox.last }
         nonmutating set { pointerBox.last = newValue }
     }
     @State private var dragging = false
     @State private var scrollState = TwoFingerScrollState()
-    @State private var appsExpanded = false
+    @State private var showLauncher = false
     @State private var showKeyboard = false
     @State private var pendingPower: PowerAction?
     @State private var didAutoConnect = false
     @State private var screenshotItem: ScreenshotItem?
-    @State private var showDeviceInfo = false
-    @State private var showThemes = false
     @ObservedObject private var favourites = AppFavourites.shared
     @State private var volumeSliderValue: Double = 0.5
     @State private var externalVolumeEcho: Double?
 
-    /// The Apps grid belongs to the Android remote only. Everything that reacts to it (page height,
-    /// scrolling, pad dimming) reads this, so the Samsung remote never inherits the expanded layout.
-    /// `appsExpanded` itself is kept, so the state survives a round trip to Samsung and back.
-    private var androidExpanded: Bool { appsExpanded && remote.target == .android }
-
     @Environment(\.layoutContext) private var layoutContext
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 9), count: 3)
+    private var isLandscape: Bool { layoutContext.isLandscape }
 
-    /// Short screens (iPhone SE / mini class): tighter gaps so the larger pad never pushes the
-    /// navigation keys or the volume bar out of reach.
-    private func compact(_ proxy: GeometryProxy) -> Bool { proxy.size.height < 600 }
-
-    /// Portrait keeps the Phase 5 stack exactly. Landscape puts the controls in a column beside a
-    /// full-height pad. Both go through `AnyLayout`, so rotating re-arranges the same views instead of
-    /// rebuilding them: the trackpad, its recognisers, a held button and the mouse session survive.
-    private func surfaceLayout(_ proxy: GeometryProxy) -> AnyLayout {
-        let spacing: CGFloat = compact(proxy) ? 6 : 8
-        if layoutContext.isLandscape {
-            return AnyLayout(RemoteLandscapeLayout(spacing: spacing, columnSpacing: 14, maxColumnWidth: 340,
-                                                   padMinHeight: 200, padMaxHeight: androidExpanded ? 250 : nil))
-        }
+    /// Phase 8: portrait stacks status, mode, the dominant pad, the navigation cluster and volume.
+    /// Landscape is a three-column stage (RemoteStageLayout). Both go through `AnyLayout` with the
+    /// same children, so rotating re-arranges the views instead of rebuilding them: the trackpad, its
+    /// recognisers, a held key and the mouse session survive.
+    private func surfaceLayout(compact: Bool) -> AnyLayout {
+        let spacing = RemoteLayoutPolicy.spacing(compact: compact, isLandscape: isLandscape)
+        if isLandscape { return AnyLayout(RemoteStageLayout(spacing: spacing, columnSpacing: 14)) }
         return AnyLayout(VStackLayout(spacing: spacing))
     }
 
     var body: some View {
         GeometryReader { proxy in
-            let surface = surfaceLayout(proxy)
-            ScrollView(.vertical, showsIndicators: false) {
-                surface {
-                    header
-                    deviceSelector
-                    if remote.target == .samsung {
-                        // Samsung mode: a permanent trackpad and a short key set replace the Android controls.
-                        SamsungRemotePanel()
-                            .layoutValue(key: RemotePadSlot.self, value: true)
-                    } else {
-                        appsSection
-                        modeRow
-                        // The pad is the point of this page: it takes every spare point (including the room the
-                        // old mini-player used) and never shrinks below a comfortable size.
-                        controlSurface
-                            .frame(minHeight: compact(proxy) ? 200 : 250, maxHeight: androidExpanded ? 250 : CGFloat.infinity)
-                            .layoutPriority(1)
-                            .layoutValue(key: RemotePadSlot.self, value: true)
-                        navRow
-                            .layoutValue(key: RemoteBottomSlot.self, value: true)
-                    }
-                    volumeBar
-                        .layoutValue(key: RemoteBottomSlot.self, value: true)
+            let compact = !isLandscape && RemoteLayoutPolicy.isCompact(height: proxy.size.height)
+            let surface = surfaceLayout(compact: compact)
+            surface {
+                header
+                    .remoteStage(.leading)
+                if remote.target == .samsung {
+                    samsungControls(compact: compact)
+                } else {
+                    androidControls(compact: compact)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 8)
-                .frame(height: androidExpanded ? nil : proxy.size.height)
+                volumeBar
+                    .remoteStage(.trailing, bottom: true)
             }
-            // The page only scrolls while the Apps grid pushes content below the fold.
-            .scrollDisabled(!androidExpanded)
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
         .themedSheet()
         // Text follows Dynamic Type, capped so the fixed remote layout keeps fitting (tighter in
-        // landscape, where the control column has less height).
-        .dynamicTypeSize(layoutContext.isLandscape ? ...DynamicTypeSize.xLarge : ...DynamicTypeSize.xxxLarge)
+        // landscape, where the columns have less height).
+        .dynamicTypeSize(isLandscape ? ...DynamicTypeSize.xLarge : ...DynamicTypeSize.xxxLarge)
         .sheet(isPresented: $remote.showConnection) { ConnectionSheet().environmentObject(remote) }
-        .sheet(isPresented: $showThemes) { ThemePickerSheet() }
+        .sheet(isPresented: $showLauncher) { AppLauncherSheet().environmentObject(remote) }
         .sheet(isPresented: $showKeyboard) { KeyboardSheet().environmentObject(remote) }
         .sheet(item: $screenshotItem) { item in ScreenshotSheet(item: item) }
-        .sheet(isPresented: $showDeviceInfo) { DeviceInfoSheet().environmentObject(remote) }
         .confirmationDialog(
             pendingPower?.title ?? "",
             isPresented: Binding(get: { pendingPower != nil }, set: { if !$0 { pendingPower = nil } }),
@@ -145,59 +168,74 @@ struct RemoteView: View {
         }
     }
 
-    // MARK: - Backdrop
+    // MARK: - Compositions
 
-    private var backdrop: some View { AmbientBackdrop() }
+    /// Android TV: mode selector, the pad, the navigation cluster; in landscape also the launcher card.
+    @ViewBuilder
+    private func androidControls(compact: Bool) -> some View {
+        Group {
+            modeRow(compact: compact)
+                .remoteStage(.leading)
+            if isLandscape {
+                launcherCard
+                    .remoteStage(.leading, bottom: true)
+            }
+            // The pad is the point of this page: it takes every spare point and never shrinks below a
+            // comfortable size.
+            controlSurface
+                .frame(minHeight: RemoteLayoutPolicy.padMinHeight(compact: compact, isLandscape: isLandscape),
+                       maxHeight: .infinity)
+                .layoutPriority(1)
+                .remoteStage(.pad)
+            navCluster(compact: compact)
+                .remoteStage(.trailing)
+        }
+    }
+
+    /// Samsung TV: a permanent trackpad and a short key set replace the Android controls.
+    @ViewBuilder
+    private func samsungControls(compact: Bool) -> some View {
+        Group {
+            if SamsungRemoteLayout.showsBanner(enabled: remote.tvVolumeEnabled, state: remote.samsungState) {
+                SamsungLinkBanner()
+                    .remoteStage(.leading)
+            }
+            SamsungTrackpad()
+                .disabled(!remote.samsungRemoteReady)
+                .frame(minHeight: RemoteLayoutPolicy.padMinHeight(compact: compact, isLandscape: isLandscape),
+                       maxHeight: .infinity)
+                .layoutPriority(1)
+                .remoteStage(.pad)
+            if isLandscape {
+                // Dedicated landscape: navigation under the header, transport at the top right, and the
+                // TV group (mute, channel) directly above the volume slider. No key appears twice.
+                SamsungKeyRow(items: SamsungRemoteLayout.landscapeNavigation, height: 52, captions: true)
+                    .remoteStage(.leading, bottom: true)
+                SamsungKeyRow(items: SamsungRemoteLayout.landscapeMedia, height: 52, captions: true)
+                    .remoteStage(.trailing)
+                SamsungKeyRow(items: SamsungRemoteLayout.landscapeTVGroup, height: 52, captions: true)
+                    .remoteStage(.trailing, bottom: true)
+            } else {
+                ForEach(Array(SamsungRemoteLayout.primaryRows.enumerated()), id: \.offset) { _, row in
+                    SamsungKeyRow(items: row, height: compact ? 48 : 54)
+                }
+            }
+        }
+        .opacity(remote.samsungRemoteReady ? 1 : 0.92)
+    }
 
     // MARK: - Header
 
-    private var statusLabel: String {
-        switch remote.linkState {
-        case .reconnectNeeded: return "Reconnect needed"
-        case .connected: return "Connected"
-        case .connecting: return "Connecting…"
-        case .offline: return "Offline"
-        }
-    }
-
-    private var androidOK: Bool { remote.connected && !remote.requiresUserReconnect }
-
-    private var samsungDotColor: Color {
-        switch remote.samsungState {
-        case .connected: return .green
-        case .connecting, .pairing: return .yellow
-        case .denied, .unreachable: return .orange
-        case .off: return Color.inkFaint(0.35)
-        }
-    }
-
+    /// Compact status pill (opens the live-action menu), the device switch and power. In the landscape
+    /// column the switch moves to its own row.
     private var header: some View {
-        HStack(spacing: 10) {
-            GlobalMenuButton(boxOnline: androidOK, onScreenshot: takeScreenshot, onDeviceInfo: { showDeviceInfo = true }, onThemes: { showThemes = true })
-
-            // Status only: it does not open anything. Reconnecting lives in the menu.
-            HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Circle().fill(androidOK ? Color.green : Color.orange).frame(width: 8, height: 8)
-                    Text("Box").scaledFont(12, .semibold)
-                }
-                if remote.tvVolumeEnabled {
-                    HStack(spacing: 6) {
-                        Circle().fill(samsungDotColor).frame(width: 8, height: 8)
-                        Text("TV").scaledFont(12, .semibold)
-                    }
-                }
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                RemoteStatusMenu(onScreenshot: takeScreenshot)
+                if !isLandscape { RemoteTargetSwitch() }
+                PowerMenuButton { pendingPower = $0 }
             }
-            .foregroundStyle(Color.ink.opacity(0.88))
-            .padding(.horizontal, 14)
-            .frame(height: 36)
-            .glassSurface(Capsule())
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Connection: box \(statusLabel)" + (remote.tvVolumeEnabled ? ", Samsung \(remote.samsungState.label)" : ""))
-
-            Spacer(minLength: 0)
-
-            PowerMenuButton { pendingPower = $0 }
+            if isLandscape { RemoteTargetSwitch(showsTitles: true) }
         }
         .foregroundStyle(Color.ink)
     }
@@ -206,14 +244,6 @@ struct RemoteView: View {
         Task {
             if let image = await remote.captureScreenshot() { screenshotItem = ScreenshotItem(image: image) }
         }
-    }
-
-    private var deviceSelector: some View {
-        GlassSegmented(
-            items: RemoteTarget.allCases.map { GlassSegmented<RemoteTarget>.Item(value: $0, title: $0.title, symbol: $0.symbol) },
-            selection: $remote.target,
-            height: 38
-        )
     }
 
     private func perform(_ action: PowerAction) {
@@ -225,98 +255,58 @@ struct RemoteView: View {
         }
     }
 
-    // MARK: - Apps (collapsed by default)
+    // MARK: - Apps launcher
 
-    /// Favourites first (in the order they were starred), then the rest in their normal order.
-    private var launcherApps: [TVApp] {
-        let favs = favourites.packages.compactMap { pkg in remote.apps.first { $0.package == pkg } }
-        return favs + remote.apps.filter { app in !favourites.contains(app.package) }
+    private func openLauncher() {
+        cancelPointer()
+        inputGuard.padTouchEnded()
+        Haptics.soft()
+        showLauncher = true
     }
 
-    private var appsSection: some View {
-        VStack(spacing: 10) {
-            Button {
-                Haptics.soft()
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded.toggle() }
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "square.grid.2x2").scaledFont(19, .medium)
+    private var previewApps: [TVApp] {
+        Array(AppLauncherPolicy.ordered(remote.apps, favourites: favourites.packages).prefix(3))
+    }
+
+    /// Landscape: the launcher lives in the leading column as a card with the first favourites.
+    private var launcherCard: some View {
+        Button { openLauncher() } label: {
+            HStack(spacing: 12) {
+                HStack(spacing: -10) {
+                    ForEach(previewApps) { app in
+                        AppIconImage(asset: "\(app.asset)_dark")
+                            .frame(width: 34, height: 34)
+                            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .strokeBorder(Color.ink.opacity(0.25), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 1) {
                     Text("Apps").scaledFont(15, .semibold)
-                    Spacer()
-                    if !appsExpanded {
-                        Text("\(remote.apps.count)").scaledFont(13).foregroundStyle(Color.ink.opacity(0.65))
-                    }
-                    Image(systemName: appsExpanded ? "chevron.up" : "chevron.down")
-                        .scaledFont(14, .semibold)
+                    Text("\(remote.apps.count) apps").scaledFont(11).foregroundStyle(Color.inkAlpha(0.6))
                 }
-                .foregroundStyle(Color.ink)
-                .padding(.horizontal, 18)
-                .frame(height: appsExpanded ? 40 : 46)
-                .contentShape(Rectangle())
+                Spacer(minLength: 0)
+                Image(systemName: "square.grid.2x2").scaledFont(14, .semibold).foregroundStyle(Color.inkAlpha(0.55))
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(appsExpanded ? "Hide apps" : "Show apps")
-
-            if appsExpanded {
-                appGrid
-                    .transition(.opacity)
-            }
+            .foregroundStyle(Color.ink)
+            .padding(.horizontal, 12)
+            .frame(height: 58)
+            .frame(maxWidth: .infinity)
+            .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: true)
+            .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
-        .padding(.horizontal, appsExpanded ? 8 : 0)
-        .padding(.bottom, appsExpanded ? 10 : 0)
-        .frame(maxWidth: .infinity)
-        .glassSurface(RoundedRectangle(cornerRadius: 30, style: .continuous), interactive: !appsExpanded)
-    }
-
-    // Same artwork, order and tile construction as before; only the surrounding panel is new.
-    private var appGrid: some View {
-        LazyVGrid(columns: columns, spacing: 9) {
-            ForEach(launcherApps) { app in
-                Button {
-                    remote.launch(app)
-                    withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded = false }
-                } label: {
-                    AppIconImage(asset: "\(app.asset)_dark")
-                        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .strokeBorder(Color.ink.opacity(0.22), lineWidth: 1)
-                        }
-                        .background {
-                            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .fill(Color.ink.opacity(0.07))   // flat fill: no material on top of the glass panel
-                        }
-                        .shadow(color: .black.opacity(0.34), radius: 8, y: 4)
-                        .frame(maxWidth: .infinity)
-                        .aspectRatio(1, contentMode: .fit)
-                }
-                .buttonStyle(PressStyle())
-                .accessibilityLabel(app.name)
-                .overlay(alignment: .topTrailing) {
-                    if favourites.contains(app.package) {
-                        Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(.yellow).padding(5)
-                    }
-                }
-                .contextMenu {
-                    Button { favourites.toggle(app.package) } label: {
-                        Label(favourites.contains(app.package) ? "Remove favourite" : "Favourite",
-                              systemImage: favourites.contains(app.package) ? "star.slash" : "star")
-                    }
-                    Button(role: .destructive) {
-                        remote.restartApp(app)
-                        withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { appsExpanded = false }
-                    } label: {
-                        Label("Restart \(app.name)", systemImage: "arrow.clockwise")
-                    }
-                }
-            }
-        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel("Apps")
+        .accessibilityHint("Opens the app launcher")
     }
 
     // MARK: - Mode selector
 
-    private var modeRow: some View {
-        ModeSelector(isMouse: $remote.isTrackpad, segmentHeight: 32)
+    private func modeRow(compact: Bool) -> some View {
+        ModeSelector(isMouse: $remote.isTrackpad,
+                     segmentHeight: RemoteLayoutPolicy.selectorHeight(compact: compact, isLandscape: isLandscape) - 8,
+                     onTouchChange: { inputGuard.selectorTouchChanged($0) })
             .onChange(of: remote.isTrackpad) { _ in inputGuard.modeChanged() }
     }
 
@@ -465,51 +455,98 @@ struct RemoteView: View {
                     }
                     resetPointer()
                 })
-            .onChange(of: appsExpanded) { _ in cancelPointer() }
+            .onChange(of: showLauncher) { _ in cancelPointer() }
             .onDisappear { cancelPointer() }
-            // While the Apps grid is open the page scrolls instead of moving the cursor.
-            .allowsHitTesting(!androidExpanded)
-            .opacity(androidExpanded ? 0.6 : 1)
     }
 
     private var dpadSurface: some View {
         let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
         return GeometryReader { geo in
-            let size = max(180, min(420, min(geo.size.width, geo.size.height) - 12))
+            let size = RemoteLayoutPolicy.dpadDiameter(for: geo.size)
             GlassDpad(size: size) { key in
-                guard !inputGuard.blocksDpad() else { return }
+                guard inputGuard.acceptsPadInput(isTrackpad: remote.isTrackpad) else { return }
                 remote.routedKey(key)
             }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .glassSurface(shape)
+        // Phase 7.3: every touch on the pad opens an ownership session (see RemoteInputGuard). It runs
+        // alongside the keys and the swipe and never consumes the touch.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .updating($padTouching) { _, state, _ in state = true }
+                .onChanged { _ in inputGuard.padTouchChanged(isTrackpad: remote.isTrackpad) }
+        )
+        .onChange(of: padTouching) { touching in
+            if !touching { inputGuard.padTouchEnded() }
+        }
         // Swipe anywhere on the pad to send an arrow, like the Apple TV remote.
         .simultaneousGesture(
             DragGesture(minimumDistance: 28)
                 .onEnded { value in
-                    guard !inputGuard.blocksDpad() else { return }
+                    guard inputGuard.acceptsPadInput(isTrackpad: remote.isTrackpad) else { return }
                     let w = value.translation.width, h = value.translation.height
                     let name = abs(w) > abs(h) ? (w > 0 ? "RIGHT" : "LEFT") : (h > 0 ? "DOWN" : "UP")
                     Haptics.soft()
                     remote.routedKey(name)
                 }
         )
-        .allowsHitTesting(!androidExpanded)
-        .opacity(androidExpanded ? 0.6 : 1)
+        .onDisappear { inputGuard.padTouchEnded() }
     }
 
     // MARK: - Navigation and volume
 
-    private var navRow: some View {
-        GlassGroup(spacing: 10) {
-            HStack(spacing: 10) {
-                RemoteKeyButton(symbol: "arrow.uturn.backward", label: "Back") { remote.routedKey("BACK") }
-                RemoteKeyButton(label: "Home", action: { remote.routedKey("HOME") }) { HomeGlyph() }
-                // Opens the Samsung TV's own input/source menu (KEY_SOURCE) over the Samsung link. It is
-                // separate from the device selector. If the link is down the status line says so.
-                RemoteKeyButton(symbol: "cable.connector", label: "Sources") { remote.samsungKey(.source) }
-                RemoteKeyButton(symbol: "magnifyingglass", label: "Search") { navigator.openSearch() }
-                RemoteKeyButton(symbol: "keyboard", label: "Keyboard") { showKeyboard = true }
+    /// Secondary navigation: one row in portrait (Apps is the prominent centre key), a two-column grid
+    /// in the landscape trailing column. Same commands as before.
+    private func navCluster(compact: Bool) -> some View {
+        let keys = RemoteNavKey.cluster(isLandscape: isLandscape, samsungLinked: remote.tvVolumeEnabled)
+        let height: CGFloat = isLandscape ? 52 : (compact ? 48 : 58)
+        let captions = isLandscape || !compact
+        let rows: [[RemoteNavKey]] = stride(from: 0, to: keys.count, by: 2).map { Array(keys[$0..<min($0 + 2, keys.count)]) }
+        return GlassGroup(spacing: 10) {
+            if isLandscape {
+                VStack(spacing: 10) {
+                    ForEach(rows, id: \.self) { row in
+                        HStack(spacing: 10) {
+                            ForEach(row, id: \.self) { key in navKey(key, height: height, captions: captions) }
+                        }
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(keys, id: \.self) { key in navKey(key, height: height, captions: captions) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func navKey(_ key: RemoteNavKey, height: CGFloat, captions: Bool) -> some View {
+        let caption: String? = captions ? key.caption : nil
+        switch key {
+        case .back:
+            RemoteClusterKey(symbol: "arrow.uturn.backward", label: key.title, caption: caption, height: height) {
+                remote.routedKey("BACK")
+            }
+        case .home:
+            RemoteClusterKey(label: key.title, caption: caption, height: height, action: { remote.routedKey("HOME") }) {
+                HomeGlyph()
+            }
+        case .apps:
+            RemoteClusterKey(symbol: "square.grid.2x2.fill", label: key.title, caption: caption, prominent: true,
+                             height: height) { openLauncher() }
+        case .search:
+            RemoteClusterKey(symbol: "magnifyingglass", label: key.title, caption: caption, height: height) {
+                navigator.openSearch()
+            }
+        case .keyboard:
+            RemoteClusterKey(symbol: "keyboard", label: key.title, caption: caption, height: height) {
+                showKeyboard = true
+            }
+        case .sources:
+            // Opens the Samsung TV's own input/source menu (KEY_SOURCE) over the Samsung link.
+            RemoteClusterKey(symbol: "cable.connector", label: key.title, caption: caption, height: height) {
+                remote.samsungKey(.source)
             }
         }
     }

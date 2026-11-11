@@ -4,7 +4,9 @@ import SwiftUI
 /// floating search bar). It fades into the page canvas and carries the featured title (logo when the
 /// catalogue has one), metadata, a short synopsis and actions.
 ///
-/// Featured titles cross-fade; swipe sideways or tap the page dots to change. Pulling down stretches the
+/// Featured titles cross-fade; swipe sideways or tap the page dots to change. Phase 7.3: the hero is a
+/// no-page-swipe zone, so a sideways swipe on it only changes the title (the text follows the finger and
+/// snaps back as the next title fades in); opening is tap-only (a drag never opens), see HeroSwipePolicy. Pulling down stretches the
 /// artwork and scrolling gives it a light parallax (one geometry read, no continuous animation).
 /// Auto-advance is a single sleeping task that restarts on every change, stops off screen and in the
 /// background, and is off with Reduce Motion. The next backdrop is pre-loaded so a change never waits.
@@ -18,10 +20,15 @@ struct DiscoverHero: View {
     let leadingInset: CGFloat
     let onOpen: (MediaTitle) -> Void
     let onPlay: (MediaTitle) -> Void
+    /// Phase 7.4: bottom of Discover's floating header (global). A tap above it belongs to the header.
+    var headerBottom: CGFloat = 0
 
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.glassTheme) private var theme
+    /// Horizontal finger travel while a hero swipe is in progress; springs back on lift or cancellation.
+    @GestureState(resetTransaction: Transaction(animation: .spring(response: 0.32, dampingFraction: 0.86)))
+    private var drag: CGFloat = 0
 
     private var reduceMotion: Bool { systemReduceMotion || MotionPreference.reduced }
     private var current: MediaTitle? { titles.first { $0.id == selection } ?? titles.first }
@@ -31,15 +38,22 @@ struct DiscoverHero: View {
         ZStack(alignment: .bottomLeading) {
             backdrop
                 .contentShape(Rectangle())
-                .onTapGesture { if let current { onOpen(current) } }
+                .gesture(SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
+                    guard DiscoverTouchPolicy.heroMayOpen(tapY: tap.location.y, headerBottom: headerBottom),
+                          let current else { return }
+                    onOpen(current)
+                })
             if let current {
                 info(current)
                     .id(current.id)
+                    .offset(x: reduceMotion ? 0 : HeroSwipePolicy.follow(drag))
                     .transition(reduceMotion ? .opacity
                                 : .asymmetric(insertion: .opacity.combined(with: .offset(x: 18)), removal: .opacity))
             }
         }
         .frame(width: size.width, height: size.height, alignment: .bottomLeading)
+        // Phase 7.3: a touch that lands on the hero never starts a page swipe.
+        .background { PagerExclusionZone() }
         .simultaneousGesture(swipe)
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: "Next featured title") { advance(by: 1) }
@@ -164,9 +178,10 @@ struct DiscoverHero: View {
                 Label(t.kind == .movie ? "Play" : "Episodes",
                       systemImage: t.kind == .movie ? "play.fill" : "list.bullet.rectangle.portrait")
                     .scaledFont(15, .semibold)
-                    .foregroundStyle(Color.black)
+                    .foregroundStyle(theme.playInk)
                     .padding(.horizontal, 22).frame(height: 44)
-                    .background(Capsule().fill(Color.white))
+                    .background(Capsule().fill(theme.playFill))
+                    .glassSurface(Capsule(), interactive: true)
             }
             .buttonStyle(GlassPressStyle())
             .accessibilityLabel(t.kind == .movie ? "Play \(t.name)" : "Episodes of \(t.name)")
@@ -199,12 +214,16 @@ struct DiscoverHero: View {
     // MARK: Changing title
 
     private var swipe: some Gesture {
-        DragGesture(minimumDistance: 24).onEnded { value in
-            let dx = value.translation.width, dy = value.translation.height
-            guard abs(dx) > 50, abs(dx) > abs(dy) * 1.4 else { return }
-            Haptics.soft()
-            advance(by: dx < 0 ? 1 : -1)
-        }
+        DragGesture(minimumDistance: 24)
+            .updating($drag) { value, state, _ in
+                if HeroSwipePolicy.isHorizontal(value.translation) { state = value.translation.width }
+            }
+            .onEnded { value in
+                guard let step = HeroSwipePolicy.step(translation: value.translation,
+                                                      predicted: value.predictedEndTranslation) else { return }
+                Haptics.soft()
+                advance(by: step)
+            }
     }
 
     private func select(_ id: String) {
@@ -229,4 +248,36 @@ struct DiscoverHero: View {
         guard !Task.isCancelled else { return }
         advance(by: 1)
     }
+}
+
+/// Phase 7.3: pure rules for the hero swipe (unit tested).
+enum HeroSwipePolicy {
+    static let minimumTravel: CGFloat = 50
+    static let dominance: CGFloat = 1.4
+    /// The text follows the finger at this fraction, never more than `maxFollow` points.
+    static let followFactor: CGFloat = 0.35
+    static let maxFollow: CGFloat = 60
+
+    static func isHorizontal(_ t: CGSize) -> Bool { abs(t.width) > abs(t.height) * dominance }
+
+    /// +1 for the next title, -1 for the previous, nil when the drag is not a hero swipe (vertical scroll,
+    /// too short). A quick flick in the same direction counts by where it would land.
+    static func step(translation: CGSize, predicted: CGSize) -> Int? {
+        guard isHorizontal(translation) else { return nil }
+        let sameDirection = (predicted.width < 0) == (translation.width < 0)
+        let travel = sameDirection && abs(predicted.width) > abs(translation.width) ? predicted.width : translation.width
+        guard abs(travel) > minimumTravel else { return nil }
+        return travel < 0 ? 1 : -1
+    }
+
+    static func follow(_ dx: CGFloat) -> CGFloat {
+        max(-maxFollow, min(maxFollow, dx * followFactor))
+    }
+}
+
+/// Phase 7.4: the floating search header sits over the hero. A tap inside it (or within a finger's
+/// slop of its bottom edge) never opens the featured title.
+enum DiscoverTouchPolicy {
+    static let headerSlop: CGFloat = 6
+    static func heroMayOpen(tapY: CGFloat, headerBottom: CGFloat) -> Bool { tapY > headerBottom + headerSlop }
 }

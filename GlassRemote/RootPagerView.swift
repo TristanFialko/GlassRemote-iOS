@@ -62,6 +62,8 @@ struct RootPagerView: View {
                 }
                 .frame(width: width * CGFloat(AppPage.allCases.count), alignment: .leading)
                 .offset(x: -CGFloat(page.rawValue) * width + travel)
+                // Phase 7.4: reports when the slide has actually finished (Discover's search focus waits for it).
+                .modifier(PageSettleObserver(page: page) { navigator.pageSettled($0) })
                 .frame(width: width, alignment: .leading)
                 .animation(spring, value: page)
                 .clipShape(HorizontalClip())
@@ -140,6 +142,11 @@ enum PagerGesturePolicy {
     /// Phase 7.1: a touch inside (or just outside) any selector's frame never starts a page swipe.
     static func inExcludedZone(_ point: CGPoint, zones: [CGRect], slop: CGFloat = exclusionSlop) -> Bool {
         zones.contains { $0.insetBy(dx: -slop, dy: -slop).contains(point) }
+    }
+
+    /// Phase 7.3: only zones with a real size that are at least partly on screen count.
+    static func visibleZones(_ zones: [CGRect], in bounds: CGRect) -> [CGRect] {
+        zones.filter { !$0.isNull && !$0.isInfinite && $0.width > 0 && $0.height > 0 && $0.intersects(bounds) }
     }
 
     /// Whether a touch that lands at `x` (of `width`) may start a page swipe on `page`.

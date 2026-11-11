@@ -27,66 +27,67 @@ enum PowerMenu {
 
 /// Pure description of the global menu's sections (unit tested). Nothing in here duplicates a
 /// control that is already on the Remote page or in the power menu.
+///
+/// Phase 8: TV connections, device information and themes moved to Profile pages (see
+/// `movedToProfile`). The menu keeps only live actions plus one shortcut into Profile.
 enum GlobalMenuSpec {
     enum Section: Equatable { case device, samsung, advanced }
     enum Entry: Equatable {
         // Device
-        case connection, reconnectBox, reconnectSamsung
+        case reconnectBox, reconnectSamsung
         // Samsung TV
         case samsungKeys, routeVolume, setUpSamsung
         // Advanced
-        case screenshot, deviceInfo
+        case screenshot, profileSettings
     }
+
+    /// Settings that used to live in this menu and the Profile pages that own them now.
+    static let movedToProfile: [ProfileRoute] = [.connections, .devices, .appearance]
 
     static func entries(in section: Section, boxOnline: Bool, samsungEnabled: Bool, samsungConnected: Bool) -> [Entry] {
         switch section {
         case .device:
-            var list: [Entry] = [.connection]
+            var list: [Entry] = []
             if !boxOnline { list.append(.reconnectBox) }
             if samsungEnabled && !samsungConnected { list.append(.reconnectSamsung) }
             return list
         case .samsung:
             return samsungEnabled ? [.samsungKeys, .routeVolume] : [.setUpSamsung]
         case .advanced:
-            return [.screenshot, .deviceInfo]
+            return [.screenshot, .profileSettings]
         }
     }
 }
 
-/// The header's menu button (top left). Central place for connection management, Samsung-only
-/// keys and advanced tools. The connection capsule next to it only shows status.
-struct GlobalMenuButton: View {
+/// Phase 8: the Remote header's status pill. It shows the selected device and its live link state
+/// and opens the menu of live actions (reconnect, TV keys, volume routing, screenshot). Settings
+/// (connections, devices, themes) open in Profile.
+struct RemoteStatusMenu: View {
     @EnvironmentObject private var remote: RemoteModel
-    let boxOnline: Bool
+    @EnvironmentObject private var navigator: PageNavigator
     let onScreenshot: () -> Void
-    let onDeviceInfo: () -> Void
-    let onThemes: () -> Void
 
+    private var boxOnline: Bool { remote.connected && !remote.requiresUserReconnect }
     private var samsungOn: Bool { remote.tvVolumeEnabled }
     private var samsungConnected: Bool { remote.samsungState == .connected }
 
     var body: some View {
         Menu {
-            Button(action: onThemes) { Label("Themes", systemImage: "paintpalette") }
-            Section("Device") {
-                ForEach(entries(.device), id: \.self) { entry in view(for: entry) }
+            if !entries(.device).isEmpty {
+                Section("Device") {
+                    ForEach(entries(.device), id: \.self) { entry in view(for: entry) }
+                }
             }
             Section("Samsung TV") {
                 ForEach(entries(.samsung), id: \.self) { entry in view(for: entry) }
             }
-            Section("Advanced") {
+            Section {
                 ForEach(entries(.advanced), id: \.self) { entry in view(for: entry) }
             }
         } label: {
-            Image("BrandIcon")
-                .resizable().scaledToFill()
-                .frame(width: 30, height: 30)
-                .clipShape(Circle())
-                .frame(width: 44, height: 44)
-                .glassSurface(Circle(), interactive: true)
+            RemoteStatusPill()
         }
-        .accessibilityLabel("Menu")
-        .accessibilityHint("Connections, Samsung TV keys and advanced tools")
+        .accessibilityHint("Reconnect, Samsung TV keys and tools")
     }
 
     private func entries(_ section: GlobalMenuSpec.Section) -> [GlobalMenuSpec.Entry] {
@@ -97,10 +98,6 @@ struct GlobalMenuButton: View {
     @ViewBuilder
     private func view(for entry: GlobalMenuSpec.Entry) -> some View {
         switch entry {
-        case .connection:
-            Button { remote.showConnection = true } label: {
-                Label("Connections and devices", systemImage: "slider.horizontal.3")
-            }
         case .reconnectBox:
             Button { remote.connect() } label: { Label("Reconnect Android TV", systemImage: "arrow.clockwise") }
         case .reconnectSamsung:
@@ -115,13 +112,94 @@ struct GlobalMenuButton: View {
         case .routeVolume:
             Toggle(isOn: $remote.tvVolumeEnabled) { Label("Volume through Samsung TV", systemImage: "speaker.wave.2") }
         case .setUpSamsung:
-            Button { remote.showConnection = true } label: { Label("Set up Samsung TV", systemImage: "tv.badge.wifi") }
+            Button { navigator.openProfile(.connections) } label: { Label("Set up Samsung TV", systemImage: "tv.badge.wifi") }
         case .screenshot:
             Button(action: onScreenshot) { Label("TV screenshot", systemImage: "camera.viewfinder") }
                 .disabled(!remote.connected)
-        case .deviceInfo:
-            Button(action: onDeviceInfo) { Label("Device information", systemImage: "info.circle") }
+        case .profileSettings:
+            Button { navigator.openProfile(.connections) } label: {
+                Label("Connections, devices & themes", systemImage: "person.crop.circle")
+            }
         }
+    }
+}
+
+/// The pill itself: device glyph, name and a live status dot (plus a TV dot when volume goes
+/// through the Samsung TV). Status only; actions live in the menu it opens.
+struct RemoteStatusPill: View {
+    @EnvironmentObject private var remote: RemoteModel
+    @Environment(\.glassTheme) private var theme
+
+    private var boxOnline: Bool { remote.connected && !remote.requiresUserReconnect }
+
+    private var status: (text: String, color: Color) {
+        if remote.target == .samsung {
+            return (remote.samsungState.label, Self.samsungColor(remote.samsungState))
+        }
+        switch remote.linkState {
+        case .reconnectNeeded: return ("Reconnect needed", .orange)
+        case .connected: return ("Connected", .green)
+        case .connecting: return ("Connecting…", .yellow)
+        case .offline: return ("Offline", .orange)
+        }
+    }
+
+    static func samsungColor(_ state: SamsungLinkState) -> Color {
+        switch state {
+        case .connected: return .green
+        case .connecting, .pairing: return .yellow
+        case .denied, .unreachable: return .orange
+        case .off: return Color.inkFaint(0.35)
+        }
+    }
+
+    var body: some View {
+        let status = self.status
+        HStack(spacing: 10) {
+            ZStack {
+                Circle().fill(theme.accent.opacity(0.22))
+                Image(systemName: remote.target.symbol).scaledFont(14, .semibold)
+            }
+            .frame(width: 32, height: 32)
+            .overlay(alignment: .bottomTrailing) {
+                Circle()
+                    .fill(status.color)
+                    .frame(width: 10, height: 10)
+                    .overlay(Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 1.5))
+                    .shadow(color: status.color.opacity(0.8), radius: 4)
+                    .offset(x: 2, y: 2)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(remote.target.title).scaledFont(14, .semibold).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(status.text).lineLimit(1)
+                    if remote.target == .android && remote.tvVolumeEnabled {
+                        HStack(spacing: 3) {
+                            Circle().fill(Self.samsungColor(remote.samsungState)).frame(width: 6, height: 6)
+                            Text("TV")
+                        }
+                    }
+                }
+                .scaledFont(11, .medium)
+                .foregroundStyle(Color.inkAlpha(0.62))
+            }
+            .minimumScaleFactor(0.85)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.down")
+                .scaledFont(11, .bold)
+                .foregroundStyle(Color.inkAlpha(0.5))
+        }
+        .foregroundStyle(Color.ink)
+        .padding(.leading, 6)
+        .padding(.trailing, 14)
+        .frame(height: 44)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassSurface(Capsule(), interactive: true)
+        .contentShape(Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(remote.target.title), \(status.text)"
+                            + (remote.target == .android && remote.tvVolumeEnabled ? ", Samsung \(remote.samsungState.label)" : ""))
+        .accessibilityAddTraits(.isButton)
     }
 }
 

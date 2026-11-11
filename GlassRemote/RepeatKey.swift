@@ -65,6 +65,18 @@ struct RepeatKey<Content: View, HitShape: Shape>: View {
                         setPressed(false)
                     }
             )
+            // Phase 7.3: a key that leaves the screen mid-touch (mode switch, rotation) must not keep
+            // repeating or stay lit; its gesture's end may never arrive.
+            .onDisappear { cancelTouch() }
+    }
+
+    private func cancelTouch() {
+        box.task?.cancel()
+        box.task = nil
+        box.began = false
+        box.cancelled = false
+        box.repeating = false
+        setPressed(false)
     }
 
     private func setPressed(_ value: Bool) {

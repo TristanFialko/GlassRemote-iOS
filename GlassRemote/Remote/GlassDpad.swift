@@ -48,16 +48,16 @@ enum DpadKey: String, CaseIterable {
 /// directional wedges around a raised OK "pebble".
 ///
 /// Touch: every key keeps `RepeatKey`'s behaviour (tap = one press, hold = accelerating repeat, a
-/// small drag cancels so the pad's swipe gesture can take over). Each arrow owns a full quarter of the
-/// pad, so a touch anywhere on the ring (diagonals included) goes to the nearest arrow, and the centre
-/// belongs to OK. Decorative layers never take touches, and nothing here waits on an animation.
+/// small drag cancels so the pad's swipe gesture can take over). Each arrow owns a quarter of the visible
+/// disc (Phase 7.2), so a touch anywhere on the ring goes to the nearest arrow, the centre belongs to OK,
+/// and the square's corners outside the disc are inactive. `DpadHitPolicy` is the single rule for this. Decorative layers never take touches, and nothing here waits on an animation.
 struct GlassDpad: View {
     let size: CGFloat
     let onKey: (String) -> Void
 
     /// Proportions as fractions of the pad's diameter.
     enum Metrics {
-        static let pebble: CGFloat = 0.38      // visible OK button
+        static let pebble: CGFloat = 0.36      // visible OK button (Phase 8: slimmer, so the arrows breathe)
         static let okHit: CGFloat = 0.42       // OK touch area (slightly larger than the pebble)
         static let groove: CGFloat = 0.48      // engraved ring around OK
         static let glyphRadius: CGFloat = 0.36 // chevrons sit midway between the groove and the rim
@@ -93,6 +93,12 @@ struct GlassDpad: View {
                                          center: UnitPoint(x: 0.5, y: 0.08), startRadius: 2, endRadius: size * 0.75))
             Circle().fill(LinearGradient(colors: [.clear, Color.black.opacity(light ? 0.04 : 0.16)],
                                          startPoint: .center, endPoint: .bottom))
+            // Phase 8: a shallow basin falling towards the OK groove gives the disc real depth.
+            Circle().fill(RadialGradient(colors: [Color.black.opacity(light ? 0.07 : 0.24), .clear],
+                                         center: .center, startRadius: size * Metrics.groove * 0.5, endRadius: size * 0.42))
+            // A faint theme tint in the lower rim, like light passing through coloured glass.
+            Circle().fill(RadialGradient(colors: [.clear, theme.accent.opacity(light ? 0.05 : 0.10)],
+                                         center: UnitPoint(x: 0.5, y: 0.2), startRadius: size * 0.3, endRadius: size * 0.6))
             // Four fine seams on the diagonals separate the directions without boxing them in.
             DpadSeams(inner: Metrics.groove + 0.04, outer: 0.93)
                 .stroke(Color.ink.opacity(light ? 0.10 : 0.09), style: StrokeStyle(lineWidth: 1, lineCap: .round))
@@ -109,6 +115,7 @@ struct GlassDpad: View {
         }
         .frame(width: size, height: size)
         .shadow(color: .black.opacity(light ? 0.14 : 0.45), radius: 16, y: 9)
+        .shadow(color: theme.accent.opacity(light ? 0.08 : 0.16), radius: 30, y: 16)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -119,10 +126,10 @@ struct GlassDpad: View {
         let v = key.vector
         let isLit = lit == key
         let glyph = min(24, max(17, size * 0.062))
-        // Phase 7.1: the hit area is the pad's own square quarter. The old wedge reached 1.42 radii out,
-        // past the top of the pad and over the Mouse / D-pad selector, so touches meant for the selector
-        // fired Up.
-        return RepeatKey(hitShape: DpadQuadrant(angle: key.angle),
+        // Phase 7.2: the hit area is this arrow's quarter of the visible disc (a sector meeting at the
+        // centre, radius = the pad's radius). It never leaves the pad's frame, so the Mouse / D-pad selector
+        // above can't fire Up, and it matches DpadHitPolicy exactly. OK sits on top and owns the centre.
+        return RepeatKey(hitShape: DpadWedge(angle: key.angle, inner: 0, outer: 1),
                          onFire: { onKey(key.rawValue) },
                          onPressChange: { setLit(key, $0) }) {
             ZStack {
@@ -159,6 +166,9 @@ struct GlassDpad: View {
                          onPressChange: { setLit(.ok, $0) }) {
             ZStack {
                 Color.clear.glassSurface(Circle(), interactive: true, elevated: true, accent: true)
+                // Phase 8: a gentle top-lit theme body so OK reads as the pad's focal point.
+                Circle().fill(LinearGradient(colors: [theme.accent.opacity(light ? 0.10 : 0.16), theme.accent2.opacity(0.04)],
+                                             startPoint: .top, endPoint: .bottom))
                 // Specular cap: the top of the pebble catches the light.
                 Ellipse()
                     .fill(LinearGradient(colors: [Color.white.opacity(light ? 0.55 : 0.30), Color.white.opacity(0)],
@@ -176,6 +186,7 @@ struct GlassDpad: View {
                     .foregroundStyle(Color.ink)
             }
             .frame(width: pebble, height: pebble)
+            .scaleEffect(isLit && !reduceMotion ? 0.95 : 1)
             // Pressing pushes the pebble into the disc: its shadow tightens.
             .shadow(color: .black.opacity(isLit ? 0.22 : (light ? 0.18 : 0.42)), radius: isLit ? 3 : 9, y: isLit ? 1 : 6)
             .animation(press, value: isLit)
@@ -220,21 +231,26 @@ struct DpadWedge: Shape {
     }
 }
 
-/// Touch area of one arrow (Phase 7.1): the triangle from the centre to the two corners of the pad's
-/// square on either side of `angle`. The four quarters tile the square exactly, so diagonals and
-/// corners still reach the nearest arrow, and nothing ever extends past the pad's frame.
-struct DpadQuadrant: Shape {
-    var angle: Double
+/// Which key owns a touch on the pad (Phase 7.2). This is the rule the hit shapes implement:
+/// - within the OK touch radius: OK;
+/// - beyond the pad's radius (including the square's corners): nothing;
+/// - otherwise the arrow whose axis is closest, using |dx| and |dy| from the centre.
+/// Screen coordinates: +y is down. An exact diagonal tie goes to the horizontal arrow, so the answer is
+/// always deterministic.
+enum DpadHitPolicy {
+    /// OK's touch radius as a fraction of the pad's radius (`Metrics.okHit` is a fraction of the diameter).
+    static var okRadius: CGFloat { GlassDpad.Metrics.okHit }
 
-    func path(in rect: CGRect) -> Path {
-        let c = CGPoint(x: rect.midX, y: rect.midY)
-        let corner = min(rect.width, rect.height) / 2 * CGFloat(2).squareRoot()
-        var p = Path()
-        p.move(to: c)
-        p.addLine(to: DpadGeometry.point(c, corner, angle - 45))
-        p.addLine(to: DpadGeometry.point(c, corner, angle + 45))
-        p.closeSubpath()
-        return p
+    static func key(at point: CGPoint, in rect: CGRect) -> DpadKey? {
+        let radius = min(rect.width, rect.height) / 2
+        guard radius > 0 else { return nil }
+        let dx = point.x - rect.midX
+        let dy = point.y - rect.midY
+        let distance = (dx * dx + dy * dy).squareRoot()
+        if distance > radius { return nil }
+        if distance <= radius * okRadius { return .ok }
+        if abs(dx) >= abs(dy) { return dx >= 0 ? .right : .left }
+        return dy >= 0 ? .down : .up
     }
 }
 

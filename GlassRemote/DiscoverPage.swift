@@ -25,6 +25,9 @@ struct DiscoverPage: View {
     @State private var headerHeight: CGFloat = 104
     @State private var headerSolid = false
     @Environment(\.railClearance) private var railClearance
+    @Environment(\.scenePhase) private var scenePhase
+    /// Bottom of the floating header in global coordinates; the hero ignores taps above it.
+    @State private var headerBottom: CGFloat = 0
     @ObservedObject private var profiles = ProfileStore.shared
     @Namespace private var zoom
 
@@ -81,10 +84,15 @@ struct DiscoverPage: View {
 
                 headerBar
                     .background {
-                        GeometryReader { g in Color.clear.preference(key: DiscoverHeaderHeightKey.self, value: g.size.height) }
+                        GeometryReader { g in
+                    Color.clear
+                        .preference(key: DiscoverHeaderHeightKey.self, value: g.size.height)
+                        .preference(key: DiscoverHeaderBottomKey.self, value: g.frame(in: .global).maxY)
+                }
                     }
             }
             .onPreferenceChange(DiscoverHeaderHeightKey.self) { headerHeight = $0 }
+            .onPreferenceChange(DiscoverHeaderBottomKey.self) { if abs($0 - headerBottom) > 0.5 { headerBottom = $0 } }
             .onPreferenceChange(DiscoverScrollOffsetKey.self) { y in
                 let solid = -y > solidAfter
                 if solid != headerSolid { headerSolid = solid }
@@ -114,13 +122,10 @@ struct DiscoverPage: View {
         .onChange(of: target?.id) { _ in publishArtwork() }
         .onChange(of: heroID) { _ in publishArtwork() }
         .task { if account.state == .signedIn, account.libraryPhase == .idle { await account.refresh() } }
-        // Search shortcut from the Remote page: wait for the page slide, then bring up the keyboard.
-        .onChange(of: navigator.searchFocusToken) { _ in
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 450_000_000)
-                searching = true
-            }
-        }
+        // Phase 7.4: Search shortcut from the Remote page. The navigator fires only once Discover has
+        // finished sliding in and the field is mounted (SearchFocusPolicy); no fixed delay.
+        .onChange(of: navigator.searchFocusFire) { _ in searching = true }
+        .onChange(of: scenePhase) { navigator.sceneActiveChanged($0 == .active) }
     }
 
     /// Floating glass header over the hero. Search stays reachable at all times; in landscape the filter
@@ -144,6 +149,8 @@ struct DiscoverPage: View {
         // Phase 7.1: taps in the gaps of the floating header stop here instead of reaching the hero below.
         .contentShape(Rectangle())
         .onTapGesture {}
+        // Phase 7.4: a sideways swipe that starts on the header (search capsule, account) never pages.
+        .background { PagerExclusionZone() }
         .background {
             LinearGradient(colors: [theme.canvasTop.opacity(0.94), theme.canvasTop.opacity(0)], startPoint: .top, endPoint: .bottom)
                 .padding(.bottom, -18)
@@ -191,6 +198,8 @@ struct DiscoverPage: View {
         // a tap on the rest of the capsule fell through to the hero and opened its title.
         .contentShape(Capsule())
         .onTapGesture { searching = true }
+        .onAppear { navigator.searchFieldMounted(true) }
+        .onDisappear { navigator.searchFieldMounted(false) }
     }
 
     private var accountButton: some View {
@@ -236,7 +245,8 @@ struct DiscoverPage: View {
                          onOpen: { open($0) },
                          onPlay: { title in
                              if title.kind == .movie { searching = false; playTarget = title } else { open(title) }
-                         })
+                         },
+                         headerBottom: headerBottom)
         }
     }
 
@@ -597,6 +607,11 @@ struct DiscoverPage: View {
 
 private struct DiscoverHeaderHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct DiscoverHeaderBottomKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 

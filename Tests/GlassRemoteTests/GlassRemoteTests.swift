@@ -553,9 +553,9 @@ final class MenuRoutingTests: XCTestCase {
 
     func testReconnectEntriesAppearOnlyWhenNeeded() {
         let online = GlobalMenuSpec.entries(in: .device, boxOnline: true, samsungEnabled: true, samsungConnected: true)
-        XCTAssertEqual(online, [.connection])
+        XCTAssertEqual(online, [])
         let down = GlobalMenuSpec.entries(in: .device, boxOnline: false, samsungEnabled: true, samsungConnected: false)
-        XCTAssertEqual(down, [.connection, .reconnectBox, .reconnectSamsung])
+        XCTAssertEqual(down, [.reconnectBox, .reconnectSamsung])
     }
 
     func testSamsungSectionOffersSetupWhenDisabled() {
@@ -563,8 +563,9 @@ final class MenuRoutingTests: XCTestCase {
         XCTAssertEqual(GlobalMenuSpec.entries(in: .samsung, boxOnline: true, samsungEnabled: true, samsungConnected: true), [.samsungKeys, .routeVolume])
     }
 
-    func testAdvancedHoldsScreenshotAndDeviceInfo() {
-        XCTAssertEqual(GlobalMenuSpec.entries(in: .advanced, boxOnline: true, samsungEnabled: false, samsungConnected: false), [.screenshot, .deviceInfo])
+    func testAdvancedHoldsScreenshotAndProfileSettings() {
+        // Phase 8: device info, connections and themes moved to Profile; the menu links there.
+        XCTAssertEqual(GlobalMenuSpec.entries(in: .advanced, boxOnline: true, samsungEnabled: false, samsungConnected: false), [.screenshot, .profileSettings])
     }
 }
 
@@ -631,8 +632,8 @@ final class PlayerArtworkMatcherTests: XCTestCase {
 
 final class ThemeSystemTests: XCTestCase {
     func testElevenThemesAndAutoDoesNotMeanAdaptive() {
-        XCTAssertEqual(ThemeID.allCases.count, 11)
-        XCTAssertEqual(Set(ThemeID.allCases.map(\.rawValue)).count, 11)
+        XCTAssertEqual(ThemeID.allCases.count, 15)
+        XCTAssertEqual(Set(ThemeID.allCases.map(\.rawValue)).count, 15)
         XCTAssertNotEqual(ThemeID.adaptive, ThemeID.auto)
     }
 
