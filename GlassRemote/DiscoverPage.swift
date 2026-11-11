@@ -9,6 +9,9 @@ import SwiftUI
 struct DiscoverPage: View {
     @Environment(\.dockClearance) private var dockClearance
     @Environment(\.layoutContext) private var layoutContext
+    @Environment(\.pageBleed) private var pageBleed
+    /// Continuation §F3: sheet in portrait, full screen in landscape; only re-chosen while nothing is open.
+    @State private var detailStyle: DetailPresentation = .sheet
     @EnvironmentObject private var navigator: PageNavigator
     @Environment(\.glassTheme) private var theme
     @StateObject private var model = DiscoverModel()
@@ -78,6 +81,10 @@ struct DiscoverPage: View {
                 }
                 .coordinateSpace(name: DiscoverHero.space)
                 .scrollDismissesKeyboard(.interactively)
+                // Continuation §F2: in landscape the hero artwork also covers the safe areas beside the page.
+                // The clip only widens sideways, so rows still stop at the page's own top and bottom edges.
+                .scrollClipDisabled(layoutContext.isLandscape)
+                .clipShape(HorizontalBleedClip(bleed: layoutContext.isLandscape ? pageBleed.symmetric : 0))
                 // The hero runs under the status bar and, in landscape, under the glass rail.
                 .padding(.leading, -railClearance)
                 .ignoresSafeArea(.container, edges: .top)
@@ -100,13 +107,14 @@ struct DiscoverPage: View {
         }
         .foregroundStyle(Color.ink)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-        .sheet(item: $target) { item in
-            TitleDetailView(title: item.title, libraryItem: item.libraryItem, onShowRemote: {
-                target = nil
-                navigator.go(.remote)
-            }, onClose: { target = nil })
-            .environmentObject(RemoteModel.shared)
-            .modifier(DetailZoomDestination(id: item.sourceID, namespace: zoom))
+        // Continuation §F3: a full-width page in landscape, the sheet in portrait (see DetailPresentation).
+        .sheet(item: detailBinding(.sheet)) { item in detailPage(item) }
+        .fullScreenCover(item: detailBinding(.fullScreen)) { item in detailPage(item) }
+        .onChange(of: layoutContext.isLandscape, initial: true) { _, landscape in
+            detailStyle = DetailPresentation.next(current: detailStyle, isPresenting: target != nil, isLandscape: landscape)
+        }
+        .onChange(of: target == nil) { _, closed in
+            if closed { detailStyle = DetailPresentation.style(isLandscape: layoutContext.isLandscape) }
         }
         .sheet(item: $playTarget) { title in
             StreamPickerSheet(title: title, onHandoff: { launchNote = $0 })
@@ -129,21 +137,18 @@ struct DiscoverPage: View {
     }
 
     /// Floating glass header over the hero. Search stays reachable at all times; in landscape the filter
-    /// sits beside it (one row). AnyLayout keeps the field's identity, so focus survives rotation.
+    /// sits beside it (one row). DiscoverHeaderLayout keeps each control's identity, so focus survives rotation (§F1).
     /// Once rows scroll beneath it a canvas-coloured veil fades in behind it for legibility.
     private var headerBar: some View {
         let solid = headerSolid || !showsHero
-        return header {
-            HStack(spacing: 10) {
-                searchField
-                accountButton
-            }
+        return DiscoverHeaderLayout(isLandscape: layoutContext.isLandscape) {
+            searchField
+            accountButton
             GlassSegmented(
                 items: [GlassSegmented<DiscoverModel.Filter>.Item(value: .all, title: "All", symbol: nil),
                         GlassSegmented<DiscoverModel.Filter>.Item(value: .movies, title: "Movies", symbol: nil),
                         GlassSegmented<DiscoverModel.Filter>.Item(value: .series, title: "Series", symbol: nil)],
-                selection: $model.filter, height: 36)
-            .frame(maxWidth: layoutContext.isLandscape ? 300 : .infinity)
+                selection: $model.filter, height: DiscoverHeaderLayout.filterHeight)
         }
         .padding(.horizontal, 16).padding(.top, layoutContext.isLandscape ? 6 : 10).padding(.bottom, 8)
         // Phase 7.1: taps in the gaps of the floating header stop here instead of reaching the hero below.
@@ -159,11 +164,6 @@ struct DiscoverPage: View {
                 .animation(Motion.adaptive(Motion.fade), value: solid)
                 .allowsHitTesting(false)
         }
-    }
-
-    /// Portrait: search row above the filter. Landscape: one row, so more of the catalogue is visible.
-    private var header: AnyLayout {
-        layoutContext.isLandscape ? AnyLayout(HStackLayout(spacing: 12)) : AnyLayout(VStackLayout(spacing: 10))
     }
 
     private func publishArtwork() {
@@ -246,7 +246,8 @@ struct DiscoverPage: View {
                          onPlay: { title in
                              if title.kind == .movie { searching = false; playTarget = title } else { open(title) }
                          },
-                         headerBottom: headerBottom)
+                         headerBottom: headerBottom,
+                         bleed: layoutContext.isLandscape ? pageBleed : .zero)
         }
     }
 
@@ -597,6 +598,20 @@ struct DiscoverPage: View {
                 }
             }.padding(.horizontal, 16)
         }
+    }
+
+    private func detailBinding(_ style: DetailPresentation) -> Binding<DetailTarget?> {
+        Binding(get: { detailStyle == style ? target : nil },
+                set: { if $0 == nil && detailStyle == style { target = nil } })
+    }
+
+    private func detailPage(_ item: DetailTarget) -> some View {
+        TitleDetailView(title: item.title, libraryItem: item.libraryItem, onShowRemote: {
+            target = nil
+            navigator.go(.remote)
+        }, onClose: { target = nil })
+        .environmentObject(RemoteModel.shared)
+        .modifier(DetailZoomDestination(id: item.sourceID, namespace: zoom))
     }
 
     private func open(_ title: MediaTitle, zoomID: String? = nil) {

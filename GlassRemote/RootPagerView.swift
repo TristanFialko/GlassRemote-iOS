@@ -41,6 +41,7 @@ struct RootPagerView: View {
             let width = geo.size.width
             let safeBottom = geo.safeAreaInsets.bottom
             let safeLeading = geo.safeAreaInsets.leading
+            let safeTrailing = geo.safeAreaInsets.trailing
             let landscape = LayoutContext.resolve(verticalSizeClass: verticalSizeClass, size: geo.size).isLandscape
             let safeTop = geo.safeAreaInsets.top
             // Continuation §D: side by side in portrait, top to bottom in landscape.
@@ -101,6 +102,9 @@ struct RootPagerView: View {
             }
             .environment(\.dockClearance, clearance)
             .environment(\.railClearance, leading)
+            // Continuation §F2: the safe areas beside a landscape page, for full-bleed artwork.
+            .environment(\.pageBleed, HorizontalBleed.resolve(isLandscape: landscape, safeLeading: safeLeading,
+                                                               safeTrailing: safeTrailing))
             .environment(\.layoutContext, context)
             .background {
                 PagerPan(

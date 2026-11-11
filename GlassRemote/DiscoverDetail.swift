@@ -26,6 +26,9 @@ struct TitleDetailView: View {
     @State private var handedOff = false
     @State private var showStreams = false
     @State private var opened: MediaTitle?
+    /// Continuation §F3: how a title opened from this page is presented, chosen while nothing is open.
+    @State private var nestedStyle: DetailPresentation = .sheet
+    @State private var isLandscapeNow = false
 
     init(title: MediaTitle, libraryItem: NuvioWatchItem?, onShowRemote: (() -> Void)? = nil,
          onClose: (() -> Void)? = nil) {
@@ -46,13 +49,22 @@ struct TitleDetailView: View {
             let inset = DetailLayout.horizontalInset(isLandscape: landscape)
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 26) {
-                    hero(width: proxy.size.width, height: heroHeight, inset: inset, landscape: landscape)
+                    hero(width: proxy.size.width, height: heroHeight, inset: inset, landscape: landscape,
+                         bleed: HorizontalBleed.resolve(isLandscape: landscape, safeLeading: proxy.safeAreaInsets.leading,
+                                                        safeTrailing: proxy.safeAreaInsets.trailing))
                     sections(landscape: landscape, width: proxy.size.width - inset * 2)
                         .padding(.horizontal, inset)
                 }
                 .padding(.bottom, 36)
             }
             .coordinateSpace(name: Self.space)
+            // §F2/§F3: in landscape the backdrop also covers the safe areas beside the page.
+            .scrollClipDisabled(landscape)
+            .clipShape(HorizontalBleedClip(bleed: landscape ? max(proxy.safeAreaInsets.leading, proxy.safeAreaInsets.trailing) : 0))
+            .onChange(of: landscape, initial: true) { _, now in
+                isLandscapeNow = now
+                nestedStyle = DetailPresentation.next(current: nestedStyle, isPresenting: opened != nil, isLandscape: now)
+            }
             .overlay(alignment: .topTrailing) {
                 closeButton.padding(.top, 10).padding(.trailing, max(inset - 4, 0))
             }
@@ -72,17 +84,29 @@ struct TitleDetailView: View {
                               onHandoff: { _ in handedOff = true })
                 .environmentObject(remote)
         }
-        .sheet(item: $opened) { other in
-            TitleDetailView(title: other, libraryItem: nil, onShowRemote: onShowRemote, onClose: { opened = nil })
-                .environmentObject(remote)
+        .sheet(item: openedBinding(.sheet)) { other in openedPage(other) }
+        .fullScreenCover(item: openedBinding(.fullScreen)) { other in openedPage(other) }
+        .onChange(of: opened == nil) { _, closed in
+            if closed { nestedStyle = DetailPresentation.style(isLandscape: isLandscapeNow) }
         }
+    }
+
+    private func openedBinding(_ style: DetailPresentation) -> Binding<MediaTitle?> {
+        Binding(get: { nestedStyle == style ? opened : nil },
+                set: { if $0 == nil && nestedStyle == style { opened = nil } })
+    }
+
+    private func openedPage(_ other: MediaTitle) -> some View {
+        TitleDetailView(title: other, libraryItem: nil, onShowRemote: onShowRemote, onClose: { opened = nil })
+            .environmentObject(remote)
     }
 
     // MARK: Hero
 
-    private func hero(width: CGFloat, height: CGFloat, inset: CGFloat, landscape: Bool) -> some View {
+    private func hero(width: CGFloat, height: CGFloat, inset: CGFloat, landscape: Bool,
+                      bleed: HorizontalBleed = .zero) -> some View {
         ZStack(alignment: .bottomLeading) {
-            backdrop(height: height, landscape: landscape)
+            backdrop(height: height, landscape: landscape, bleed: bleed)
             heroInfo(landscape: landscape, height: height)
                 .padding(.horizontal, inset)
                 .padding(.bottom, landscape ? 22 : 2)
@@ -92,17 +116,18 @@ struct TitleDetailView: View {
 
     /// The backdrop fades out through an alpha mask, so it dissolves into the themed page behind it
     /// rather than into a guessed colour. Pulling the page down stretches it from the top.
-    private func backdrop(height: CGFloat, landscape: Bool) -> some View {
+    private func backdrop(height: CGFloat, landscape: Bool, bleed: HorizontalBleed = .zero) -> some View {
         let art = DetailLayout.artwork(detail: model.detail, title: title)
         return GeometryReader { geo in
             let pull = max(geo.frame(in: .named(Self.space)).minY, 0)
-            CachedArtwork(url: art.primary, fallbackURL: art.fallback, contentMode: .fill) {
+            // §F2: uniform scale with an upper-third focal crop (posters keep the soft blurred treatment).
+            FocalArtwork(url: art.primary, fallbackURL: art.fallback, allowsPosterInset: false) {
                 Color.inkAlpha(0.04)
             }
             // A poster stretched to the hero width is too soft and too tightly cropped to show sharp.
             .blur(radius: art.isPoster ? 24 : 0)
             .scaleEffect(art.isPoster ? 1.15 : 1)
-            .frame(width: geo.size.width, height: height + pull)
+            .frame(width: geo.size.width + bleed.total, height: height + pull)
             .clipped()
             .overlay(LinearGradient(colors: [.black.opacity(0.35), .clear, .black.opacity(theme.isLight ? 0 : 0.3)],
                                     startPoint: .top, endPoint: .bottom))
@@ -118,6 +143,7 @@ struct TitleDetailView: View {
                                  startPoint: .leading, endPoint: .trailing))
             .offset(y: -pull)
             .animation(Motion.resolve(Motion.artwork, reduceMotion: reduceMotion), value: art)
+            .padding(.leading, -bleed.leading)
         }
         .frame(height: height)
         .accessibilityHidden(true)

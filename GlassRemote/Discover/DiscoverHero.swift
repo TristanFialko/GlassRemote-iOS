@@ -22,6 +22,8 @@ struct DiscoverHero: View {
     let onPlay: (MediaTitle) -> Void
     /// Phase 7.4: bottom of Discover's floating header (global). A tap above it belongs to the header.
     var headerBottom: CGFloat = 0
+    /// Continuation §F2: safe areas beside the page that the artwork also covers (landscape).
+    var bleed: HorizontalBleed = .zero
 
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -74,9 +76,11 @@ struct DiscoverHero: View {
                 }
                 scrim
             }
-            .frame(width: size.width, height: size.height + pull)
+            .frame(width: size.width + bleed.total, height: size.height + pull)
             .mask(fade)
             .offset(y: drift - pull)
+            // §F2: reaches the physical screen edges in landscape, so no background strips show.
+            .padding(.leading, -bleed.leading)
         }
         .frame(width: size.width, height: size.height)
     }
@@ -85,7 +89,8 @@ struct DiscoverHero: View {
         let art = DiscoverHeroLayout.artwork(for: title)
         return Color.clear
             .overlay {
-                CachedArtwork(url: art.primary, fallbackURL: art.fallback, contentMode: .fill) {
+                // §F2: uniform scale and an upper-third focal crop; portrait posters stay whole in wide regions.
+                FocalArtwork(url: art.primary, fallbackURL: art.fallback) {
                     LinearGradient(colors: [theme.accent.opacity(0.22), Color.clear], startPoint: .top, endPoint: .bottom)
                 }
             }
