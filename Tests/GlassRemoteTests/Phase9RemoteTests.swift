@@ -112,7 +112,7 @@ final class Phase9RemoteTests: XCTestCase {
         XCTAssertEqual(folder.phase, .closing)
         XCTAssertFalse(folder.acceptsLaunch)
         XCTAssertFalse(folder.blocksOutside, "the Remote is usable again during the close")
-        XCTAssertNil(folder.dismiss(.closeButton), "a second dismissal is ignored")
+        XCTAssertNil(folder.dismiss(.swipe), "a second dismissal is ignored")
         folder.settle(closing!)
         XCTAssertEqual(folder.phase, .closed)
         XCTAssertFalse(folder.highlightsSource)
@@ -133,7 +133,7 @@ final class Phase9RemoteTests: XCTestCase {
     }
 
     func testEveryDismissPathEndsClosedAndUnhighlighted() {
-        let reasons: [AppsFolderState.DismissReason] = [.outsideTap, .closeButton, .swipe, .escape, .launched]
+        let reasons: [AppsFolderState.DismissReason] = [.outsideTap, .swipe, .escape, .launched]
         for reason in reasons {
             var folder = AppsFolderState()
             folder.settle(folder.open()!)
@@ -159,10 +159,12 @@ final class Phase9RemoteTests: XCTestCase {
         let key = CGRect(x: 160, y: 560, width: 60, height: 58)
         let frame = AppsFolderLayout.frame(container: container, anchor: key, isLandscape: false,
                                            appCount: 9, showsBanner: false)
-        XCTAssertEqual(frame.width, 369)
-        XCTAssertEqual(AppsFolderLayout.columns(folderWidth: frame.width), 4)
-        XCTAssertEqual(frame.height, 420)
-        XCTAssertEqual(frame.minY, 130)
+        // Continuation §A3: a compact 3 × 3 folder at full tile size.
+        XCTAssertEqual(frame.width, 320)
+        XCTAssertEqual(AppsFolderLayout.columns(folderWidth: frame.width), 3)
+        XCTAssertEqual(frame.height, 372)
+        XCTAssertEqual(frame.minX, 30)
+        XCTAssertEqual(frame.minY, 178)
         XCTAssertLessThanOrEqual(frame.maxY, key.minY - AppsFolderLayout.gap + 0.001)
         assertInsideMargins(frame, container)
         XCTAssertLessThanOrEqual(frame.height, container.height * AppsFolderLayout.portraitHeightShare)
@@ -173,9 +175,10 @@ final class Phase9RemoteTests: XCTestCase {
         let card = CGRect(x: 0, y: 270, width: 180, height: 58)
         let frame = AppsFolderLayout.frame(container: container, anchor: card, isLandscape: true,
                                            appCount: 9, showsBanner: false)
-        XCTAssertEqual(frame.width, 350)
+        XCTAssertEqual(frame.width, 340)
         XCTAssertEqual(frame.minX, 190)
-        XCTAssertEqual(frame.minY, 12)
+        XCTAssertEqual(frame.minY, 12, accuracy: 0.01)
+        XCTAssertEqual(frame.height, 316, accuracy: 0.01)
         XCTAssertGreaterThanOrEqual(frame.minX, card.maxX)
         assertInsideMargins(frame, container)
 
@@ -193,10 +196,11 @@ final class Phase9RemoteTests: XCTestCase {
         XCTAssertEqual(frame.midY, container.height / 2, accuracy: 0.5)
         XCTAssertEqual(AppsFolderLayout.collapsedFrame(anchor: .zero, container: container).width, 56)
 
-        let empty = AppsFolderLayout.frame(container: container, anchor: CGRect(x: 160, y: 560, width: 60, height: 58),
-                                           isLandscape: false, appCount: 0, showsBanner: false)
-        let minimum = AppsFolderLayout.inset * 2 + AppsFolderLayout.chromeHeight + AppsFolderLayout.rowHeight
-        XCTAssertEqual(empty.height, minimum)
+        let empty = AppsFolderLayout.placement(container: container, anchor: CGRect(x: 160, y: 560, width: 60, height: 58),
+                                               isLandscape: false, appCount: 0, showsBanner: false)
+        let minimum = AppsFolderLayout.inset * 2 + AppsFolderLayout.chromeHeight + empty.metrics.rowHeight
+        XCTAssertEqual(empty.frame.height, minimum)
+        XCTAssertEqual(empty.metrics.scale, 1)
     }
 
     func testSwipeToDismissThresholds() {

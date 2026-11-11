@@ -322,8 +322,9 @@ struct RemoteView: View {
     /// belongs to (AppsFolderState.generation), so an interrupted animation can't strand the state.
     private func animateShell(expanded: Bool) {
         let generation = folder.generation
-        let base = expanded ? Motion.folderOpen : Motion.folderClose
-        withAnimation(Motion.resolve(base, reduceMotion: reduceMotion)) {
+        // Continuation §A4: quicker spring; under Reduce Motion a short cross-fade in place.
+        let reduced = reduceMotion || MotionPreference.reduced
+        withAnimation(AppsFolderMotion.animation(opening: expanded, reduceMotion: reduced)) {
             folderExpanded = expanded
         } completion: {
             folder.settle(generation)

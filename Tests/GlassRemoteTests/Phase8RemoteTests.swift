@@ -108,10 +108,10 @@ final class Phase8LauncherTests: XCTestCase {
     }
 
     func testGridColumnsFollowWidth() {
-        XCTAssertEqual(AppLauncherPolicy.columns(for: 320), 3)
-        XCTAssertEqual(AppLauncherPolicy.columns(for: 393), 3)
-        XCTAssertEqual(AppLauncherPolicy.columns(for: 600), 5)
-        XCTAssertEqual(AppLauncherPolicy.columns(for: 932), 6)
+        // Phase 9 continuation §A3: a fixed three-column grid at every width (tiles scale instead).
+        for width: CGFloat in [280, 320, 393, 600, 932, 1366] {
+            XCTAssertEqual(AppLauncherPolicy.columns(for: width), 3, "\(width)")
+        }
     }
 }
 

@@ -1,14 +1,19 @@
 import SwiftUI
 
-// Phase 9 §2: the Apps launcher is an expanding folder anchored to the Apps control, like opening a
-// folder on iPhone. The glass shell grows out of the Apps key (portrait) or the launcher card
-// (landscape), floats above the Remote page and collapses back into it. It replaces the Phase 8
-// bottom sheet. Everything that decides state, geometry and dismissal is pure and unit tested
-// (Phase9RemoteTests); the view only follows it.
+// Phase 9 §2 / continuation §A: the Apps launcher is an expanding folder anchored to the Apps control,
+// like opening a folder on iPhone. The glass shell grows out of the Apps key (portrait) or the launcher
+// card (landscape), floats above the Remote page and collapses back into it. Everything that decides
+// state, geometry, motion and dismissal is pure and unit tested (Phase9RemoteTests,
+// Phase9ContinuationTests); the view only follows it.
+//
+// Continuation §A refinements: no close button and no instructional subtitle (dismissal is an outside
+// tap, a pull on the grabber, Escape, the VoiceOver escape gesture or a context change); a fixed
+// three-column grid whose tiles scale before the structure changes; a quicker spring; the visible
+// catalogue is cached instead of being rebuilt on every frame.
 
-// MARK: - Catalogue rules (unchanged from Phase 8)
+// MARK: - Catalogue rules
 
-/// Pure rules for the Apps launcher (unit tested in Phase8RemoteTests).
+/// Pure rules for the Apps launcher (unit tested in Phase8RemoteTests and Phase9ContinuationTests).
 ///
 /// Package discovery stays informational (see `RemoteModel.refreshApps`): it never hides, dims or
 /// disables a tile. The launcher only reports the scan's state in a banner.
@@ -44,11 +49,22 @@ enum AppLauncherPolicy {
         return apps.filter { $0.name.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
     }
 
-    /// Grid columns for a width: 3 on a narrow phone, up to 6 in landscape.
-    static func columns(for width: CGFloat) -> Int {
-        let tile: CGFloat = 96
-        return min(max(Int((width - 32) / tile), 3), 6)
+    /// What the folder shows: favourites first, then filtered by the query (favourites stay first
+    /// among the matches).
+    static func visible(_ apps: [TVApp], favourites: [String], query: String) -> [TVApp] {
+        filtered(ordered(apps, favourites: favourites), query: query)
     }
+
+    /// The empty state's message, or nil when there is something to show.
+    static func emptyMessage(visibleCount: Int, query: String) -> String? {
+        guard visibleCount == 0 else { return nil }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return q.isEmpty ? "No apps" : "No apps match “\(q)”"
+    }
+
+    /// Continuation §A3: the grid always has three columns, whatever the width. Narrow screens
+    /// scale the tiles (AppsFolderLayout.metrics) instead of dropping or adding columns.
+    static func columns(for width: CGFloat) -> Int { AppsFolderLayout.columns }
 }
 
 // MARK: - Folder lifecycle
@@ -59,8 +75,11 @@ enum AppLauncherPolicy {
 struct AppsFolderState: Equatable {
     enum Phase: Equatable { case closed, opening, open, closing }
 
-    enum DismissReason: Equatable {
-        case outsideTap, closeButton, swipe, escape, launched, contextChanged
+    /// How the folder was closed. There is no close button (continuation §A1): an outside tap, a
+    /// pull on the grabber, Escape / the VoiceOver escape gesture, launching an app, or a context
+    /// change (device switch, leaving the Remote page, the view disappearing).
+    enum DismissReason: Equatable, CaseIterable {
+        case outsideTap, swipe, escape, launched, contextChanged
     }
 
     private(set) var phase: Phase = .closed
@@ -91,7 +110,7 @@ struct AppsFolderState: Equatable {
     }
 
     /// Starts closing. Nil when the folder is already closed or closing (a second outside tap, a
-    /// swipe that ends after the close button was pressed, ...).
+    /// swipe that ends after Escape was pressed, ...).
     @discardableResult
     mutating func dismiss(_ reason: DismissReason) -> Int? {
         guard phase == .opening || phase == .open else { return nil }
@@ -120,6 +139,31 @@ struct AppsFolderState: Equatable {
     }
 }
 
+// MARK: - Interaction rules
+
+/// Continuation §A2: searching never launches an app or closes the folder by accident.
+enum AppsFolderInteraction {
+    enum OutsideTapResult: Equatable {
+        /// The keyboard was up: the tap only puts it away; the folder stays open.
+        case endSearch
+        /// The folder closes.
+        case dismiss
+    }
+
+    static func outsideTap(searchFocused: Bool) -> OutsideTapResult {
+        searchFocused ? .endSearch : .dismiss
+    }
+
+    /// Return in the search field only puts the keyboard away. It never launches the first match.
+    static let submitLaunchesFirstMatch = false
+
+    /// Every way to close the folder now that there is no close button. At least one is always
+    /// reachable by touch (outside tap, grabber), keyboard (Escape) and VoiceOver (escape gesture).
+    static let touchDismissals: [AppsFolderState.DismissReason] = [.outsideTap, .swipe]
+    static let keyboardDismissals: [AppsFolderState.DismissReason] = [.escape]
+    static let voiceOverDismissals: [AppsFolderState.DismissReason] = [.escape]
+}
+
 // MARK: - Dismiss gesture
 
 enum AppsFolderGesture {
@@ -137,7 +181,67 @@ enum AppsFolderGesture {
     }
 }
 
+// MARK: - Motion
+
+/// Continuation §A4: a quicker, tactile expansion. Still a pronounced spring, but it settles fast;
+/// the close is quicker again and does not bounce. Under Reduce Motion the shell does not morph out
+/// of the Apps control: it fades in place, briefly.
+enum AppsFolderMotion {
+    /// The Phase 9 checkpoint 1 values, kept so the tests can prove the new motion is faster.
+    static let previousOpenResponse: Double = 0.44
+    static let previousCloseResponse: Double = 0.34
+
+    static let openResponse: Double = 0.30
+    static let openDamping: Double = 0.80
+    static let closeResponse: Double = 0.22
+    static let closeDamping: Double = 0.94
+    static let reducedDuration: Double = 0.14
+
+    /// Content scale while collapsed (it grows to 1 with the shell).
+    static let collapsedContentScale: CGFloat = 0.6
+
+    static func animation(opening: Bool, reduceMotion: Bool) -> Animation {
+        if reduceMotion { return .easeOut(duration: reducedDuration) }
+        return opening ? .spring(response: openResponse, dampingFraction: openDamping)
+                       : .spring(response: closeResponse, dampingFraction: closeDamping)
+    }
+
+    /// Whether the shell morphs out of the Apps control (false under Reduce Motion: it cross-fades).
+    static func morphs(reduceMotion: Bool) -> Bool { !reduceMotion }
+
+    static func contentScale(expanded: Bool, reduceMotion: Bool) -> CGFloat {
+        expanded || reduceMotion ? 1 : collapsedContentScale
+    }
+}
+
+extension Motion {
+    /// The Apps folder opening out of its icon.
+    static let folderOpen = AppsFolderMotion.animation(opening: true, reduceMotion: false)
+    /// The Apps folder collapsing back into its icon: quicker, no bounce.
+    static let folderClose = AppsFolderMotion.animation(opening: false, reduceMotion: false)
+}
+
 // MARK: - Folder geometry
+
+/// Tile metrics at a given scale. The grid always has three columns; on small screens the tiles and
+/// their spacing shrink (down to `AppsFolderLayout.minimumScale`) before anything else changes.
+struct AppsFolderMetrics: Equatable {
+    var scale: CGFloat
+
+    var tileSide: CGFloat { AppsFolderLayout.baseTileSide * scale }
+    var columnSpacing: CGFloat { AppsFolderLayout.baseColumnSpacing * scale }
+    var rowSpacing: CGFloat { AppsFolderLayout.baseRowSpacing * scale }
+    var tileCornerRadius: CGFloat { 16 * scale }
+    var rowHeight: CGFloat { tileSide + AppsFolderLayout.labelGap + AppsFolderLayout.labelHeight }
+    var gridWidth: CGFloat { tileSide * CGFloat(AppsFolderLayout.columns) + columnSpacing * CGFloat(AppsFolderLayout.columns - 1) }
+    /// Each column is a third of the grid, so the tiles sit centred with even gutters.
+    var columnWidth: CGFloat { gridWidth / CGFloat(AppsFolderLayout.columns) }
+
+    func gridHeight(rows: Int) -> CGFloat {
+        let r = max(rows, 1)
+        return CGFloat(r) * rowHeight + CGFloat(r - 1) * rowSpacing
+    }
+}
 
 /// Where the folder sits and how big it is. Pure. All rects are in the overlay's coordinates.
 enum AppsFolderLayout {
@@ -145,41 +249,71 @@ enum AppsFolderLayout {
     /// Gap between the Apps control and the folder.
     static let gap: CGFloat = 10
     static let inset: CGFloat = 16
-    static let tileSide: CGFloat = 62
-    static let tileSpacing: CGFloat = 14
-    /// Icon, gap and a one-line name.
-    static let rowHeight: CGFloat = 62 + 6 + 16
-    static let rowSpacing: CGFloat = 16
-    /// Title row and search field with their spacing.
-    static let chromeHeight: CGFloat = 40 + 12 + 40 + 12
+    /// Continuation §A3: a deliberate 3 × 3 grid. More than nine apps add rows that scroll.
+    static let columns = 3
+    static let visibleRows = 3
+    static let baseTileSide: CGFloat = 64
+    static let baseColumnSpacing: CGFloat = 26
+    static let baseRowSpacing: CGFloat = 18
+    static let labelGap: CGFloat = 5
+    static let labelHeight: CGFloat = 15
+    /// Tiles never shrink below 44 pt (the minimum touch target).
+    static let minimumScale: CGFloat = 44 / 64
+    /// One row holding the compact title and the search field, plus its spacing.
+    static let chromeHeight: CGFloat = 40 + 12
     static let bannerHeight: CGFloat = 52
     static let cornerRadius: CGFloat = 34
+    static let portraitWidth: CGFloat = 320
+    static let landscapeWidth: CGFloat = 340
     /// Portrait never covers more than this share of the height, so the status header stays visible.
     static let portraitHeightShare: CGFloat = 0.72
 
+    struct Placement: Equatable {
+        var frame: CGRect
+        var metrics: AppsFolderMetrics
+        /// More rows than fit: the grid scrolls inside the folder.
+        var scrolls: Bool
+    }
+
     static func width(container: CGSize, isLandscape: Bool) -> CGFloat {
         let room = max(container.width - margin * 2, 0)
-        if isLandscape { return min(max(container.width * 0.5, 340), 560, room) }
-        return min(400, room)
+        return min(isLandscape ? landscapeWidth : portraitWidth, room)
     }
 
-    static func columns(folderWidth: CGFloat) -> Int {
-        let usable = folderWidth - inset * 2
-        let fit = Int((usable + tileSpacing) / (tileSide + tileSpacing))
-        return min(max(fit, 3), 6)
-    }
+    /// Always three (kept as a function so callers and tests read the same rule).
+    static func columns(folderWidth: CGFloat) -> Int { columns }
 
-    static func rows(appCount: Int, columns: Int) -> Int {
+    static func rows(appCount: Int) -> Int {
         let count = max(appCount, 1)
-        let cols = max(columns, 1)
-        return (count + cols - 1) / cols
+        return (count + columns - 1) / columns
+    }
+
+    static func heightCap(container: CGSize, isLandscape: Bool) -> CGFloat {
+        let room = max(container.height - margin * 2, 0)
+        return isLandscape ? room : min(room, container.height * portraitHeightShare)
+    }
+
+    static func bannerSpace(_ showsBanner: Bool) -> CGFloat { showsBanner ? bannerHeight + 12 : 0 }
+
+    /// The largest tile scale (at most 1) at which three columns fit the width and up to three rows
+    /// fit `maxGridHeight`; never below `minimumScale` unless the width itself forces it.
+    static func metrics(folderWidth: CGFloat, maxGridHeight: CGFloat, appCount: Int) -> AppsFolderMetrics {
+        let usable = max(folderWidth - inset * 2, 0)
+        let baseGridWidth = baseTileSide * CGFloat(columns) + baseColumnSpacing * CGFloat(columns - 1)
+        let widthScale = usable / baseGridWidth
+        let shown = min(rows(appCount: appCount), visibleRows)
+        let fixed = CGFloat(shown) * (labelGap + labelHeight)
+        let scalable = CGFloat(shown) * baseTileSide + CGFloat(shown - 1) * baseRowSpacing
+        let heightScale = scalable > 0 ? (maxGridHeight - fixed) / scalable : 1
+        let floor = min(minimumScale, widthScale)
+        let scale = max(min(1, widthScale, heightScale), floor)
+        return AppsFolderMetrics(scale: max(scale, 0))
     }
 
     /// Natural height for the content, before it is capped by the room available.
-    static func contentHeight(appCount: Int, columns: Int, showsBanner: Bool) -> CGFloat {
-        let rows = rows(appCount: appCount, columns: columns)
-        let grid = CGFloat(rows) * rowHeight + CGFloat(rows - 1) * rowSpacing
-        return inset * 2 + chromeHeight + (showsBanner ? bannerHeight + 12 : 0) + grid
+    static func contentHeight(metrics: AppsFolderMetrics, appCount: Int, showsBanner: Bool) -> CGFloat {
+        let shown = min(rows(appCount: appCount), visibleRows)
+        return inset * 2 + chromeHeight + bannerSpace(showsBanner) + metrics.gridHeight(rows: shown)
     }
 
     static func isUsableAnchor(_ anchor: CGRect, in container: CGSize) -> Bool {
@@ -187,34 +321,44 @@ enum AppsFolderLayout {
             && CGRect(origin: .zero, size: container).intersects(anchor)
     }
 
-    /// The open folder's frame. Portrait: centred on the Apps key and above it. Landscape: beside
-    /// the launcher card (over the pad), bottom-aligned with it, so the status column stays visible.
-    /// Always inside the container's margins.
-    static func frame(container: CGSize, anchor: CGRect, isLandscape: Bool,
-                      appCount: Int, showsBanner: Bool) -> CGRect {
+    /// The open folder's frame and tile metrics. Portrait: centred on the Apps key and above it.
+    /// Landscape: beside the launcher card (over the pad), bottom-aligned with it, so the status
+    /// column stays visible. Always inside the container's margins.
+    static func placement(container: CGSize, anchor: CGRect, isLandscape: Bool,
+                          appCount: Int, showsBanner: Bool) -> Placement {
         let w = width(container: container, isLandscape: isLandscape)
-        let cols = columns(folderWidth: w)
-        let natural = contentHeight(appCount: appCount, columns: cols, showsBanner: showsBanner)
-        let room = max(container.height - margin * 2, 0)
-        let cap = isLandscape ? room : min(room, container.height * portraitHeightShare)
-        let minimum = min(inset * 2 + chromeHeight + rowHeight, cap)
+        let cap = heightCap(container: container, isLandscape: isLandscape)
+        let maxGrid = max(cap - inset * 2 - chromeHeight - bannerSpace(showsBanner), 0)
+        let m = metrics(folderWidth: w, maxGridHeight: maxGrid, appCount: appCount)
+        let natural = contentHeight(metrics: m, appCount: appCount, showsBanner: showsBanner)
+        let minimum = min(inset * 2 + chromeHeight + m.rowHeight, cap)
         let h = min(max(natural, minimum), cap)
+        let totalGrid = m.gridHeight(rows: rows(appCount: appCount))
+        let scrolls = totalGrid > h - inset * 2 - chromeHeight - bannerSpace(showsBanner) + 0.5
 
         let maxX = max(container.width - margin - w, margin)
         let maxY = max(container.height - margin - h, margin)
         func clampX(_ x: CGFloat) -> CGFloat { min(max(x, margin), maxX) }
         func clampY(_ y: CGFloat) -> CGFloat { min(max(y, margin), maxY) }
 
-        guard isUsableAnchor(anchor, in: container) else {
-            return CGRect(x: clampX((container.width - w) / 2), y: clampY((container.height - h) / 2),
-                          width: w, height: h)
-        }
-        if isLandscape {
+        let frame: CGRect
+        if !isUsableAnchor(anchor, in: container) {
+            frame = CGRect(x: clampX((container.width - w) / 2), y: clampY((container.height - h) / 2),
+                           width: w, height: h)
+        } else if isLandscape {
             var x = anchor.maxX + gap
             if x + w > container.width - margin { x = container.width - margin - w }
-            return CGRect(x: clampX(x), y: clampY(anchor.maxY - h), width: w, height: h)
+            frame = CGRect(x: clampX(x), y: clampY(anchor.maxY - h), width: w, height: h)
+        } else {
+            frame = CGRect(x: clampX(anchor.midX - w / 2), y: clampY(anchor.minY - gap - h), width: w, height: h)
         }
-        return CGRect(x: clampX(anchor.midX - w / 2), y: clampY(anchor.minY - gap - h), width: w, height: h)
+        return Placement(frame: frame, metrics: m, scrolls: scrolls)
+    }
+
+    static func frame(container: CGSize, anchor: CGRect, isLandscape: Bool,
+                      appCount: Int, showsBanner: Bool) -> CGRect {
+        placement(container: container, anchor: anchor, isLandscape: isLandscape,
+                  appCount: appCount, showsBanner: showsBanner).frame
     }
 
     /// The closed shell: exactly the Apps control's frame, so the folder grows out of it and
@@ -225,13 +369,6 @@ enum AppsFolderLayout {
     }
 }
 
-extension Motion {
-    /// The Apps folder opening out of its icon.
-    static let folderOpen = Animation.spring(response: 0.44, dampingFraction: 0.84)
-    /// The Apps folder collapsing back into its icon: a touch quicker, no bounce.
-    static let folderClose = Animation.spring(response: 0.34, dampingFraction: 0.92)
-}
-
 // MARK: - Folder view
 
 /// The floating folder. The shell's frame and corner radius move between the Apps control's frame
@@ -240,6 +377,7 @@ extension Motion {
 struct AppsFolderOverlay: View {
     @EnvironmentObject private var remote: RemoteModel
     @ObservedObject private var favourites = AppFavourites.shared
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
     let state: AppsFolderState
     /// Shell expansion, animated by the Remote page.
@@ -256,56 +394,71 @@ struct AppsFolderOverlay: View {
 
     @State private var query = ""
     @State private var dragOffset: CGFloat = 0
+    /// Continuation §A5: the visible catalogue is rebuilt only when the apps, favourites or query
+    /// change, never on an animation or drag frame.
+    @State private var visibleApps: [TVApp] = []
     @FocusState private var searchFocused: Bool
     @AccessibilityFocusState private var titleFocused: Bool
+
+    private var reduceMotion: Bool { systemReduceMotion || MotionPreference.reduced }
 
     private var banner: AppLauncherPolicy.Banner {
         AppLauncherPolicy.banner(connected: remote.connected, installedCount: remote.installed.count,
                                  status: remote.status)
     }
 
-    private var apps: [TVApp] {
-        AppLauncherPolicy.filtered(AppLauncherPolicy.ordered(remote.apps, favourites: favourites.packages),
-                                   query: query)
-    }
-
     var body: some View {
         GeometryReader { geo in
             let origin = geo.frame(in: .global).origin
             let local = anchor.offsetBy(dx: -origin.x, dy: -origin.y)
-            let target = AppsFolderLayout.frame(container: geo.size, anchor: local, isLandscape: isLandscape,
-                                                appCount: remote.apps.count, showsBanner: banner != .none)
+            let placement = AppsFolderLayout.placement(container: geo.size, anchor: local, isLandscape: isLandscape,
+                                                       appCount: remote.apps.count, showsBanner: banner != .none)
+            let target = placement.frame
             let collapsed = AppsFolderLayout.collapsedFrame(anchor: local, container: geo.size)
-            let frame = expanded ? target : collapsed
-            let radius = expanded ? AppsFolderLayout.cornerRadius : anchorCornerRadius
+            let morphs = AppsFolderMotion.morphs(reduceMotion: reduceMotion)
+            let frame = (expanded || !morphs) ? target : collapsed
+            let radius = (expanded || !morphs) ? AppsFolderLayout.cornerRadius : anchorCornerRadius
             let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
             ZStack(alignment: .topLeading) {
                 scrim
-                folderContent(width: target.width)
+                folderContent(placement: placement)
                     .frame(width: target.width, height: target.height)
-                    .scaleEffect(expanded ? 1 : 0.55, anchor: .center)
+                    .scaleEffect(AppsFolderMotion.contentScale(expanded: expanded, reduceMotion: reduceMotion),
+                                 anchor: .center)
                     .opacity(expanded ? 1 : 0)
                     .frame(width: frame.width, height: frame.height)
                     .clipShape(shape)
                     .glassSurface(shape, elevated: true)
+                    .opacity(morphs || expanded ? 1 : 0)
                     .contentShape(shape)
+                    .background { escapeShortcut }
                     .offset(x: frame.minX, y: frame.minY + dragOffset)
                     .allowsHitTesting(state.phase != .closing)
                     .accessibilityElement(children: .contain)
                     .accessibilityAddTraits(.isModal)
                     .accessibilityLabel("Apps folder")
+                    .accessibilityHint("Scrub with two fingers to close")
                     .accessibilityAction(.escape) { close(.escape) }
+                    .accessibilityAction(named: Text("Close Apps")) { close(.escape) }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
         .onAppear {
             query = ""
+            refreshVisible()
             onMounted()
         }
+        .onChange(of: query) { _, _ in refreshVisible() }
+        .onChange(of: favourites.packages) { _, _ in refreshVisible() }
+        .onChange(of: remote.apps.map(\.package)) { _, _ in refreshVisible() }
         .onChange(of: state.phase) { _, phase in
             if phase == .open { titleFocused = true }
             if phase == .closing { searchFocused = false }
         }
+    }
+
+    private func refreshVisible() {
+        visibleApps = AppLauncherPolicy.visible(remote.apps, favourites: favourites.packages, query: query)
     }
 
     private func close(_ reason: AppsFolderState.DismissReason) {
@@ -313,83 +466,109 @@ struct AppsFolderOverlay: View {
         onDismiss(reason)
     }
 
+    /// Escape on a hardware keyboard closes the folder (it replaced the close button's shortcut).
+    /// Invisible and outside the accessibility tree; VoiceOver uses the escape action instead.
+    private var escapeShortcut: some View {
+        Button("Close Apps") { close(.escape) }
+            .keyboardShortcut(.cancelAction)
+            .opacity(0)
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
     /// Dims the Remote and catches outside taps while the folder is open, and keeps a page swipe
-    /// from starting under it. It never forwards a touch to the pad.
+    /// from starting under it. It never forwards a touch to the pad. While the search keyboard is
+    /// up, the first outside tap only puts it away (continuation §A2).
     private var scrim: some View {
         Color.black.opacity(expanded ? 0.22 : 0)
             .contentShape(Rectangle())
             .background(PagerExclusionZone())
-            .onTapGesture { close(.outsideTap) }
+            .onTapGesture {
+                switch AppsFolderInteraction.outsideTap(searchFocused: searchFocused) {
+                case .endSearch: searchFocused = false
+                case .dismiss: close(.outsideTap)
+                }
+            }
             .allowsHitTesting(state.blocksOutside)
             .accessibilityHidden(true)
             .ignoresSafeArea()
     }
 
-    private func folderContent(width: CGFloat) -> some View {
-        let count = AppsFolderLayout.columns(folderWidth: width)
-        let grid = Array(repeating: GridItem(.flexible(), spacing: AppsFolderLayout.tileSpacing), count: count)
-        return VStack(spacing: 12) {
-            header
-            searchField
-            bannerView
-            if apps.isEmpty {
-                emptyState
-            } else {
-                ScrollView(showsIndicators: false) {
-                    LazyVGrid(columns: grid, spacing: AppsFolderLayout.rowSpacing) {
-                        ForEach(apps) { app in tile(app) }
-                    }
-                    .padding(.bottom, 8)
+    /// A pull on the grabber or the title closes the folder; the grid keeps its own scrolling.
+    private var dismissDrag: some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in dragOffset = AppsFolderGesture.offset(for: value.translation.height) }
+            .onEnded { value in
+                if AppsFolderGesture.shouldDismiss(translation: value.translation.height,
+                                                   predicted: value.predictedEndTranslation.height) {
+                    close(.swipe)
                 }
-                .scrollBounceBehavior(.basedOnSize)
+                withAnimation(Motion.resolve(Motion.snappy, reduceMotion: systemReduceMotion)) { dragOffset = 0 }
             }
+    }
+
+    private func folderContent(placement: AppsFolderLayout.Placement) -> some View {
+        let metrics = placement.metrics
+        let grid = Array(repeating: GridItem(.fixed(metrics.columnWidth), spacing: 0),
+                         count: AppsFolderLayout.columns)
+        return VStack(spacing: 0) {
+            grabber
+            VStack(spacing: 12) {
+                header
+                bannerView
+                if let message = AppLauncherPolicy.emptyMessage(visibleCount: visibleApps.count, query: query) {
+                    emptyState(message)
+                } else {
+                    ScrollView(showsIndicators: false) {
+                        LazyVGrid(columns: grid, spacing: metrics.rowSpacing) {
+                            ForEach(visibleApps) { app in tile(app, metrics: metrics) }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, placement.scrolls ? 8 : 0)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .scrollDisabled(!placement.scrolls)
+                }
+            }
+            .padding(.horizontal, AppsFolderLayout.inset)
+            .padding(.bottom, AppsFolderLayout.inset)
         }
-        .padding(AppsFolderLayout.inset)
         .foregroundStyle(Color.ink)
     }
 
-    /// Title row. Pulling it down dismisses the folder (the grid keeps its own scrolling).
+    /// The folder's top inset doubles as its grabber: a small pill that shows it can be pulled down.
+    private var grabber: some View {
+        Capsule(style: .continuous)
+            .fill(Color.inkAlpha(0.28))
+            .frame(width: 36, height: 5)
+            .frame(maxWidth: .infinity)
+            .frame(height: AppsFolderLayout.inset)
+            .contentShape(Rectangle())
+            .gesture(dismissDrag)
+            .accessibilityHidden(true)
+    }
+
+    /// Compact title (the VoiceOver landing point) and the search field on one row.
     private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Apps").scaledFont(22, .bold).lineLimit(1)
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityFocused($titleFocused)
-                Text(remote.connected ? "Tap to open on the TV box" : "TV box offline")
-                    .scaledFont(12)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                    .foregroundStyle(Color.inkAlpha(0.6))
-            }
-            Spacer(minLength: 0)
-            Button { close(.closeButton) } label: {
-                Image(systemName: "xmark")
-                    .scaledFont(14, .semibold)
-                    .frame(width: 40, height: 40)
-                    .glassSurface(Circle(), interactive: true)
-            }
-            .buttonStyle(PressStyle())
-            .keyboardShortcut(.cancelAction)
-            .accessibilityLabel("Close Apps")
+        HStack(spacing: 10) {
+            Text("Apps")
+                .scaledFont(18, .bold)
+                .lineLimit(1)
+                .fixedSize()
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityFocused($titleFocused)
+                .contentShape(Rectangle())
+                .gesture(dismissDrag)
+            searchField
         }
         .frame(height: 40)
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 10)
-                .onChanged { value in dragOffset = AppsFolderGesture.offset(for: value.translation.height) }
-                .onEnded { value in
-                    if AppsFolderGesture.shouldDismiss(translation: value.translation.height,
-                                                       predicted: value.predictedEndTranslation.height) {
-                        close(.swipe)
-                    }
-                    withAnimation(Motion.snappy) { dragOffset = 0 }
-                }
-        )
     }
 
     private var searchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(Color.inkAlpha(0.55))
+                .accessibilityHidden(true)
             TextField("Search apps", text: $query)
                 .focused($searchFocused)
                 .textInputAutocapitalization(.never)
@@ -399,13 +578,16 @@ struct AppsFolderOverlay: View {
             if !query.isEmpty {
                 Button { query = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(Color.inkAlpha(0.45))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
             }
         }
         .scaledFont(15)
-        .padding(.horizontal, 14)
+        .padding(.leading, 14)
+        .padding(.trailing, query.isEmpty ? 14 : 6)
         .frame(height: 40)
         .glassSurface(Capsule())
     }
@@ -453,42 +635,49 @@ struct AppsFolderOverlay: View {
         .glassSurface(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private var emptyState: some View {
+    private func emptyState(_ message: String) -> some View {
         VStack(spacing: 8) {
-            Image(systemName: "square.grid.2x2").scaledFont(28, .light)
-            Text(query.isEmpty ? "No apps" : "No apps match “\(query)”").scaledFont(14, .semibold)
+            Image(systemName: query.isEmpty ? "square.grid.3x3" : "magnifyingglass").scaledFont(26, .light)
+                .accessibilityHidden(true)
+            Text(message).scaledFont(14, .semibold)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
             if !query.isEmpty {
-                Button("Clear search") { query = "" }.scaledFont(13)
+                Button("Clear search") { query = "" }
+                    .scaledFont(13, .semibold)
+                    .padding(.horizontal, 14)
+                    .frame(height: 32)
+                    .glassSurface(Capsule(), interactive: true)
+                    .buttonStyle(PressStyle())
             }
         }
         .foregroundStyle(Color.inkAlpha(0.7))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func tile(_ app: TVApp) -> some View {
+    private func tile(_ app: TVApp, metrics: AppsFolderMetrics) -> some View {
         let isFavourite = favourites.contains(app.package)
+        let corner = metrics.tileCornerRadius
         return Button {
             guard state.acceptsLaunch else { return }
             searchFocused = false
             onLaunch(app)
         } label: {
-            VStack(spacing: 6) {
+            VStack(spacing: AppsFolderLayout.labelGap) {
                 AppIconImage(asset: "\(app.asset)_dark")
-                    .frame(width: AppsFolderLayout.tileSide, height: AppsFolderLayout.tileSide)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .frame(width: metrics.tileSide, height: metrics.tileSide)
+                    .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        RoundedRectangle(cornerRadius: corner, style: .continuous)
                             .strokeBorder(
                                 LinearGradient(colors: [Color.ink.opacity(0.42), Color.ink.opacity(0.08)],
                                                startPoint: .topLeading, endPoint: .bottomTrailing),
                                 lineWidth: 1)
                     }
                     .background {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.ink.opacity(0.07))
+                        RoundedRectangle(cornerRadius: corner, style: .continuous).fill(Color.ink.opacity(0.07))
                     }
-                    .shadow(color: .black.opacity(0.28), radius: 8, y: 5)
+                    .shadow(color: .black.opacity(0.26), radius: 7, y: 4)
                     .overlay(alignment: .topTrailing) {
                         if isFavourite {
                             Image(systemName: "star.fill")
@@ -503,10 +692,11 @@ struct AppsFolderOverlay: View {
                 Text(app.name)
                     .scaledFont(11, .medium)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.75)
+                    .frame(height: AppsFolderLayout.labelHeight)
                     .foregroundStyle(Color.inkAlpha(0.86))
             }
-            .frame(maxWidth: .infinity)
+            .frame(width: metrics.columnWidth)
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
