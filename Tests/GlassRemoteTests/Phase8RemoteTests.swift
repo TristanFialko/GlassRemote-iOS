@@ -39,8 +39,9 @@ final class Phase8RemoteLayoutTests: XCTestCase {
             XCTAssertLessThanOrEqual(c.leading + c.trailing, width * 0.6 + 0.001, "width \(width)")
         }
         let wide = RemoteLayoutPolicy.columnWidths(for: 2000)
-        XCTAssertEqual(wide.leading, 270)
-        XCTAssertEqual(wide.trailing, 240)
+        // Phase 9 §1.2 raised the caps (the landscape columns had oversized gutters on wide screens).
+        XCTAssertEqual(wide.leading, 280)
+        XCTAssertEqual(wide.trailing, 252)
         let none = RemoteLayoutPolicy.columnWidths(for: 0)
         XCTAssertEqual(none.leading, 0)
         XCTAssertEqual(none.trailing, 0)

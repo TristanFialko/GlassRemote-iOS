@@ -69,13 +69,22 @@ enum RemoteLayoutPolicy {
         isLandscape ? 40 : (compact ? 42 : 48)
     }
 
-    /// Landscape column widths. Each is a share of the width with a usable minimum and a cap; on a
-    /// very narrow window both shrink together so the pad always keeps at least 40 % of the width.
+    /// Gap between a landscape column and the pad.
+    static let stageColumnSpacing: CGFloat = 14
+    /// Phase 9 §1.2: the narrowest the landscape pad may get. The columns give way first.
+    static let landscapePadMinWidth: CGFloat = 200
+    /// Corner radius shared by every central touch surface (mouse pad, D-pad bezel, Samsung pad).
+    static let padCornerRadius: CGFloat = 36
+
+    /// Landscape column widths. Each is a share of the width with a usable minimum and a cap. The
+    /// pad always keeps at least `landscapePadMinWidth` and 38 % of the width (never less than 40 %
+    /// left to the columns' combined cap of 60 %); on a narrow window both columns shrink together.
     static func columnWidths(for width: CGFloat) -> (leading: CGFloat, trailing: CGFloat) {
         guard width > 0 else { return (0, 0) }
-        let leading = min(max(width * 0.26, 180), 270)
-        let trailing = min(max(width * 0.22, 160), 240)
-        let limit = width * 0.6
+        let leading = min(max(width * 0.27, 176), 280)
+        let trailing = min(max(width * 0.23, 156), 252)
+        let padFloor = max(landscapePadMinWidth, width * 0.38)
+        let limit = max(min(width - padFloor - stageColumnSpacing * 2, width * 0.6), 0)
         let sum = leading + trailing
         if sum > limit {
             let scale = limit / sum
@@ -83,13 +92,56 @@ enum RemoteLayoutPolicy {
         }
         return (leading, trailing)
     }
+
+    /// How much of the device name the status pill can show at a width.
+    enum PillStyle: Equatable {
+        /// "Android TV", status and the menu chevron.
+        case full
+        /// "Android", status and the chevron.
+        case short
+        /// "Android" and status; the whole pill is still the menu.
+        case compact
+    }
+
+    static func pillStyle(width: CGFloat) -> PillStyle {
+        if width >= 180 { return .full }
+        return width >= 150 ? .short : .compact
+    }
+
+    /// Width the landscape Apps card needs for `previews` overlapping icons plus its one-line text.
+    static func launcherCardRequiredWidth(previews: Int) -> CGFloat {
+        let padding: CGFloat = 24
+        let text: CGFloat = 58
+        guard previews > 0 else { return padding + text }
+        return padding + 34 + CGFloat(previews - 1) * 24 + 10 + text
+    }
+
+    /// Preview icons on the Apps card: as many as fit (up to 3) without wrapping the text.
+    static func launcherPreviewCount(cardWidth: CGFloat) -> Int {
+        for n in stride(from: 3, through: 1, by: -1) where launcherCardRequiredWidth(previews: n) <= cardWidth {
+            return n
+        }
+        return 0
+    }
+
+    /// "No apps", "1 app", "9 apps".
+    static func appCountLabel(_ count: Int) -> String {
+        switch count {
+        case ..<1: return "No apps"
+        case 1: return "1 app"
+        default: return "\(count) apps"
+        }
+    }
 }
 
 /// The landscape stage. Children are routed to columns with `.remoteStage(...)`; the pad fills the
 /// middle at full height, column children stack from the top, bottom-pinned ones from the foot.
 struct RemoteStageLayout: Layout {
     var spacing: CGFloat = 10
-    var columnSpacing: CGFloat = 14
+    var columnSpacing: CGFloat = RemoteLayoutPolicy.stageColumnSpacing
+    /// Phase 9 §1.2: reserve both columns even when one is empty, so the pad's frame depends only
+    /// on the stage size. The Android and Samsung pads are then identical in the same size class.
+    var reservesColumns: Bool = true
 
     struct Frames: Equatable {
         var leading: [CGRect]
@@ -102,10 +154,11 @@ struct RemoteStageLayout: Layout {
     static func frames(width: CGFloat, height: CGFloat,
                        leading: [CGFloat], leadingBottom: [Bool],
                        trailing: [CGFloat], trailingBottom: [Bool],
-                       hasPad: Bool, spacing: CGFloat, columnSpacing: CGFloat) -> Frames {
+                       hasPad: Bool, spacing: CGFloat, columnSpacing: CGFloat,
+                       reservesColumns: Bool = false) -> Frames {
         let widths = RemoteLayoutPolicy.columnWidths(for: width)
-        let leadingWidth: CGFloat = leading.isEmpty ? 0 : widths.leading
-        let trailingWidth: CGFloat = trailing.isEmpty ? 0 : widths.trailing
+        let leadingWidth: CGFloat = (leading.isEmpty && !reservesColumns) ? 0 : widths.leading
+        let trailingWidth: CGFloat = (trailing.isEmpty && !reservesColumns) ? 0 : widths.trailing
         let trailingX: CGFloat = max(width - trailingWidth, 0)
 
         func stack(_ heights: [CGFloat], _ bottom: [Bool], x: CGFloat, w: CGFloat) -> [CGRect] {
@@ -135,6 +188,13 @@ struct RemoteStageLayout: Layout {
                       pad: pad)
     }
 
+    /// The pad's frame on a stage of this size when both columns are reserved (unit tested).
+    static func padRect(width: CGFloat, height: CGFloat,
+                        columnSpacing: CGFloat = RemoteLayoutPolicy.stageColumnSpacing) -> CGRect {
+        frames(width: width, height: height, leading: [], leadingBottom: [], trailing: [], trailingBottom: [],
+               hasPad: true, spacing: 0, columnSpacing: columnSpacing, reservesColumns: true).pad ?? .zero
+    }
+
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         CGSize(width: proposal.width ?? 700, height: proposal.height ?? 360)
     }
@@ -161,7 +221,8 @@ struct RemoteStageLayout: Layout {
                                  leadingBottom: bottoms(leadingIndex),
                                  trailing: heights(trailingIndex, width: widths.trailing),
                                  trailingBottom: bottoms(trailingIndex),
-                                 hasPad: !padIndex.isEmpty, spacing: spacing, columnSpacing: columnSpacing)
+                                 hasPad: !padIndex.isEmpty, spacing: spacing, columnSpacing: columnSpacing,
+                                 reservesColumns: reservesColumns)
 
         func place(_ index: Int, _ rect: CGRect) {
             subviews[index].place(at: CGPoint(x: bounds.minX + rect.minX, y: bounds.minY + rect.minY),

@@ -65,6 +65,8 @@ enum GlobalMenuSpec {
 struct RemoteStatusMenu: View {
     @EnvironmentObject private var remote: RemoteModel
     @EnvironmentObject private var navigator: PageNavigator
+    /// Phase 9 §1.2: how much of the device name fits (set by the Remote header).
+    var pillStyle: RemoteLayoutPolicy.PillStyle = .full
     let onScreenshot: () -> Void
 
     private var boxOnline: Bool { remote.connected && !remote.requiresUserReconnect }
@@ -85,7 +87,7 @@ struct RemoteStatusMenu: View {
                 ForEach(entries(.advanced), id: \.self) { entry in view(for: entry) }
             }
         } label: {
-            RemoteStatusPill()
+            RemoteStatusPill(style: pillStyle)
         }
         .accessibilityHint("Reconnect, Samsung TV keys and tools")
     }
@@ -129,6 +131,7 @@ struct RemoteStatusMenu: View {
 struct RemoteStatusPill: View {
     @EnvironmentObject private var remote: RemoteModel
     @Environment(\.glassTheme) private var theme
+    var style: RemoteLayoutPolicy.PillStyle = .full
 
     private var boxOnline: Bool { remote.connected && !remote.requiresUserReconnect }
 
@@ -170,7 +173,9 @@ struct RemoteStatusPill: View {
                     .offset(x: 2, y: 2)
             }
             VStack(alignment: .leading, spacing: 1) {
-                Text(remote.target.title).scaledFont(14, .semibold).lineLimit(1)
+                Text(style == .full ? remote.target.title : remote.target.shortTitle)
+                    .scaledFont(14, .semibold)
+                    .lineLimit(1)
                 HStack(spacing: 6) {
                     Text(status.text).lineLimit(1)
                     if remote.target == .android && remote.tvVolumeEnabled {
@@ -183,15 +188,18 @@ struct RemoteStatusPill: View {
                 .scaledFont(11, .medium)
                 .foregroundStyle(Color.inkAlpha(0.62))
             }
-            .minimumScaleFactor(0.85)
+            .minimumScaleFactor(0.75)
+            .layoutPriority(1)
             Spacer(minLength: 0)
-            Image(systemName: "chevron.down")
-                .scaledFont(11, .bold)
-                .foregroundStyle(Color.inkAlpha(0.5))
+            if style != .compact {
+                Image(systemName: "chevron.down")
+                    .scaledFont(11, .bold)
+                    .foregroundStyle(Color.inkAlpha(0.5))
+            }
         }
         .foregroundStyle(Color.ink)
         .padding(.leading, 6)
-        .padding(.trailing, 14)
+        .padding(.trailing, style == .compact ? 10 : 14)
         .frame(height: 44)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassSurface(Capsule(), interactive: true)

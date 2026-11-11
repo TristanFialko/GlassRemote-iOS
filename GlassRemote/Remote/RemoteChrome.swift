@@ -24,12 +24,31 @@ enum RemoteNavKey: String, Hashable, CaseIterable {
         }
     }
 
-    /// Short caption under the glyph.
-    var caption: String {
+    /// Phase 9 §1.1: the keys are icon-only. `title` stays the VoiceOver name, the pointer
+    /// tooltip and the Large Content Viewer label.
+    static let showsCaptions = false
+
+    /// SF Symbol for the key. Home draws `HomeGlyph`; this is its fallback name.
+    var symbol: String {
         switch self {
-        case .keyboard: return "Keys"
-        case .sources: return "Input"
-        default: return title
+        case .back: return "arrow.uturn.backward"
+        case .home: return "house"
+        case .apps: return "square.grid.2x2.fill"
+        case .search: return "magnifyingglass"
+        case .keyboard: return "keyboard"
+        case .sources: return "cable.connector"
+        }
+    }
+
+    /// VoiceOver hint: what the key does, now that there is no visible caption.
+    var hint: String {
+        switch self {
+        case .back: return "Goes back on the TV"
+        case .home: return "Opens the TV home screen"
+        case .apps: return "Opens the Apps folder"
+        case .search: return "Searches for something to watch"
+        case .keyboard: return "Types on the TV"
+        case .sources: return "Changes the Samsung TV input"
         }
     }
 }
@@ -68,6 +87,11 @@ struct RemoteClusterKey<Icon: View>: View {
         .disabled(!enabled)
         .controlDisabled(!enabled)
         .accessibilityLabel(label)
+        .accessibilityShowsLargeContentViewer {
+            icon()
+            Text(label)
+        }
+        .help(label)
     }
 }
 
@@ -90,6 +114,8 @@ extension RemoteClusterKey where Icon == AnyView {
 struct RemoteTargetSwitch: View {
     @EnvironmentObject private var remote: RemoteModel
     var showsTitles: Bool = false
+    /// Width of the icon-only switch; nil lets it fill the space it is offered (landscape column).
+    var fixedWidth: CGFloat? = 108
 
     var body: some View {
         GlassScrubSelector(values: RemoteTarget.allCases, selection: $remote.target, height: 44) { target, selected in
@@ -101,7 +127,8 @@ struct RemoteTargetSwitch: View {
             }
             .foregroundStyle(selected ? Color.ink : Color.inkAlpha(0.6))
         }
-        .frame(width: showsTitles ? nil : 108)
+        .frame(width: showsTitles ? nil : fixedWidth)
+        .frame(maxWidth: (showsTitles || fixedWidth == nil) ? .infinity : nil)
         .frame(height: 44)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Remote for")
