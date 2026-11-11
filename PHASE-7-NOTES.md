@@ -1,3 +1,4 @@
+successfully downloaded text file (SHA: a70a2eaffbac2052a90a65f66424e72ed0a4ed26)
 # Phase 7 notes (research, decisions, limitations)
 
 Branch: Phase-7 (from phase-6-ui-nuvio-rebuild at adc2ec0). PR #2 is tracking-only and must not be merged.
@@ -78,3 +79,43 @@ Phase-7.1 is left as it was. Nothing below has been checked on a physical iPhone
 
 ### Next
 - 1.3 search behaviour (DiscoverModel live search cancellation, SearchRanking, header hide/show hysteresis).
+
+## Phase 8 one-sweep redesign (still on branch Phase-7.2)
+
+### Starting state checked
+- Head 0fa837c. Run #163 (42898357164) green. PRs #2, #3, #4 are tracking PRs and stay unmerged. The GitHub connection has no Actions run/log tools; CI is read from PR #4 check runs.
+
+### Done
+- Remote, both orientations (RemoteView.swift, Remote/RemoteStageLayout.swift, Remote/RemoteChrome.swift): the ScrollView stack is replaced by one composition. Portrait is a compact header (status pill, Android/Samsung switch, power), a large Mouse/D-pad selector, a dominant pad, then a nav/media cluster and the volume slider. Landscape is a three-column stage: launcher and controls on the left, a full-height pad in the middle, media, TV group and volume on the right. RemoteStageLayout is a custom Layout that places children by `.remoteStage(column, bottom:)` and is pure-tested. RemoteLayoutPolicy owns composition, the compact threshold, pad minimums, selector height, D-pad diameter and column widths.
+- Apps launcher (Remote/AppLauncherSheet.swift): the Apps dropdown is gone. There is now a sheet with a searchable icon grid, favourites first, and offline, scanning, scan-failed and empty states. It opens from the portrait cluster key or the landscape launcher card. AppLauncherPolicy is pure-tested.
+- Remote menu (GlobalMenu.swift): Themes, Connections and Devices left the Remote top-left menu. That menu is now RemoteStatusMenu behind the status pill: reconnect entries only when needed, Samsung keys and volume routing, screenshot, and a Profile settings link. PageNavigator.openProfile(_:) and ProfilePage's NavigationStack path open the right Profile subpage. GlobalMenuSpec.movedToProfile records the move.
+- Samsung (SamsungRemotePanel.swift): there is a dedicated landscape layout with the trackpad as the centre pad; back and home on the left; rewind, play and fast-forward plus a grouped mute and Ch − / Ch + on the right; no duplicated keys. Portrait keeps primaryRows. The WebSocket, key allowlist, volume and calibration are untouched. SamsungLinkBanner shows only when the link is not up.
+- D-pad (Remote/GlassDpad.swift): the pebble is slimmer (0.38 to 0.36) so the arrows have more room. There is a basin shading towards the OK groove, a theme tint in the lower rim, an accent under-glow and a press-in scale on OK. The hit policy, wedges, ADB key names and repeat are unchanged.
+- Volume (GlassVolumeSlider.swift): glass track, theme gradient fill with a specular sheen, a glass thumb on the fill edge, a live step readout (Mute/Min/1–20) and a soft haptic per step only while dragging. The API, relative drag, VolumeCalibration.magnet and accessibility actions are unchanged. VolumeSliderGeometry is pure-tested.
+- Themes (Theme.swift): new Synthwave, Rosewood, Graphite and Glacier themes. Each has its own canvas, tint and accent pair. New Dusk, Nebula, Prism and Mist ambients are drawn and static, so nothing renders while idle. Mountains and MountainShape are removed; a stored "mountains" migrates to Dusk on launch (AmbientStyle.migrated).
+- Play button (Discover/DiscoverHero.swift, DiscoverDetail.swift): GlassTheme.playFill/playInk. Default Dark (and any neutral accent) gets a frosted 16 % pill instead of a solid white slab. Coloured themes keep their accent, with dark ink on bright accents.
+- Tests: Phase8RemoteTests.swift (layout policy, stage frames, launcher, nav cluster, menu move, Samsung landscape keys and banner, volume geometry) and Phase8ThemeTests.swift (new themes, distinct accents, Mountains migration, Play tone-down, Play ink contrast, luminance bounds). In GlassRemoteTests.swift, the menu tests follow the move (`testAdvancedHoldsScreenshotAndProfileSettings`) and the ThemeID count is now 15.
+
+### Commits and CI
+- 65a357d Remote redesign → run 43046424406.
+- dce0f38 volume slider and D-pad → run 43047255372.
+- 62a53e4 themes, ambients and Play → its own run (queued after 43047255372).
+- None of these runs had finished when this note was written. Nothing here was compiled locally (no Xcode in the session sandbox), so the first green build is the real check.
+
+### Exact checkpoint (next session starts here)
+1. Read the latest PR #4 check run. If red, open the job log and fix compile/test errors first. Most likely spots are the new Layout in RemoteStageLayout.swift, the RemoteView rewrite and the `.onChange(of:)` iOS 16 signatures.
+2. Workstream 2:
+   - The floating dock and landscape rail show the active profile's photo (initials fallback, refresh on change). Keep the DockMetrics test values.
+   - Glass variants: refractive lens (iOS 26 native glass plus a bounded iOS 17 Metal `layerEffect` fallback), subtle and plain. No idle rendering; Reduce Motion falls back to plain.
+   - Vibrant perceptual adaptive palette with bounds tests.
+   - Themes and ambient stored per profile.
+3. Workstream 3:
+   - SearchRanking: exact/prefix first, then popularity/vote count and media type, then a metadata tie-break (series over a weak movie), with no hardcoded titles.
+   - DiscoverModel debounce and cancellation.
+   - Header hide/show hysteresis.
+   - Detail: verify X close and nested dismiss, the full cast with portraits/initials, the landscape detail layout, and that no metadata is invented.
+4. Workstream 4: Profile subpages own Connections, Devices, Add-ons, Appearance and General (check ThemePickerSheet/DeviceInfo are reachable there now that the Remote sheets are gone). Torrentio multi-install and Keychain checks; tokens never shown.
+5. Final CI: simulator build plus the full test count, Release device build, ARM32/ARM64 helpers, unsigned IPA artifact `glassremote-unsigned-ipa`.
+
+### Physical-device checks still needed
+- Portrait and landscape Remote on small (SE) and large (Pro Max) phones; launcher in both orientations; Samsung landscape against a real TV; D-pad and trackpad ownership while rotating; volume haptics; each new theme and ambient; Default Dark Play contrast.
