@@ -1,4 +1,3 @@
-successfully downloaded text file (SHA: a70a2eaffbac2052a90a65f66424e72ed0a4ed26)
 # Phase 7 notes (research, decisions, limitations)
 
 Branch: Phase-7 (from phase-6-ui-nuvio-rebuild at adc2ec0). PR #2 is tracking-only and must not be merged.
@@ -119,3 +118,16 @@ Phase-7.1 is left as it was. Nothing below has been checked on a physical iPhone
 
 ### Physical-device checks still needed
 - Portrait and landscape Remote on small (SE) and large (Pro Max) phones; launcher in both orientations; Samsung landscape against a real TV; D-pad and trackpad ownership while rotating; volume haptics; each new theme and ambient; Default Dark Play contrast.
+
+## Phase 9 Liquid Glass and interaction overhaul (branch Phase-9, from Phase-7.2 at a1c816f)
+
+Phase-7.2 is left as it was. PRs #2, #3 and #4 are tracking PRs and stay unmerged. Nothing below has been checked on a physical iPhone or TV.
+
+### Starting state checked
+- Phase-7.2 HEAD a1c816f (Phase 8 notes). Its CI run 43048665477 is green (check run on PR #4); run 43047444095 was cancelled.
+- The GitHub connection in the agent session has no Actions run, log or artifact tools. CI is therefore read from check runs and from the build report the workflow posts on the Phase 9 tracking PR (CI tracking only, do not merge).
+
+### CI and workflow
+- ios-build.yml: a concurrency group cancels a superseded run on the same branch; the results report step now also runs for Phase-9* branches, so compiler and test errors reach the tracking PR.
+- project.yml: deployment target iOS 26.0.
+

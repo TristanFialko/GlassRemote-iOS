@@ -6,6 +6,11 @@ on:
     # The Phase 6 rebuild branch is lower-case, so it is listed explicitly (filters are case-sensitive).
     branches: [ main, v0.4-dev, 'Phase-*', 'phase-6-ui-nuvio-rebuild' ]
 
+# A newer push to the same branch supersedes the running build, so CI time goes to the latest commit.
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-26   # Xcode 26 SDK is required for native Liquid Glass (glassEffect)
@@ -305,8 +310,8 @@ jobs:
           path: build
           if-no-files-found: ignore
 
-      - name: Report results on the Phase 6 pull request
-        if: ${{ always() && github.ref_name == 'phase-6-ui-nuvio-rebuild' }}
+      - name: Report results on the tracking pull request
+        if: ${{ always() && (github.ref_name == 'phase-6-ui-nuvio-rebuild' || startsWith(github.ref_name, 'Phase-9')) }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
