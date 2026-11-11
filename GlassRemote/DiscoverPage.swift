@@ -141,14 +141,17 @@ struct DiscoverPage: View {
     /// Once rows scroll beneath it a canvas-coloured veil fades in behind it for legibility.
     private var headerBar: some View {
         let solid = headerSolid || !showsHero
-        return DiscoverHeaderLayout(isLandscape: layoutContext.isLandscape) {
-            searchField
-            accountButton
-            GlassSegmented(
-                items: [GlassSegmented<DiscoverModel.Filter>.Item(value: .all, title: "All", symbol: nil),
-                        GlassSegmented<DiscoverModel.Filter>.Item(value: .movies, title: "Movies", symbol: nil),
-                        GlassSegmented<DiscoverModel.Filter>.Item(value: .series, title: "Series", symbol: nil)],
-                selection: $model.filter, height: DiscoverHeaderLayout.filterHeight)
+        // §G1: the header's glass renders as one group (spacing 0: the shapes never merge).
+        return GlassGroup(spacing: 0) {
+            DiscoverHeaderLayout(isLandscape: layoutContext.isLandscape) {
+                searchField
+                accountButton
+                GlassSegmented(
+                    items: [GlassSegmented<DiscoverModel.Filter>.Item(value: .all, title: "All", symbol: nil),
+                            GlassSegmented<DiscoverModel.Filter>.Item(value: .movies, title: "Movies", symbol: nil),
+                            GlassSegmented<DiscoverModel.Filter>.Item(value: .series, title: "Series", symbol: nil)],
+                    selection: $model.filter, height: DiscoverHeaderLayout.filterHeight)
+            }
         }
         .padding(.horizontal, 16).padding(.top, layoutContext.isLandscape ? 6 : 10).padding(.bottom, 8)
         // Phase 7.1: taps in the gaps of the floating header stop here instead of reaching the hero below.

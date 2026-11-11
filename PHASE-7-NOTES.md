@@ -223,3 +223,25 @@ Scope: every section of the continuation brief, §A–§L. Order: A Apps folder,
 - **Already correct, checked:** the cast row shows the full cast list from the source (no truncation) with initials when there is no portrait. Facts and credits come only from the catalogue response; nothing is invented. Trailers, seasons and episodes, and similar titles (respecting the profile's poster orientation) are unchanged.
 - **Tests:** `Phase9DiscoverTests` covers fill coverage (no strips) and uniform scale (no stretch) across sizes and focal points, the top-keeping crop, the poster inset (whole, aspect kept, inside the region, clear of the text column), the portrait fill, turning the inset off, zero sizes, bleed resolution and the sideways-only clip, the presentation mapping and the rotate-while-open rule, and the header frames (portrait two rows, landscape one grouped row, no overlaps, caps).
 - **Not verified on a device:** the landscape crop on real art, the full-screen cover's zoom transition, and the header at every width. These need a device pass.
+
+### §G Glass, continuous background and profile identity (checkpoint G, CI pending)
+
+- **G1 glass audit.** Reviewed in code (not on a device):
+  - Already grouped: the dock and rail (one scrub selector with its lens), the Apps folder (§A), player transport (`GlassGroup`), and the volume slider (§C).
+  - New: the Discover header's search field, filter and account button render as one glass group. Spacing is 0, so the shapes share one pass but never merge into each other.
+  - Detail controls, Profile cards, sheets and menus keep their single surfaces. Nesting more containers there would add cost without continuity, so nothing was wrapped indiscriminately.
+- **G2 continuous background.** Diagnosis: Profile and its sub-pages drew their own backdrop inside a page frame that, in landscape, starts after the rail. The gradient, glow and ambient picture therefore restarted at the rail edge (the seam). Fix:
+  - The backdrop is split into `AmbientCanvas` (the picture) and `AmbientBackdrop` (root use).
+  - Profile pages now use `ContinuousBackdrop`. It draws the window-sized canvas shifted onto the window origin (the pager publishes `windowCanvasSize`) and clipped to the page, so it matches the root backdrop under the rail and dock exactly.
+  - The picture stays fixed while the page pages vertically or scrolls.
+  - Navigation pushes still cover the page below, because sub-pages stay opaque.
+  - Sheets keep their own backdrop.
+  - The canvas is always laid out left-to-right, so right-to-left layouts can't mirror one copy against the other.
+- **G3 profile identity.**
+  - The dock and the landscape rail show the active profile's photo, or initials on its gradient, instead of the generic Profile glyph. The item keeps the "Profile" label.
+  - The avatar observes the profile store and cross-fades (motion token, reduced-motion aware) on a profile switch, a rename or a new photo.
+  - Ambient is now per profile, like the theme was. `ambientID` is decoded tolerantly: older profiles keep the current ambient until it is changed. New profiles start from the active profile's ambient, and a stored Mountains still migrates to Dusk.
+  - Switching profiles applies theme, ambient, motion and add-ons only. The profile store never touches the remote model, ADB, the Samsung connection or helpers (source-audited by a test).
+- **Adaptive palette.** Tones are already chosen by matching WCAG relative luminance per scheme, with the accent's luminance clamped (bounded contrast), so a yellow and a blue read alike. Hue selection still uses the existing saturation and brightness weighted histogram; it was not changed in this checkpoint.
+- **Tests:** `Phase9IdentityTests` covers backdrop placement (the window origin lines up, it stays fixed while paging, unknown or invalid sizes fall back) and the window canvas size; legacy settings, the Mountains migration, a round trip, and per-profile ambient with inheritance and persistence; the avatar redraw identity; and source audits for the profile backdrop, the dock avatar, and no connection access in the profile store.
+- **Not verified on a device:** the seam fix under every ambient, the avatar at rail size, and the cross-fade.

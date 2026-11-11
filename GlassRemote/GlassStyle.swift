@@ -433,6 +433,17 @@ struct ModeSelector: View {
 
 /// The themed canvas: a gradient with a soft glow behind the controls, plus an optional ambient picture.
 struct AmbientBackdrop: View {
+    var body: some View {
+        AmbientCanvas()
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+    }
+}
+
+/// The backdrop's picture with no safe-area handling, so it can also be drawn at an exact size and
+/// position (`ContinuousBackdrop`). Always laid out left-to-right: it is decoration, and every copy
+/// must match the root one exactly.
+struct AmbientCanvas: View {
     @Environment(\.glassTheme) private var theme
     @ObservedObject private var store = ThemeStore.shared
 
@@ -444,8 +455,56 @@ struct AmbientBackdrop: View {
                 AmbientArtwork(style: store.ambient).transition(.opacity)
             }
         }
+        .environment(\.layoutDirection, .leftToRight)
+    }
+}
+
+/// Continuation §G2: the backdrop for a page that needs its own opaque background (Profile and its
+/// sub-pages, so a navigation push covers the page below). It draws the window-sized canvas shifted
+/// onto the window origin and clipped to the page, so it lines up exactly with the root backdrop that
+/// runs under the dock and the rail: no seam where the page meets the rail, and the picture stays put
+/// while the page pages or scrolls. Without a known window size (outside the pager) it fills the page.
+struct ContinuousBackdrop: View {
+    @Environment(\.windowCanvasSize) private var canvas
+
+    var body: some View {
+        GeometryReader { geo in
+            if let rect = BackdropAlignment.placement(pageFrame: geo.frame(in: .global), canvas: canvas) {
+                AmbientCanvas()
+                    .frame(width: rect.width, height: rect.height)
+                    .offset(x: rect.minX, y: rect.minY)
+            } else {
+                AmbientCanvas()
+            }
+        }
+        .clipped()
         .ignoresSafeArea()
         .allowsHitTesting(false)
+    }
+}
+
+/// Pure placement maths for `ContinuousBackdrop` (unit tested).
+enum BackdropAlignment {
+    /// The window canvas in the page's own coordinates; nil when the window size is unknown.
+    static func placement(pageFrame: CGRect, canvas: CGSize) -> CGRect? {
+        guard canvas.width > 0, canvas.height > 0, pageFrame.minX.isFinite, pageFrame.minY.isFinite else { return nil }
+        return CGRect(x: -pageFrame.minX, y: -pageFrame.minY, width: canvas.width, height: canvas.height)
+    }
+
+    /// The whole window, measured from a view that respects the safe area: its size plus every inset.
+    static func canvasSize(size: CGSize, insets: EdgeInsets) -> CGSize {
+        CGSize(width: max(size.width + insets.leading + insets.trailing, 0),
+               height: max(size.height + insets.top + insets.bottom, 0))
+    }
+}
+
+private struct WindowCanvasSizeKey: EnvironmentKey { static let defaultValue: CGSize = .zero }
+
+extension EnvironmentValues {
+    /// Size of the window the root backdrop fills (zero outside the pager).
+    var windowCanvasSize: CGSize {
+        get { self[WindowCanvasSizeKey.self] }
+        set { self[WindowCanvasSizeKey.self] = newValue }
     }
 }
 

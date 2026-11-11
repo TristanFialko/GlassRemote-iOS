@@ -106,6 +106,8 @@ struct RootPagerView: View {
             .environment(\.pageBleed, HorizontalBleed.resolve(isLandscape: landscape, safeLeading: safeLeading,
                                                                safeTrailing: safeTrailing))
             .environment(\.layoutContext, context)
+            // §G2: pages with their own backdrop align it to this window canvas (no seams).
+            .environment(\.windowCanvasSize, BackdropAlignment.canvasSize(size: geo.size, insets: geo.safeAreaInsets))
             .background {
                 PagerPan(
                     page: page,
@@ -451,7 +453,12 @@ struct PageDock: View {
             axis: axis
         ) { item, selected in
             VStack(spacing: vertical ? 3 : 4) {
-                Image(systemName: item.symbol(selected: selected)).scaledFont(vertical ? 20 : 22, .semibold)
+                if item == .profile {
+                    // §G3: the active profile's photo or initials instead of a generic glyph.
+                    DockProfileAvatar(size: vertical ? 24 : 26, selected: selected)
+                } else {
+                    Image(systemName: item.symbol(selected: selected)).scaledFont(vertical ? 20 : 22, .semibold)
+                }
                 Text(item.title).scaledFont(vertical ? 9.5 : 10.5, .semibold).lineLimit(1).minimumScaleFactor(0.8)
             }
             .foregroundStyle(selected ? theme.dockInk : theme.dockInkInactive)

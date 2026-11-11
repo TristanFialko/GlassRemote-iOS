@@ -40,7 +40,8 @@ struct ProfilePage: View {
                 .frame(maxWidth: 920)
                 .frame(maxWidth: .infinity)
             }
-            .background { AmbientBackdrop() }
+            // §G2: aligned with the root backdrop, so there is no seam at the landscape rail.
+            .background { ContinuousBackdrop() }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: ProfileRoute.self) { route in
                 destination(route).environmentObject(remote)
