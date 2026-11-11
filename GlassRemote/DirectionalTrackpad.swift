@@ -67,11 +67,7 @@ struct SamsungTrackpad: View {
         let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
         Color.clear
             .glassSurface(shape, elevated: true)
-            .overlay(alignment: .bottom) {
-                Text("Slide to move focus · tap to select · two-finger tap for Back")
-                    .scaledFont(12).foregroundStyle(Color.ink.opacity(0.7))   // same as the Android trackpad hint
-                    .padding(.bottom, 16).allowsHitTesting(false)
-            }
+            // v5 §6: no instructions drawn inside the surface; VoiceOver keeps them as a hint.
             .contentShape(shape)
             .background {
                 TwoFingerScroll(state: scrollState, onScroll: { _, _ in }, onTwoFingerTap: {
@@ -106,7 +102,7 @@ struct SamsungTrackpad: View {
             // One VoiceOver element with real actions (this surface has no arrow buttons to point to).
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Samsung trackpad")
-            .accessibilityHint("Selects on the TV. Actions move the focus; scrub to go back.")
+            .accessibilityHint(RemoteSurfaceHints.samsungTrackpad)
             .accessibilityAction { _ = remote.samsungKey(.enter) }
             .accessibilityAction(.escape) { _ = remote.samsungKey(.back) }
             .accessibilityAction(named: "Move up") { _ = remote.samsungKey(.up) }

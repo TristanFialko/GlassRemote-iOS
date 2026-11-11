@@ -390,6 +390,7 @@ struct ModeSelector: View {
     var onTouchChange: ((Bool) -> Void)?
     private let inset: CGFloat = 4
     @GestureState private var touching = false
+    @Environment(\.glassTheme) private var theme
 
     init(isMouse: Binding<Bool>, segmentHeight: CGFloat = 38, onTouchChange: ((Bool) -> Void)? = nil) {
         self._isMouse = isMouse
@@ -406,12 +407,15 @@ struct ModeSelector: View {
             height: segmentHeight + inset * 2,
             inset: inset
         ) { mouse, selected in
-            HStack(spacing: 7) {
-                if mouse { MouseGlyph(color: selected ? Color.ink : Color.inkAlpha(0.72)) }
-                else { Image(systemName: "circle.grid.cross").scaledFont(15, .semibold) }
-                Text(mouse ? "Mouse" : "D-pad").scaledFont(14, .semibold)
+            // v5 §6: icons only (no "Mouse" / "D-pad" captions); the selected half takes the theme
+            // accent (v5 §9). The names stay available to VoiceOver below.
+            let tint = ModeSelectorStyle.iconColor(selected: selected, accent: theme.accent)
+            Group {
+                if mouse { MouseGlyph(color: tint) }
+                else { Image(systemName: "circle.grid.cross").scaledFont(17, .semibold) }
             }
-            .foregroundStyle(selected ? Color.ink : Color.inkAlpha(0.72))
+            .foregroundStyle(tint)
+            .frame(maxWidth: .infinity)
         }
         .simultaneousGesture(
             DragGesture(minimumDistance: 0).updating($touching) { _, state, _ in state = true }
@@ -421,6 +425,7 @@ struct ModeSelector: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Mouse or D-pad")
         .accessibilityValue(isMouse ? "Mouse" : "D-pad")
+        .accessibilityHint("Swipe up or down to switch between the mouse trackpad and the D-pad")
         .accessibilityAdjustableAction { direction in
             // Swipe up / increment moves to D-pad, matching page order.
             let wantMouse = direction == .decrement
@@ -540,5 +545,14 @@ extension RemoteKeyButton where Icon == AnyView {
         self.enabled = enabled
         self.action = action
         self.icon = { AnyView(Image(systemName: symbol).scaledFont(19, .medium)) }
+    }
+}
+
+/// v5 §6 / §9: the Mouse / D-pad selector shows icons only; the selected icon takes the theme accent.
+enum ModeSelectorStyle {
+    static let unselectedOpacity = 0.72
+
+    static func iconColor(selected: Bool, accent: Color) -> Color {
+        selected ? accent : Color.inkAlpha(unselectedOpacity)
     }
 }

@@ -1,24 +1,30 @@
 import SwiftUI
 
-/// Page 2: cinematic player (Phase 9 §A). Independent of the Remote page: it only reads `remote.media`
-/// (the shared, read-only `dumpsys media_session` poll) and sends transport commands through
-/// `RemoteModel.sendMedia`, which uses explicit Play / Pause and confirms against the session.
+/// Now Playing (v5 §3), laid out like the Apple Music player. Independent of the Remote page: it only
+/// reads `remote.media` (the shared, read-only `dumpsys media_session` poll) and sends transport
+/// commands through `RemoteModel.sendMedia`, which uses explicit Play / Pause and confirms against the
+/// session.
+///
+/// Portrait: a large near-square artwork dominates the upper screen; below it one compact, left-aligned
+/// group holds the title and artist line, a thin timeline, plain transport glyphs and the compact
+/// volume row (the same Samsung volume pipeline as the Remote slider). Landscape: two columns, the
+/// artwork on the left and that group on the right, with the rail still visible.
 ///
 /// Real data only: title, optional subtitle, playback state, position (extrapolated between polls) and
-/// the actions the session advertises. Artwork comes from Cinemeta by title, or from Discover. The box
-/// reports no duration and no way to seek to a position, so there is no scrubber: rewind and
-/// fast-forward use the app's own relative step (SEEKING_REPORT.md). Layout, controls, session state
-/// and the background treatment are decided in PlayerPolicy.swift. The full-screen artwork background
-/// is drawn by `RootPagerView` (PlayerBackdrop.swift), so it runs unbroken behind the dock and the rail.
+/// the actions the session advertises. The box reports no duration and no way to seek to a position,
+/// so the timeline is display-only and appears only with a real duration; rewind and fast-forward use
+/// the app's own relative step (SEEKING_REPORT.md). The full-screen artwork background, and its
+/// no-artwork fallback, are drawn once by `RootPagerView` (PlayerBackdrop.swift), so they run unbroken
+/// behind the dock and the rail and are never redrawn by the playback clock.
 struct PlayerPage: View {
     @EnvironmentObject private var remote: RemoteModel
     @EnvironmentObject private var navigator: PageNavigator
     @ObservedObject private var artwork = PlayerArtworkStore.shared
-    @ObservedObject private var backdropStore = PlayerBackdropStore.shared
     @Environment(\.glassTheme) private var theme
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Environment(\.dockClearance) private var dockClearance
-    @Environment(\.railClearance) private var railClearance
     @Environment(\.layoutContext) private var layoutContext
 
     var body: some View {
@@ -51,7 +57,6 @@ struct PlayerPage: View {
         .overlay(alignment: .topTrailing) {
             if layoutContext.isLandscape { closeButton.padding(.trailing, 4) }
         }
-        .background { fallbackLight }
         .foregroundStyle(Color.ink)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         // Nuvio's media session is not known to carry artwork: look the title up so playback started in Nuvio itself
@@ -91,7 +96,7 @@ struct PlayerPage: View {
     private func portraitLayout(scene: PlayerScene) -> some View {
         VStack(spacing: PlayerLayoutPolicy.portraitGap) {
             GeometryReader { region in
-                let frame = PlayerLayoutPolicy.portraitArtwork(kind: scene.kind, region: region.size)
+                let frame = PlayerLayoutPolicy.nowPlayingArtwork(kind: scene.kind, region: region.size)
                 ZStack {
                     artworkCard(scene: scene, size: frame)
                         .id(scene.key)                       // artwork and metadata change together
@@ -103,16 +108,17 @@ struct PlayerPage: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .animation(Motion.adaptive(Motion.content), value: scene.key)
-        .padding(.horizontal, PlayerLayoutPolicy.portraitMargin)
-        .padding(.top, 8)
-        .padding(.bottom, dockClearance + 6)
+        .padding(.horizontal, PlayerLayoutPolicy.nowPlayingMargin)
+        .padding(.top, 4)
+        .padding(.bottom, dockClearance + 8)
     }
 
-    /// Landscape: square artwork region on the leading side; title, time, transport and volume in a
-    /// column beside it. The rail stays visible (the page already starts after it).
+    /// Landscape: a square artwork region on the leading side; the same compact group beside it. The
+    /// rail stays visible (the page already starts after it). Not a rotated portrait layout.
     private func landscapeLayout(size: CGSize, scene: PlayerScene) -> some View {
         let split = PlayerLayoutPolicy.landscape(page: size, bottomClearance: dockClearance)
-        let frame = PlayerLayoutPolicy.landscapeArtwork(kind: scene.kind, side: split.artSide)
+        let frame = PlayerLayoutPolicy.nowPlayingArtwork(kind: scene.kind,
+                                                         region: CGSize(width: split.artSide, height: split.artSide))
         return HStack(spacing: split.spacing) {
             ZStack {
                 artworkCard(scene: scene, size: frame)
@@ -128,9 +134,10 @@ struct PlayerPage: View {
         .padding(.bottom, dockClearance)
     }
 
+    /// The compact group under (or beside) the artwork: title, timeline, transport, volume.
     private func controlsColumn(scene: PlayerScene) -> some View {
-        VStack(spacing: PlayerLayoutPolicy.controlSpacing) {
-            ZStack {
+        VStack(alignment: .leading, spacing: PlayerLayoutPolicy.controlSpacing) {
+            ZStack(alignment: .leading) {
                 titleBlock(app: scene.app, media: scene.media)
                     .id(scene.key)
                     .transition(.opacity)
@@ -142,26 +149,13 @@ struct PlayerPage: View {
             }
             PlayerVolumeBar()
         }
-    }
-
-    /// Theme-aware fallback while there is no artwork background: soft light from the shared theme (the
-    /// accent when Adaptive), extended under the landscape rail so the canvas never splits at its edge.
-    /// A radial gradient is already soft, so no blur filter.
-    @ViewBuilder
-    private var fallbackLight: some View {
-        if backdropStore.backdrop == nil {
-            RadialGradient(colors: [theme.accent.opacity(theme.id == .adaptive ? 0.34 : 0.07), .clear],
-                           center: .init(x: 0.5, y: 0.2), startRadius: 10, endRadius: 420)
-                .padding(.leading, layoutContext.isLandscape ? -railClearance : 0)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Artwork
 
     private func artworkCard(scene: PlayerScene, size: CGSize) -> some View {
-        let shape = RoundedRectangle(cornerRadius: scene.kind == .appIcon ? 30 : 22, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: PlayerLayoutPolicy.artworkCornerRadius, style: .continuous)
         let hasArt = scene.art != nil
         let label: String = {
             switch scene.kind {
@@ -170,37 +164,48 @@ struct PlayerPage: View {
             case .appIcon: return "App artwork"
             }
         }()
+        let scale = PlayerLayoutPolicy.artworkScale(isPlaying: scene.media.isPlaying || !scene.media.isActive,
+                                                    reduceMotion: reduceMotion)
         return ZStack {
-            shape.fill(Color.black.opacity(hasArt ? 0.55 : 0.32))
             if let art = scene.art {
-                CachedArtwork(url: art, contentMode: .fill) { fallbackIcon(app: scene.app, media: scene.media, side: size.width) }
+                shape.fill(Color.black.opacity(0.4))
+                // Filled and centre-cropped to the card's own proportions: crisp, never stretched.
+                CachedArtwork(url: art, contentMode: .fill) { fallbackArt(app: scene.app, media: scene.media, side: size.width) }
             } else {
-                fallbackIcon(app: scene.app, media: scene.media, side: size.width)
+                fallbackArt(app: scene.app, media: scene.media, side: size.width)
             }
         }
-        // Each kind gets a frame of its own proportions (PlayerLayoutPolicy), so nothing is stretched.
         .frame(width: size.width, height: size.height)
         .clipShape(shape)
-        .overlay { shape.stroke(Color.ink.opacity(0.2), lineWidth: 0.8) }
-        .shadow(color: Color.black.opacity(hasArt ? 0.45 : 0.3), radius: 24, y: 14)
+        .overlay { shape.stroke(Color.ink.opacity(0.14), lineWidth: 0.6) }
+        .shadow(color: Color.black.opacity(hasArt ? 0.38 : 0.22), radius: 26, y: 14)
+        // Like Apple Music: the artwork eases back slightly while paused.
+        .scaleEffect(scale)
+        .animation(Motion.unlessReduced(Motion.settle, reduceMotion: reduceMotion), value: scale)
         .animation(Motion.adaptive(Motion.poster), value: scene.art)
         .accessibilityLabel(label)
     }
 
-    @ViewBuilder
-    private func fallbackIcon(app: TVApp?, media: MediaState, side: CGFloat) -> some View {
-        if let app {
-            Image(app.asset == "nuvio" ? "nuvio_nowplaying" : "\(app.asset)_dark")
-                .resizable().scaledToFit()
-                .padding(max(side, 0) * (app.asset == "nuvio" ? 0.26 : 0.16))
-        } else {
-            Image(systemName: media.isActive ? AppPage.playerSymbolOutline : "tv")
-                .scaledFont(56, .light).foregroundStyle(Color.ink.opacity(0.4))
+    /// The no-artwork card: a soft wash of the theme accent with the app's own artwork (or a symbol).
+    private func fallbackArt(app: TVApp?, media: MediaState, side: CGFloat) -> some View {
+        ZStack {
+            LinearGradient(colors: [theme.accent.opacity(0.55), theme.accent.opacity(0.22)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            Color.ink.opacity(0.04)
+            if let app {
+                Image(app.asset == "nuvio" ? "nuvio_nowplaying" : "\(app.asset)_dark")
+                    .resizable().scaledToFit()
+                    .padding(max(side, 0) * (app.asset == "nuvio" ? 0.28 : 0.24))
+            } else {
+                Image(systemName: media.isActive ? AppPage.playerSymbolOutline : "tv")
+                    .scaledFont(56, .light).foregroundStyle(Color.ink.opacity(0.5))
+            }
         }
     }
 
     // MARK: Title
 
+    /// Left-aligned title and artist line, like Apple Music.
     private func titleBlock(app: TVApp?, media: MediaState) -> some View {
         let name = app?.name ?? (media.package.split(separator: ".").last.map(String.init) ?? "")
         let title: String = {
@@ -208,31 +213,36 @@ struct PlayerPage: View {
             if !media.headline.isEmpty { return media.headline }
             return media.title.isEmpty ? (name.isEmpty ? "Playing" : name) : media.title
         }()
-        return VStack(spacing: 4) {
-            Text(title).scaledFont(22, .bold).multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.8)
-            if media.isActive {
-                // Episode information only when the session really reports a subtitle.
-                if !media.subtitle.isEmpty {
-                    Text(media.subtitle).scaledFont(15, .medium).foregroundStyle(Color.ink.opacity(0.8))
-                        .multilineTextAlignment(.center).lineLimit(2)
-                }
-                Text(name).scaledFont(13, .medium).foregroundStyle(Color.inkAlpha(0.5))
+        // Episode information only when the session really reports a subtitle.
+        let secondary = media.isActive ? PlayerTitlePolicy.secondaryLine(subtitle: media.subtitle, appName: name, title: title) : ""
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .scaledFont(21, .bold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            if !secondary.isEmpty {
+                Text(secondary)
+                    .scaledFont(17)
+                    .foregroundStyle(Color.inkAlpha(0.62))
+                    .lineLimit(1)
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: State, elapsed time
 
-    /// Session state and elapsed time. The timeline redraws once a second only while playing; otherwise
-    /// it re-checks every few seconds, just enough to notice a stale session (PlayerTimeline).
+    /// Session state and elapsed time. The clock ticks once a second only while playing, re-checks every
+    /// few seconds otherwise, and stops entirely while Now Playing is hidden or the app is inactive.
     private func statusBlock(scene: PlayerScene) -> some View {
         let media = scene.media
         let controls = scene.controls
         let connected = remote.connected
         let connecting = remote.isBusyConnecting
         let interval = PlayerTimeline.refreshInterval(isPlaying: media.state == 3)
-        return TimelineView(.periodic(from: .now, by: interval)) { context in
+        let paused = PlayerTimeline.isPaused(sceneActive: scenePhase == .active, presented: navigator.playerPresented)
+        return TimelineView(.animation(minimumInterval: interval, paused: paused)) { context in
             statusContent(media: media, controls: controls,
                           phase: PlayerSessionPhase.resolve(media: media, connected: connected, connecting: connecting, now: context.date),
                           now: context.date)
@@ -242,111 +252,114 @@ struct PlayerPage: View {
     @ViewBuilder
     private func statusContent(media: MediaState, controls: PlayerControls, phase: PlayerSessionPhase, now: Date) -> some View {
         let position = PlayerTimeline.position(media: media, phase: phase, at: now)
-        VStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             if phase.showsSession {
                 if controls.progress, let duration = media.durationMs {
-                    progressRows(phase: phase, position: position, total: Double(duration) / 1000)
+                    timeline(position: position, total: Double(duration) / 1000)
                 } else {
-                    HStack(spacing: 12) {
-                        stateBadge(phase)
-                        Text(MediaState.format(position))
-                            .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
-                            .accessibilityLabel("Elapsed \(MediaState.format(position))")
-                    }
+                    elapsedRow(phase: phase, position: position)
                 }
                 if controls.rewind || controls.fastForward, let line = seekLine(media: media, now: now) {
-                    Text(line).scaledFont(12, .medium).foregroundStyle(Color.inkAlpha(0.7))
-                        .multilineTextAlignment(.center).lineLimit(2)
+                    Text(line).scaledFont(12, .medium).foregroundStyle(Color.inkAlpha(0.62)).lineLimit(2)
                 }
             } else {
-                Text(phase.hint).scaledFont(14).foregroundStyle(Color.inkAlpha(0.55)).multilineTextAlignment(.center)
+                Text(phase.hint).scaledFont(14).foregroundStyle(Color.inkAlpha(0.58))
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Only with a real total length (never today: the box does not report one).
-    private func progressRows(phase: PlayerSessionPhase, position: TimeInterval, total: TimeInterval) -> some View {
-        VStack(spacing: 6) {
-            stateBadge(phase)
-            ProgressView(value: min(position, total), total: total).tint(theme.accent)
+    /// Thin, display-only timeline: only with a real total length (never today: the box does not
+    /// report one, see SEEKING_REPORT.md). There is no scrubber because nothing can seek to a position.
+    private func timeline(position: TimeInterval, total: TimeInterval) -> some View {
+        let fraction = PlayerTimeline.fraction(position: position, total: total)
+        return VStack(spacing: 6) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.inkAlpha(0.18))
+                    Capsule().fill(Color.inkAlpha(0.82)).frame(width: geo.size.width * fraction)
+                }
+            }
+            .frame(height: PlayerLayoutPolicy.timelineHeight)
             HStack {
                 Text(MediaState.format(position))
                 Spacer()
                 Text("-" + MediaState.format(max(0, total - position)))
             }
-            .font(.system(size: 12).monospacedDigit()).foregroundStyle(Color.inkAlpha(0.65))
+            .font(.system(size: 12, weight: .medium).monospacedDigit())
+            .foregroundStyle(Color.inkAlpha(0.6))
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Elapsed \(MediaState.format(position)) of \(MediaState.format(total))")
+    }
+
+    /// Without a duration: the session state and the elapsed time on one quiet row.
+    private func elapsedRow(phase: PlayerSessionPhase, position: TimeInterval) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(stateColour(phase)).frame(width: 7, height: 7)
+            Text(phase.label).scaledFont(13, .semibold)
+            Spacer(minLength: 8)
+            Text(MediaState.format(position))
+                .font(.system(size: 13, weight: .semibold).monospacedDigit())
+        }
+        .foregroundStyle(Color.inkAlpha(0.68))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(phase.label), elapsed \(MediaState.format(position))")
+    }
+
+    private func stateColour(_ phase: PlayerSessionPhase) -> Color {
+        switch phase {
+        case .playing: return .green
+        case .buffering: return .yellow
+        case .paused: return .orange
+        case .stale, .connecting, .disconnected, .idle: return .gray
         }
     }
 
-    private func stateBadge(_ phase: PlayerSessionPhase) -> some View {
-        let colour: Color = {
-            switch phase {
-            case .playing: return .green
-            case .buffering: return .yellow
-            case .paused: return .orange
-            case .stale, .connecting, .disconnected, .idle: return .gray
-            }
-        }()
-        return HStack(spacing: 7) {
-            Circle().fill(colour).frame(width: 7, height: 7)
-            Text(phase.label).scaledFont(12, .semibold)
-        }
-        .padding(.horizontal, 14).frame(height: 28)
-        .glassSurface(Capsule())
-        .accessibilityElement(children: .combine)
-    }
-
-    // MARK: Transport (one glass bar, one prominent lens)
+    // MARK: Transport (plain glyphs, like Apple Music)
 
     /// Play / pause is primary. Rewind and fast-forward appear only when the session advertises them;
-    /// track skip only for explicit audio-track sessions (never video, never Nuvio). No inert buttons.
+    /// track skip only for explicit audio-track sessions (never video, never Nuvio). No inert buttons
+    /// and no glass bar: the glyphs sit directly on the artwork backdrop.
     private func transport(media: MediaState, controls: PlayerControls) -> some View {
         let busy = remote.mediaCommandPending
         // Relabelled "10 s" only once BOTH keys have been measured, repeatedly, at about ten seconds.
         let tenSecond = remote.seekLearner.isTenSecond(package: media.package)
-        return ZStack {
-            // Glass only (bar + centre bubble); the buttons sit above it so they are never refracted.
-            GlassGroup(spacing: 12) {
-                ZStack {
-                    if controls.hasSecondary {
-                        Color.clear.frame(height: 80).glassBar(Capsule(), interactive: false)
-                    }
-                    Color.clear.frame(width: 62, height: 62).glassLens(Circle())
+        return HStack(spacing: 0) {
+            if controls.previousTrack {
+                control("backward.end.fill", "Previous track", enabled: !busy) { remote.sendMedia(.previous) }
+            }
+            if controls.rewind {
+                control(tenSecond ? "gobackward.10" : "backward.fill", tenSecond ? "Back 10 seconds" : "Rewind", enabled: !busy) {
+                    remote.sendMedia(.rewind)
                 }
             }
-            HStack(spacing: 6) {
-                if controls.previousTrack {
-                    control("backward.end.fill", "Previous track", enabled: !busy) { remote.sendMedia(.previous) }
-                }
-                if controls.rewind {
-                    control(tenSecond ? "gobackward.10" : "backward.fill", tenSecond ? "Back 10 seconds" : "Rewind", enabled: !busy) {
-                        remote.sendMedia(.rewind)
-                    }
-                }
-                playButton(media: media, enabled: controls.playPause && !busy, busy: busy)
-                if controls.fastForward {
-                    control(tenSecond ? "goforward.10" : "forward.fill", tenSecond ? "Forward 10 seconds" : "Fast forward", enabled: !busy) {
-                        remote.sendMedia(.fastForward)
-                    }
-                }
-                if controls.nextTrack {
-                    control("forward.end.fill", "Next track", enabled: !busy) { remote.sendMedia(.next) }
+            playButton(media: media, enabled: controls.playPause && !busy, busy: busy)
+            if controls.fastForward {
+                control(tenSecond ? "goforward.10" : "forward.fill", tenSecond ? "Forward 10 seconds" : "Fast forward", enabled: !busy) {
+                    remote.sendMedia(.fastForward)
                 }
             }
-            .padding(.horizontal, 10)
+            if controls.nextTrack {
+                control("forward.end.fill", "Next track", enabled: !busy) { remote.sendMedia(.next) }
+            }
         }
-        .frame(height: 80)
+        .frame(maxWidth: .infinity)
+        .frame(height: PlayerLayoutPolicy.transportHeight)
     }
 
     private func playButton(media: MediaState, enabled: Bool, busy: Bool) -> some View {
         Button { remote.sendMedia(PlayerControls.playPauseCommand(for: media)) } label: {
             ZStack {
                 if busy { ProgressView().tint(Color.ink) }
-                else { Image(systemName: media.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 28, weight: .semibold)) }
+                else {
+                    Image(systemName: media.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: PlayerLayoutPolicy.playGlyph, weight: .semibold))
+                        .contentTransition(.symbolEffect(.replace))
+                }
             }
-            .frame(width: 62, height: 62)
-            .contentShape(Circle())
+            .frame(maxWidth: .infinity).frame(height: PlayerLayoutPolicy.transportHeight)
+            .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
         .disabled(!enabled)
@@ -356,8 +369,8 @@ struct PlayerPage: View {
 
     private func control(_ icon: String, _ label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon).font(.system(size: 19, weight: .semibold))
-                .frame(maxWidth: .infinity).frame(height: 56)
+            Image(systemName: icon).font(.system(size: PlayerLayoutPolicy.secondaryGlyph, weight: .semibold))
+                .frame(maxWidth: .infinity).frame(height: PlayerLayoutPolicy.transportHeight)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
@@ -393,16 +406,16 @@ private struct PlayerScene {
     let key: String
 }
 
-/// The neutral glass volume slider (the same control as the Remote page): 0–100 % of the target's real
-/// range with haptic ticks, routed exactly like the Remote page's slider, so TV readings never fight a
-/// finger and a value shown from a reading is never sent back as a command.
+/// The compact volume row (v5 §3), like Apple Music's small volume slider. It is not a separate volume
+/// system: the same thin slider, the same Samsung target, mapping, commands and feedback as the Remote
+/// page, so TV readings never fight a finger and a value shown from a reading is never sent back.
 private struct PlayerVolumeBar: View {
     @EnvironmentObject private var remote: RemoteModel
     @State private var value: Double = 0.5
     @State private var externalEcho: Double?
 
     var body: some View {
-        GlassVolumeSlider(value: $value, scale: remote.volumeScale, thickness: RemoteLayoutPolicy.portraitVolumeThickness,
+        GlassVolumeSlider(value: $value, scale: remote.volumeScale, thickness: ThinVolumeMetrics.minimumTouchTarget,
                           onDragChange: { remote.volumeDragChanged($0) })
             .onChange(of: value) { _, newValue in
                 if let echo = externalEcho, abs(newValue - echo) < 0.0001 { externalEcho = nil; return }

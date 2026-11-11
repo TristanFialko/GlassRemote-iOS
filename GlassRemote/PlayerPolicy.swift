@@ -100,6 +100,56 @@ enum PlayerLayoutPolicy {
             return fit(aspect: kind.aspect, in: CGSize(width: side, height: side))
         }
     }
+
+    // MARK: v5 §3 (Now Playing, Apple Music style)
+
+    /// Portrait side margin of the Now Playing group: the artwork runs nearly edge to edge.
+    static let nowPlayingMargin: CGFloat = 26
+    static let artworkCornerRadius: CGFloat = 14
+    /// Thin, display-only timeline.
+    static let timelineHeight: CGFloat = 5
+    /// Transport row: plain glyphs, the play glyph largest; every glyph keeps a full touch target.
+    static let transportHeight: CGFloat = 64
+    static let playGlyph: CGFloat = 42
+    static let secondaryGlyph: CGFloat = 28
+    /// The artwork eases back to this scale while paused, as Apple Music does.
+    static let pausedArtworkScale: CGFloat = 0.9
+
+    /// Near-square proportions for the Now Playing card: a 2:3 poster is shown 4:5 and 16:9 key art
+    /// 4:3, filled and centre-cropped (never stretched); app artwork is square.
+    static func nowPlayingAspect(kind: PlayerArtworkKind) -> CGFloat {
+        switch kind {
+        case .poster: return 4.0 / 5.0
+        case .landscape: return 4.0 / 3.0
+        case .appIcon: return 1
+        }
+    }
+
+    /// The Now Playing card: the largest near-square frame that fits `region` (portrait: the space
+    /// above the controls; landscape: the square artwork region).
+    static func nowPlayingArtwork(kind: PlayerArtworkKind, region: CGSize) -> CGSize {
+        fit(aspect: nowPlayingAspect(kind: kind), in: region)
+    }
+
+    static func artworkScale(isPlaying: Bool, reduceMotion: Bool) -> CGFloat {
+        (isPlaying || reduceMotion) ? 1 : pausedArtworkScale
+    }
+}
+
+/// v5 §3: the line under the title (Apple Music's artist line): the episode subtitle and the app,
+/// skipping anything empty or repeating the title.
+enum PlayerTitlePolicy {
+    static func secondaryLine(subtitle: String, appName: String, title: String) -> String {
+        var parts: [String] = []
+        for part in [subtitle, appName] {
+            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  trimmed.caseInsensitiveCompare(title) != .orderedSame,
+                  !parts.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) else { continue }
+            parts.append(trimmed)
+        }
+        return parts.joined(separator: " · ")
+    }
 }
 
 // MARK: - Capabilities
@@ -231,6 +281,15 @@ enum PlayerTimeline {
     static func position(media: MediaState, phase: PlayerSessionPhase, at date: Date) -> TimeInterval {
         phase == .stale ? media.position(at: media.sampledAt) : media.position(at: date)
     }
+
+    /// v5 §3: the clock stops entirely while Now Playing is hidden or the app is not active.
+    static func isPaused(sceneActive: Bool, presented: Bool) -> Bool { !(sceneActive && presented) }
+
+    /// Timeline fill, clamped to 0...1; 0 without a usable duration.
+    static func fraction(position: TimeInterval, total: TimeInterval) -> CGFloat {
+        guard total > 0, total.isFinite, position.isFinite else { return 0 }
+        return CGFloat(min(max(position / total, 0), 1))
+    }
 }
 
 /// Artwork and metadata change together: one key for both, so a new title never shows the old poster.
@@ -259,6 +318,11 @@ enum PlayerBackdropPolicy {
     static let lightTarget = 0.24
     /// Extra shade towards the bottom of the screen, where the controls sit.
     static let footShade = 0.12
+    /// v5 §3: without artwork, one continuous full-screen wash of the theme accent (top, bottom),
+    /// stronger when the theme is Adaptive, never a small radial glow.
+    static func fallbackOpacity(adaptive: Bool) -> (top: Double, bottom: Double) {
+        adaptive ? (0.34, 0.10) : (0.16, 0.04)
+    }
     /// `Color.ink`: white on dark themes, 8 % grey on light ones.
     static let darkInkLuminance = 1.0
     static let lightInkLuminance = ColorMath.luminance(r: 0.08, g: 0.08, b: 0.08)

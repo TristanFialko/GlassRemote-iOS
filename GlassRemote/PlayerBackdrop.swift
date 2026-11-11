@@ -58,8 +58,8 @@ final class PlayerBackdropStore: ObservableObject {
 
 /// Phase 9 §A2: the Player's full-screen artwork background. `RootPagerView` draws it as part of the
 /// one root canvas, under the dock, the landscape rail and every page, so there is no seam at the
-/// rail's edge. It shows only while the Player is the current page; without artwork the theme's own
-/// canvas (`AmbientBackdrop`) stays as the fallback.
+/// rail's edge. It shows only while Now Playing is presented; without artwork it draws one continuous
+/// full-screen wash of the theme accent over the theme's own canvas (v5 §3), not a small glow.
 struct PlayerBackdrop: View {
     var visible: Bool
     @ObservedObject private var store = PlayerBackdropStore.shared
@@ -70,6 +70,9 @@ struct PlayerBackdrop: View {
             if visible, let backdrop = store.backdrop {
                 PlayerBackdropCanvas(backdrop: backdrop, light: theme.isLight)
                     .id(backdrop.url)
+                    .transition(.opacity)
+            } else if visible {
+                PlayerFallbackCanvas(accent: theme.accent, adaptive: theme.id == .adaptive)
                     .transition(.opacity)
             }
         }
@@ -105,5 +108,18 @@ private struct PlayerBackdropCanvas: View {
             LinearGradient(colors: [tone.opacity(0), tone.opacity(PlayerBackdropPolicy.footShade)],
                            startPoint: .center, endPoint: .bottom)
         }
+    }
+}
+
+/// v5 §3: the no-artwork background. One continuous full-screen wash of the theme accent, drawn in the
+/// root canvas (under the dock and the rail). A gradient is already soft: no blur, nothing per tick.
+private struct PlayerFallbackCanvas: View {
+    let accent: Color
+    let adaptive: Bool
+
+    var body: some View {
+        let opacity = PlayerBackdropPolicy.fallbackOpacity(adaptive: adaptive)
+        LinearGradient(colors: [accent.opacity(opacity.top), accent.opacity(opacity.bottom)],
+                       startPoint: .top, endPoint: .bottom)
     }
 }

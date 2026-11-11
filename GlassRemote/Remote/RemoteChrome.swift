@@ -142,3 +142,9 @@ struct RemoteTargetSwitch: View {
         }
     }
 }
+
+/// v5 §6: the instructions that used to be drawn inside the trackpads, now VoiceOver hints only.
+enum RemoteSurfaceHints {
+    static let androidTrackpad = "Tap to click, hold to drag, two fingers to scroll, or two-finger tap for Back."
+    static let samsungTrackpad = "Slide to move the focus on the TV, tap to select, two-finger tap for Back."
+}

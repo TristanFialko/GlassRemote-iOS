@@ -479,15 +479,13 @@ struct RemoteView: View {
 
     private var mouseSurface: some View {
         let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
+        // v5 §6: no instructions drawn inside the surface; VoiceOver keeps them as a hint.
         return Color.clear
             .glassSurface(shape, elevated: true)
-            .overlay(alignment: .bottom) {
-                Text("Tap to click · hold to drag · two fingers to scroll or tap for Back")
-                    .scaledFont(12).foregroundStyle(Color.ink.opacity(0.7))
-                    .padding(.bottom, 16)
-                    .allowsHitTesting(false)
-            }
             .contentShape(shape)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Trackpad")
+            .accessibilityHint(RemoteSurfaceHints.androidTrackpad)
             .background {
                 TwoFingerScroll(
                     state: scrollState,
