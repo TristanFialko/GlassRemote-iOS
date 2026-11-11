@@ -93,7 +93,7 @@ extension RemoteModel {
 
     /// Volume and mute go to the Samsung TV when that connection is ready, otherwise
     /// through the existing ADB path.
-    func volume(_ name: String, haptic: Bool = true) {
+    func volume(_ name: String, haptic: Bool = true, readBack: Bool = true) {
         endpointLearner.invalidate()   // a volume key is a newer command: discard any pending endpoint attempt
         if tvVolumeEnabled, tv.send(name) {
             if haptic { Haptics.soft() }
@@ -102,6 +102,8 @@ extension RemoteModel {
         }
         if haptic { Haptics.soft() }
         key(name)
+        // Continuation §C2: a volume key changed the box's level; read it back so the slider follows.
+        if readBack, name.hasPrefix("VOLUME_") { scheduleAndroidVolumeReadback() }
     }
 
     // MARK: - Real TV volume (UPnP RenderingControl)
@@ -139,6 +141,9 @@ extension RemoteModel {
             let cal = self.volumeCalibration
             self.volumeStatus = "TV volume: \(value) (range \(cal.lo)–\(cal.hi), read from the TV)"
             self.tvVolumeFraction = cal.fraction(forRaw: value)
+            if self.volumeScale.route == .samsungAbsolute {
+                self.publishVolumeReading(self.volumeScale.fraction(forRaw: value))
+            }
         }
         if tvVolumeEnabled { volumeLink.start(host: samsungHost) }
     }
@@ -157,7 +162,14 @@ extension RemoteModel {
     /// Called by the slider when a finger lands / lifts. A touch discards any pending endpoint attempt.
     func volumeDragChanged(_ active: Bool) {
         volumeDragActive = active
-        if active { endpointLearner.invalidate() }
+        if active {
+            endpointLearner.invalidate()
+            volumeSync.dragBegan()
+            volumeReconcileTask?.cancel()
+        } else {
+            volumeSync.dragEnded()
+            scheduleVolumeReconcile()
+        }
     }
 
     func resetVolumeCalibration() {
@@ -168,15 +180,95 @@ extension RemoteModel {
 
     /// Readings from the TV never move the slider while a finger is on it, nor for 2 s after the
     /// last change (the TV can lag behind a command, and a stale reading would pull the thumb back).
-    var volumeSliderAcceptsExternal: Bool {
-        !volumeDragActive && Date().timeIntervalSince(lastUserVolumeInput) > 2.0
+    var volumeSliderAcceptsExternal: Bool { volumeSync.acceptsReading() }
+
+    /// Continuation §C2: a device reading, gated by `VolumeSync`. Returns the slider value to show,
+    /// or nil while the user owns the slider (or when it would not move the thumb).
+    func sliderValue(forReading fraction: Double, showing current: Double) -> Double? {
+        volumeSync.reading(fraction, showing: current)
+    }
+
+    /// Continuation §C2: once the hold-off after the user's last change has passed, read the device
+    /// again so the slider settles on what it really did (readings inside the window were ignored).
+    func scheduleVolumeReconcile() {
+        volumeReconcileTask?.cancel()
+        let delay = volumeSync.holdoff + 0.1
+        volumeReconcileTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !Task.isCancelled, self.volumeSync.reconcileDue() else { return }
+            self.refreshDeviceVolume()
+        }
+    }
+
+    /// Reads the current target's real level, where it can report one.
+    func refreshDeviceVolume() {
+        switch volumeScale.route {
+        case .samsungAbsolute: volumeLink.refresh()
+        case .androidKeys: refreshAndroidVolume()
+        case .samsungKeys: break   // the soundbar does not report its level over the remote socket
+        }
+    }
+
+    /// Asks the Android box for its music-stream volume and range (`AndroidVolumeReading`).
+    func refreshAndroidVolume() {
+        guard let connection = adb, connected, androidVolumeTask == nil else { return }
+        androidVolumeTask = Task { [weak self] in
+            var reading: AndroidVolumeReading?
+            for command in AndroidVolumeReading.commands {
+                guard let model = self, !Task.isCancelled else { break }
+                if let output = try? await model.runShell(connection, command),
+                   let parsed = AndroidVolumeReading.parse(output) {
+                    reading = parsed
+                    break
+                }
+            }
+            guard let self else { return }
+            self.androidVolumeTask = nil
+            if let reading { self.applyAndroidVolume(reading) }
+        }
+    }
+
+    /// A short read-back after an ADB volume key (buttons, not slider sweeps).
+    private func scheduleAndroidVolumeReadback() {
+        guard volumeScale.route == .androidKeys else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            self?.refreshAndroidVolume()
+        }
+    }
+
+    /// The box reported its level: the slider can show it, and key presses become exact counts.
+    func applyAndroidVolume(_ reading: AndroidVolumeReading) {
+        androidVolume = reading
+        GRLog.note("volume", "Android music volume \(reading.current) in \(reading.min)...\(reading.max)")
+        guard volumeScale.route == .androidKeys else { return }
+        let scale = volumeScale
+        if volumePendingSteps == 0, volumeDrainTask == nil, !volumeDragActive {
+            volumeLevelsInUse = scale.steps
+            volumeAssumedLevel = reading.current - scale.lo
+            volumeLevelKnown = true
+        }
+        publishVolumeReading(scale.fraction(forRaw: reading.current))
+    }
+
+    func publishVolumeReading(_ fraction: Double) {
+        volumeReadingSerial &+= 1
+        volumeReading = VolumeReadingEvent(fraction: fraction, serial: volumeReadingSerial)
     }
 
     // MARK: - Slider -> volume mapping
 
     /// Number of volume-key presses a full slider sweep spans. Through the TV this is the
     /// soundbar's own scale (`tvVolumeMax`); over ADB it stays at the original 20 steps.
-    var volumeLevels: Int { volumeLinkReady ? 100 : ((tvVolumeEnabled && samsungRemoteReady) ? tvVolumeMax : 20) }
+    var volumeLevels: Int { volumeScale.steps }
+
+    /// Continuation §C2: the current target's real range (VolumeScale.swift). Same routing as the
+    /// commands: the TV's absolute level when it reports one, then the TV's keys, then ADB.
+    var volumeScale: VolumeScale {
+        if tvVolumeEnabled, volumeLinkReady { return .samsungAbsolute(volumeCalibration) }
+        if tvVolumeEnabled, samsungRemoteReady { return .samsungKeys(max: tvVolumeMax) }
+        return .android(androidVolume)
+    }
 
     /// Forget what we assumed about the real volume (range or route changed).
     func volumeStateReset() {
@@ -190,20 +282,22 @@ extension RemoteModel {
     /// agree exactly at that end and every later move is an exact press count.
     func setVolumeFraction(_ fraction: Double) {
         lastUserVolumeInput = Date()
+        volumeSync.userChanged()
+        if !volumeDragActive { scheduleVolumeReconcile() }   // VoiceOver increments settle too
         // Preferred: the TV reports its real level, so set it absolutely (0...100). The slider's
         // full travel is then exactly the TV's full range and nothing is assumed.
         if tvVolumeEnabled, volumeLinkReady {
-            let cal = volumeCalibration
-            let raw = cal.raw(forFraction: fraction)
+            let raw = volumeScale.raw(forFraction: fraction)
             if fraction <= 0 { endpointLearner.commandSent(raw: raw, isMax: false) }
             else if fraction >= 1 { endpointLearner.commandSent(raw: raw, isMax: true) }
             else { endpointLearner.invalidate() }   // a mid-range command can never teach an end
             volumeLink.setVolume(raw)
             return
         }
-        let levels = volumeLevels
-        let clamped = min(max(fraction, 0), 1)
-        let target = Int((clamped * Double(levels)).rounded())
+        let scale = volumeScale
+        let levels = scale.steps
+        // The real level this fraction commands (only the very ends reach 0 and the top).
+        let target = scale.step(forFraction: fraction)
 
         if volumeLevelsInUse != levels {
             // Range changed: rescale the assumed position, and stop trusting it.
@@ -233,8 +327,9 @@ extension RemoteModel {
             while let self, self.volumePendingSteps != 0, !Task.isCancelled {
                 let up = self.volumePendingSteps > 0
                 self.volumePendingSteps += up ? -1 : 1
-                // Feel each step for small moves; stay quiet during long sweeps.
-                self.volume(up ? "VOLUME_UP" : "VOLUME_DOWN", haptic: abs(self.volumePendingSteps) < 3)
+                // The slider already ticked each level the finger crossed (VolumeHapticPolicy), so the
+                // presses stay silent; the reconcile after the drag reads the result back.
+                self.volume(up ? "VOLUME_UP" : "VOLUME_DOWN", haptic: false, readBack: false)
                 try? await Task.sleep(nanoseconds: 40_000_000)
             }
             self?.volumeDrainTask = nil

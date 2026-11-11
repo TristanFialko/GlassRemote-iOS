@@ -42,25 +42,26 @@ final class Phase9RemoteTests: XCTestCase {
 
     func testAndroidAndSamsungPadsShareOneFrame() {
         for height in [300, 340, 380] as [CGFloat] {
-            // Android: header, mode and the Apps card on the left; navigation and volume on the right.
+            // Android: header, mode and the Apps card on the left; navigation on the right; volume in the deck.
             let android = RemoteStageLayout.frames(width: 812, height: height,
                                                    leading: [96, 40, 58], leadingBottom: [false, false, true],
-                                                   trailing: [114, 58], trailingBottom: [false, true],
+                                                   trailing: [114], trailingBottom: [false],
                                                    hasPad: true, spacing: 10, columnSpacing: 14,
-                                                   reservesColumns: true)
-            // Samsung: header and its navigation row; transport, TV group and volume.
+                                                   reservesColumns: true, deck: true)
+            // Samsung: header and its navigation row; transport and the TV group; volume in the deck.
             let samsung = RemoteStageLayout.frames(width: 812, height: height,
                                                    leading: [96, 52], leadingBottom: [false, true],
-                                                   trailing: [52, 52, 58], trailingBottom: [false, true, true],
+                                                   trailing: [52, 52], trailingBottom: [false, true],
                                                    hasPad: true, spacing: 10, columnSpacing: 14,
-                                                   reservesColumns: true)
+                                                   reservesColumns: true, deck: true)
             XCTAssertEqual(android.pad, samsung.pad, "height \(height)")
+            XCTAssertEqual(android.deck, samsung.deck, "height \(height)")
             // A sparse stage (one empty column) keeps the same pad when columns are reserved.
             let sparse = RemoteStageLayout.frames(width: 812, height: height,
                                                   leading: [96], leadingBottom: [false],
                                                   trailing: [], trailingBottom: [],
                                                   hasPad: true, spacing: 10, columnSpacing: 14,
-                                                  reservesColumns: true)
+                                                  reservesColumns: true, deck: true)
             XCTAssertEqual(sparse.pad, android.pad)
             XCTAssertEqual(RemoteStageLayout.padRect(width: 812, height: height), android.pad)
         }

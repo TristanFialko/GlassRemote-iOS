@@ -110,6 +110,15 @@ final class RemoteModel: ObservableObject {
     var volumeLevelKnown = false
     var volumePendingSteps = 0
     var volumeDrainTask: Task<Void, Never>?
+    /// Continuation §C2: the Android box's own music-stream volume (nil until it has answered).
+    @Published var androidVolume: AndroidVolumeReading?
+    /// Every device reading, numbered, so the slider settles on it even when the value repeats.
+    @Published var volumeReading: VolumeReadingEvent?
+    var volumeReadingSerial = 0
+    /// Who owns the slider: the finger, the hold-off after it, or the device (VolumeScale.swift).
+    var volumeSync = VolumeSync()
+    var volumeReconcileTask: Task<Void, Never>?
+    var androidVolumeTask: Task<Void, Never>?
     var tvSupervisorTask: Task<Void, Never>?
 
     let apps: [TVApp] = [

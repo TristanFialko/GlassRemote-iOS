@@ -130,6 +130,11 @@ struct RemoteView: View {
                 let surface = surfaceLayout(compact: compact)
                 let stageWidth = max(proxy.size.width - 32, 0)
                 let leadingWidth = RemoteLayoutPolicy.columnWidths(for: stageWidth).leading
+                // Continuation §C3: the landscape volume deck's height for this stage (top 6 + bottom 8).
+                let volumeThickness = isLandscape
+                    ? RemoteLayoutPolicy.volumeDeckHeight(stageHeight: max(proxy.size.height - 14, 0),
+                                                          spacing: RemoteLayoutPolicy.spacing(compact: false, isLandscape: true))
+                    : RemoteLayoutPolicy.volumeThickness(compact: compact)
                 surface {
                     header(stageWidth: stageWidth, leadingWidth: leadingWidth)
                         .remoteStage(.leading)
@@ -138,8 +143,8 @@ struct RemoteView: View {
                     } else {
                         androidControls(compact: compact, leadingWidth: leadingWidth)
                     }
-                    volumeBar
-                        .remoteStage(.trailing, bottom: true)
+                    volumeBar(thickness: volumeThickness)
+                        .remoteStage(.deck)
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
@@ -668,8 +673,8 @@ struct RemoteView: View {
         }
     }
 
-    private var volumeBar: some View {
-        GlassVolumeSlider(value: $volumeSliderValue, floorIsMute: remote.volumeCalibration.lo == 0,
+    private func volumeBar(thickness: CGFloat) -> some View {
+        GlassVolumeSlider(value: $volumeSliderValue, scale: remote.volumeScale, thickness: thickness,
                           onDragChange: { remote.volumeDragChanged($0) })
             .onChange(of: volumeSliderValue) { _, newValue in
                 // A value we just applied from the TV's own reading must not be sent back to it.
@@ -679,11 +684,17 @@ struct RemoteView: View {
                 }
                 remote.setVolumeFraction(newValue)
             }
-            .onChange(of: remote.tvVolumeFraction) { _, reading in
-                guard let reading, remote.volumeSliderAcceptsExternal,
-                      abs(reading - volumeSliderValue) > 0.0001 else { return }
-                externalVolumeEcho = reading
-                volumeSliderValue = reading
+            // Continuation §C2: every device reading (Samsung UPnP or the Android box) goes through
+            // VolumeSync, so it never fights a finger and the settled value is shown after a drag.
+            .onChange(of: remote.volumeReading) { _, event in
+                guard let event,
+                      let shown = remote.sliderValue(forReading: event.fraction, showing: volumeSliderValue) else { return }
+                externalVolumeEcho = shown
+                volumeSliderValue = shown
             }
+            .onChange(of: remote.connected) { _, isConnected in
+                if isConnected { remote.refreshAndroidVolume() }
+            }
+            .onAppear { remote.refreshDeviceVolume() }
     }
 }

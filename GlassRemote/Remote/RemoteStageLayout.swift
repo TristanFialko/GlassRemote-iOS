@@ -4,12 +4,14 @@ import SwiftUI
 //
 // Portrait stacks the controls in their declared order with the pad taking every spare point.
 // Landscape is a three-column stage: device, mode and launcher on the leading side, the pad in the
-// middle, navigation and volume on the trailing side. Both orientations use the SAME child views
+// middle, navigation on the trailing side. Continuation §C3: volume has its own deck along the foot
+// of the pad and trailing column, so it is long and prominent instead of a leftover narrow column. Both orientations use the SAME child views
 // (switched with `AnyLayout`), so the pad, its gesture state and the input guard survive rotation.
 
 /// Which column a Remote control occupies in the landscape stage. Portrait ignores it.
 enum RemoteStageColumn: Int, Equatable {
-    case leading, pad, trailing
+    /// `deck`: the landscape volume deck, under the pad and the trailing column.
+    case leading, pad, trailing, deck
 }
 
 struct RemoteStageSlot: LayoutValueKey {
@@ -75,6 +77,28 @@ enum RemoteLayoutPolicy {
     static let landscapePadMinWidth: CGFloat = 200
     /// Corner radius shared by every central touch surface (mouse pad, D-pad bezel, Samsung pad).
     static let padCornerRadius: CGFloat = 36
+
+    // MARK: Continuation §C3 volume sizing
+
+    /// Portrait track heights (thumb = height - 10).
+    static let portraitVolumeThickness: CGFloat = 60
+    static let compactVolumeThickness: CGFloat = 56
+    /// Landscape deck height, and the least it may become on a very short stage.
+    static let landscapeVolumeThickness: CGFloat = 66
+    static let landscapeVolumeMinThickness: CGFloat = 56
+    /// The landscape deck is never shorter than this (it spans the pad and the trailing column).
+    static let landscapeVolumeMinLength: CGFloat = 300
+
+    static func volumeThickness(compact: Bool) -> CGFloat {
+        compact ? compactVolumeThickness : portraitVolumeThickness
+    }
+
+    /// The deck's height on a landscape stage: full size while the pad keeps its minimum height above
+    /// it, then it gives way (to 56 pt) before the pad does.
+    static func volumeDeckHeight(stageHeight: CGFloat, spacing: CGFloat = 10) -> CGFloat {
+        let room = stageHeight - padMinHeight(compact: false, isLandscape: true) - spacing
+        return min(max(room, landscapeVolumeMinThickness), landscapeVolumeThickness)
+    }
 
     /// Landscape column widths. Each is a share of the width with a usable minimum and a cap. The
     /// pad always keeps at least `landscapePadMinWidth` and 38 % of the width (never less than 40 %
@@ -147,28 +171,35 @@ struct RemoteStageLayout: Layout {
         var leading: [CGRect]
         var trailing: [CGRect]
         var pad: CGRect?
+        /// Continuation §C3: the volume deck, under the pad and the trailing column.
+        var deck: CGRect? = nil
     }
 
     /// Pure frame computation (unit tested). Heights are each child's natural height at its column
-    /// width; `bottom` flags mark children pinned to the column's foot.
+    /// width; `bottom` flags mark children pinned to the column's foot. With `deck`, the volume deck
+    /// takes `volumeDeckHeight` along the foot of the pad and trailing column (the leading column keeps
+    /// the full height), and the pad and trailing column end one spacing above it.
     static func frames(width: CGFloat, height: CGFloat,
                        leading: [CGFloat], leadingBottom: [Bool],
                        trailing: [CGFloat], trailingBottom: [Bool],
                        hasPad: Bool, spacing: CGFloat, columnSpacing: CGFloat,
-                       reservesColumns: Bool = false) -> Frames {
+                       reservesColumns: Bool = false, deck: Bool = false) -> Frames {
         let widths = RemoteLayoutPolicy.columnWidths(for: width)
         let leadingWidth: CGFloat = (leading.isEmpty && !reservesColumns) ? 0 : widths.leading
         let trailingWidth: CGFloat = (trailing.isEmpty && !reservesColumns) ? 0 : widths.trailing
         let trailingX: CGFloat = max(width - trailingWidth, 0)
 
-        func stack(_ heights: [CGFloat], _ bottom: [Bool], x: CGFloat, w: CGFloat) -> [CGRect] {
+        let deckHeight: CGFloat = deck ? RemoteLayoutPolicy.volumeDeckHeight(stageHeight: height, spacing: spacing) : 0
+        let upper: CGFloat = deck ? max(height - deckHeight - spacing, 0) : height
+
+        func stack(_ heights: [CGFloat], _ bottom: [Bool], x: CGFloat, w: CGFloat, foot columnFoot: CGFloat) -> [CGRect] {
             var rects = Array(repeating: CGRect.zero, count: heights.count)
             var y: CGFloat = 0
             for i in heights.indices where !(i < bottom.count && bottom[i]) {
                 rects[i] = CGRect(x: x, y: y, width: w, height: heights[i])
                 y += heights[i] + spacing
             }
-            var foot: CGFloat = height
+            var foot: CGFloat = columnFoot
             for i in heights.indices.reversed() where i < bottom.count && bottom[i] {
                 foot -= heights[i]
                 rects[i] = CGRect(x: x, y: foot, width: w, height: heights[i])
@@ -177,22 +208,29 @@ struct RemoteStageLayout: Layout {
             return rects
         }
 
+        let middleX: CGFloat = leadingWidth > 0 ? leadingWidth + columnSpacing : 0
         var pad: CGRect?
         if hasPad {
-            let x: CGFloat = leadingWidth > 0 ? leadingWidth + columnSpacing : 0
             let right: CGFloat = trailingWidth > 0 ? trailingX - columnSpacing : width
-            pad = CGRect(x: x, y: 0, width: max(right - x, 0), height: max(height, 0))
+            pad = CGRect(x: middleX, y: 0, width: max(right - middleX, 0), height: max(upper, 0))
         }
-        return Frames(leading: stack(leading, leadingBottom, x: 0, w: leadingWidth),
-                      trailing: stack(trailing, trailingBottom, x: trailingX, w: trailingWidth),
-                      pad: pad)
+        let deckRect: CGRect? = deck
+            ? CGRect(x: middleX, y: max(height - deckHeight, 0), width: max(width - middleX, 0), height: deckHeight)
+            : nil
+        return Frames(leading: stack(leading, leadingBottom, x: 0, w: leadingWidth, foot: height),
+                      trailing: stack(trailing, trailingBottom, x: trailingX, w: trailingWidth, foot: upper),
+                      pad: pad, deck: deckRect)
     }
 
-    /// The pad's frame on a stage of this size when both columns are reserved (unit tested).
+    /// The pad's frame on a stage of this size when both columns and the volume deck are reserved
+    /// (unit tested): it depends only on the stage size, never on the target.
     static func padRect(width: CGFloat, height: CGFloat,
-                        columnSpacing: CGFloat = RemoteLayoutPolicy.stageColumnSpacing) -> CGRect {
+                        spacing: CGFloat = RemoteLayoutPolicy.spacing(compact: false, isLandscape: true),
+                        columnSpacing: CGFloat = RemoteLayoutPolicy.stageColumnSpacing,
+                        deck: Bool = true) -> CGRect {
         frames(width: width, height: height, leading: [], leadingBottom: [], trailing: [], trailingBottom: [],
-               hasPad: true, spacing: 0, columnSpacing: columnSpacing, reservesColumns: true).pad ?? .zero
+               hasPad: true, spacing: spacing, columnSpacing: columnSpacing, reservesColumns: true,
+               deck: deck).pad ?? .zero
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -204,11 +242,13 @@ struct RemoteStageLayout: Layout {
         var leadingIndex: [Int] = []
         var trailingIndex: [Int] = []
         var padIndex: [Int] = []
+        var deckIndex: [Int] = []
         for (i, view) in subviews.enumerated() {
             switch view[RemoteStageSlot.self] {
             case .leading: leadingIndex.append(i)
             case .trailing: trailingIndex.append(i)
             case .pad: padIndex.append(i)
+            case .deck: deckIndex.append(i)
             }
         }
         func heights(_ indices: [Int], width: CGFloat) -> [CGFloat] {
@@ -222,7 +262,7 @@ struct RemoteStageLayout: Layout {
                                  trailing: heights(trailingIndex, width: widths.trailing),
                                  trailingBottom: bottoms(trailingIndex),
                                  hasPad: !padIndex.isEmpty, spacing: spacing, columnSpacing: columnSpacing,
-                                 reservesColumns: reservesColumns)
+                                 reservesColumns: reservesColumns, deck: !deckIndex.isEmpty)
 
         func place(_ index: Int, _ rect: CGRect) {
             subviews[index].place(at: CGPoint(x: bounds.minX + rect.minX, y: bounds.minY + rect.minY),
@@ -233,6 +273,9 @@ struct RemoteStageLayout: Layout {
         for (n, i) in trailingIndex.enumerated() { place(i, frames.trailing[n]) }
         if let pad = frames.pad {
             for i in padIndex { place(i, pad) }
+        }
+        if let deck = frames.deck {
+            for i in deckIndex { place(i, deck) }
         }
     }
 }
