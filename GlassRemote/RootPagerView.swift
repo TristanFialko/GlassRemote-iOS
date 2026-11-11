@@ -174,31 +174,33 @@ struct RootPagerView: View {
 }
 
 /// Watches the media session and reports whether the mini-player should show. Isolated in its own
-/// tiny view so the root never re-renders on `RemoteModel` updates. Re-checks every few seconds so a
-/// session that stops reporting disappears once it is stale.
+/// tiny view so the root never re-renders on `RemoteModel` updates.
+///
+/// v6 §1: state driven, with no sleeping loop. Every sample, connection or connecting change
+/// re-renders this view and re-evaluates at once; the only change that arrives without input (a
+/// session that stops reporting going stale) is a single entry on an explicit timeline, scheduled for
+/// just after the stale point (`MiniPlayerPolicy.recheckSchedule`). SwiftUI owns and cancels the
+/// timeline with the view.
 private struct MiniPlayerProbe: View {
     @EnvironmentObject private var remote: RemoteModel
     @Binding var visible: Bool
 
     var body: some View {
-        Color.clear
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-            .onAppear(perform: update)
-            .onChange(of: remote.media) { _, _ in update() }
-            .onChange(of: remote.connected) { _, _ in update() }
-            .onChange(of: remote.isBusyConnecting) { _, _ in update() }
-            .task {
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: MiniPlayerPolicy.recheckNanos)
-                    update()
-                }
-            }
+        let media = remote.media
+        let connected = remote.connected
+        let connecting = remote.isBusyConnecting
+        TimelineView(.explicit(MiniPlayerPolicy.recheckSchedule(media: media, now: Date()))) { context in
+            let shown = MiniPlayerPolicy.isVisible(media: media, connected: connected, connecting: connecting,
+                                                   now: max(context.date, Date()))
+            Color.clear
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .onAppear { report(shown) }
+                .onChange(of: shown) { _, value in report(value) }
+        }
     }
 
-    private func update() {
-        let shown = MiniPlayerPolicy.isVisible(media: remote.media, connected: remote.connected,
-                                               connecting: remote.isBusyConnecting, now: Date())
+    private func report(_ shown: Bool) {
         if shown != visible { visible = shown }
     }
 }
@@ -349,7 +351,7 @@ struct DockButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(configuration.isPressed ? DockStyle.pressedOpacity : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(Motion.pressDim, value: configuration.isPressed)
     }
 }
 

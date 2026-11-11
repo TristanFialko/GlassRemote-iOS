@@ -81,6 +81,28 @@ enum Motion {
     /// Opacity-only changes: loaded images, header backgrounds, readouts.
     static let fade = Animation.easeOut(duration: 0.22)
 
+    // v6 §1: the dock's opacity-only curves. They were one-off curves in DockPolicy and the dock's
+    // button style; they live here now so navigation stays inside the motion language. Each is a
+    // plain fade (nothing moves), quicker than `fade` because it answers a tap on the dock.
+
+    /// The durations behind the dock tokens, as plain numbers so policies and tests can read them.
+    enum Durations {
+        /// A page switch: short enough to feel instant, long enough not to flash.
+        static let tabFade: Double = 0.16
+        /// Now Playing opening and closing over the pages (with a slight rise, see `NowPlayingPresentation`).
+        static let presentation: Double = 0.26
+        /// A pressed dock or mini-player item dimming (no scale, no refraction).
+        static let pressDim: Double = 0.12
+    }
+
+    /// A dock page switch. An opacity fade is already the reduced form of a page change, so it is
+    /// kept under Reduce Motion.
+    static let tabFade = Animation.easeOut(duration: Durations.tabFade)
+    /// Now Playing presenting over the pages.
+    static let presentation = Animation.easeOut(duration: Durations.presentation)
+    /// A pressed dock or mini-player item dimming.
+    static let pressDim = Animation.easeOut(duration: Durations.pressDim)
+
     /// Honours both the system Reduce Motion setting and the in-app preference (Profile > Appearance).
     static func resolve(_ animation: Animation, reduceMotion: Bool) -> Animation {
         (reduceMotion || MotionPreference.reduced) ? reduced : animation

@@ -7,8 +7,8 @@ import UIKit
 /// ADB, the helpers or polling, and never sends TV input.
 enum TabSwitchPolicy {
     /// Short enough to feel instant, long enough not to flash.
-    static let fadeDuration: Double = 0.16
-    static let animation = Animation.easeOut(duration: fadeDuration)
+    static let fadeDuration: Double = Motion.Durations.tabFade
+    static let animation = Motion.tabFade
 
     /// An opacity fade is already the reduced-motion form of a page change, so Reduce Motion keeps it
     /// (nothing moves either way).
@@ -31,8 +31,8 @@ enum TabSwitchPolicy {
 /// v5 §2: the full Now Playing presentation over the current page. A restrained fade with a slight
 /// rise from the dock; with Reduce Motion it is a fade only.
 enum NowPlayingPresentation {
-    static let duration: Double = 0.26
-    static let animation = Animation.easeOut(duration: duration)
+    static let duration: Double = Motion.Durations.presentation
+    static let animation = Motion.presentation
     /// How far the player rises while it fades in (points). Zero with Reduce Motion.
     static let rise: CGFloat = 18
 
@@ -51,9 +51,28 @@ enum NowPlayingPresentation {
 /// genuinely active: playing, paused or buffering. Idle, stale (the box stopped reporting it),
 /// connecting and disconnected sessions hide it. It also hides while the full player is open.
 enum MiniPlayerPolicy {
-    /// How often the visibility is re-checked while nothing else changes, so a session that stops
-    /// reporting disappears once it goes stale (`PlayerSessionPhase.staleAfter`).
-    static let recheckNanos: UInt64 = 5_000_000_000
+    /// v6 §1: how long after a session's stale point the visibility is re-evaluated. Nothing sleeps
+    /// or polls: the probe's timeline schedules exactly one re-check for that moment
+    /// (`recheckSchedule`), and every new sample or connection change re-evaluates immediately. So a
+    /// session that stops reporting disappears within this margin of going stale
+    /// (`PlayerSessionPhase.staleAfter`).
+    static let recheckNanos: UInt64 = 500_000_000
+
+    static var recheckMargin: TimeInterval { TimeInterval(recheckNanos) / 1_000_000_000 }
+
+    /// The only moment the visibility can change without new input: just after the current sample
+    /// goes stale. Nil when there is no active session to expire.
+    static func staleRecheckDate(media: MediaState) -> Date? {
+        guard media.isActive else { return nil }
+        return media.sampledAt.addingTimeInterval(PlayerSessionPhase.staleAfter + recheckMargin)
+    }
+
+    /// The probe's timeline: the stale re-check while it is still ahead, else nothing (the next
+    /// sample, a connection change or a new session drives the next evaluation).
+    static func recheckSchedule(media: MediaState, now: Date) -> [Date] {
+        guard let date = staleRecheckDate(media: media), date > now else { return [] }
+        return [date]
+    }
 
     static func isVisible(phase: PlayerSessionPhase) -> Bool {
         switch phase {
