@@ -44,3 +44,26 @@ from the shell user *(unverified: depends on Android 11's permission set for uid
 artefact built with the Android SDK, and a protocol line from the app. None of that can be built or
 tested here, so it is documented rather than shipped. Once it exists, `SeekMeasurement` already
 provides the confirmation step (compare position after the call).
+
+## Phase 9 §A5: Nuvio seekTo investigation
+Goal: find a verifiable route to an absolute seek (`MediaSession` `seekTo`) for Nuvio, so the Player could
+show a real scrubber. Result: **no verifiable route; relative seek stays.**
+
+* **Capability is readable.** `dumpsys media_session` prints the session's `actions` bitmask, and
+  `MediaState.advertisesSeekTo` (bit 256, `ACTION_SEEK_TO`) reads it. Advertising the action does not
+  give the shell a way to call it.
+* **No shell route carries a position.** `cmd media_session` offers only `dispatch`, `list-sessions`,
+  `monitor` and `volume`. `dispatch` accepts key names only (play, pause, play-pause, next, previous,
+  rewind, fast-forward, stop, mute, headsethook); none take an argument. `input keyevent 89 / 90`
+  (`MEDIA_REWIND` / `MEDIA_FAST_FORWARD`) are relative by definition.
+* **No duration.** `dumpsys media_session` prints the description, never `METADATA_KEY_DURATION`, so
+  `MediaState.durationMs` stays nil and a scrubber would have no total to map to *(unverified for every
+  Nuvio build: re-check if Nuvio starts publishing metadata)*.
+* **What it would take.** The on-box helper described above (an `app_process` artefact obtaining the
+  active session's `MediaController`, calling `transportControls.seekTo(ms)` and reading
+  `METADATA_KEY_DURATION`), with hidden-API access for uid 2000. Not built and not verified here.
+
+**Decision.** The Player keeps the confirmed relative seek (`SeekMeasurement` / `SeekStepLearner`), shows
+rewind / fast-forward only when the session advertises them, and shows no scrubber or progress bar.
+`PlayerControls.progress` turns on only when a real, positive duration appears, so a future helper can
+enable it without a layout change (`PlayerControls.hasReliableDuration`, covered by Phase9PlayerTests).

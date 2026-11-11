@@ -126,7 +126,14 @@ struct RootPagerView: View {
                 )
             }
         }
-        .background { AmbientBackdrop() }
+        .background {
+            // Phase 9 §A2: one root canvas. The Player's artwork background is part of it, under the dock,
+            // the landscape rail and every page, so it never splits at the rail's edge.
+            ZStack {
+                AmbientBackdrop()
+                PlayerBackdrop(visible: navigator.page == .player)
+            }
+        }
         .environmentObject(navigator)
         .onChange(of: navigator.page) { _, page in ThemeStore.shared.pageChanged(page) }
         // Continuation §D: rotating mid-swipe drops the swipe; travel never carries across axes.
