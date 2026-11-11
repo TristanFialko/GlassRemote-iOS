@@ -39,7 +39,7 @@ extension RemoteModel {
         guard tvVolumeEnabled else { return "Samsung TV is off · enable it in Connection settings" }
         switch samsungState {
         case .pairing: return "Approve Glass Remote on the TV first"
-        case .denied: return "The TV didn't allow Glass Remote · tap Reconnect"
+        case .denied: return (samsungDenial?.bannerText ?? "The TV didn't allow Glass Remote") + " · tap Reconnect"
         default: return "Samsung TV isn't connected yet"
         }
     }

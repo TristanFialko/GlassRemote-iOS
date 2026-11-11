@@ -366,6 +366,15 @@ extension RemoteModel {
         tv.connect(host: samsungHost, userInitiated: true)
     }
 
+    /// Phase 9 recovery §3: explicit, confirmed reset (Connection sheet). Forgets ONLY the Samsung
+    /// pairing token and the TV it was issued by, then connects without a token so the TV shows its
+    /// Allow prompt again. ADB keys, the TV address, volume calibration and all other settings stay.
+    func resetSamsungPairing() {
+        GRLog.note("samsung", "user reset Samsung pairing (Samsung token only)")
+        tv.resetPairing()
+        reconnectTV()
+    }
+
     /// Restarts ONLY the UPnP volume link; the remote WebSocket is not touched.
     func reconnectVolumeLink() {
         guard tvVolumeEnabled, !samsungHost.trimmingCharacters(in: .whitespaces).isEmpty else { return }

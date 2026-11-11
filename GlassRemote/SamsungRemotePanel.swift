@@ -112,7 +112,14 @@ struct SamsungLinkBanner: View {
         } else if state == .pairing {
             bannerRow("hand.tap", "Approve Glass Remote on the TV", nil, nil)
         } else if state == .denied {
-            bannerRow("xmark.shield", "The TV didn't allow Glass Remote", "Reconnect") { remote.reconnectTV() }
+            let reason = remote.samsungDenial
+            if reason?.suggestsReset == true {
+                // Phase 9 recovery §3: a refused saved approval cannot be fixed by Reconnect alone; the
+                // confirmed reset lives in the Connection sheet.
+                bannerRow("xmark.shield", reason?.bannerText ?? "The TV didn't allow Glass Remote", "Fix") { remote.showConnection = true }
+            } else {
+                bannerRow("xmark.shield", reason?.bannerText ?? "The TV didn't allow Glass Remote", "Reconnect") { remote.reconnectTV() }
+            }
         } else if state == .unreachable || state == .off {
             bannerRow("wifi.exclamationmark", state.label, "Reconnect") { remote.reconnectTV() }
         } else if state == .connecting {

@@ -7,6 +7,7 @@ struct ConnectionSheet: View {
     @State private var scanned = false
     @State private var androidHits: [String] = []
     @State private var samsungHits: [String] = []
+    @State private var confirmSamsungReset = false
 
     private func scan() {
         guard !scanning else { return }
@@ -84,7 +85,12 @@ struct ConnectionSheet: View {
                         Text("Volume link (UPnP): \(remote.samsungVolumeReady ? "Ready" : "Not available") · the two work independently")
                             .font(.footnote).foregroundStyle(.secondary)
                         Text(remote.samsungDiagnostics).font(.footnote).foregroundStyle(.secondary)
+                        if !remote.samsungPairingDiagnostics.isEmpty {
+                            Text(remote.samsungPairingDiagnostics).font(.footnote).foregroundStyle(.secondary)
+                        }
                         Button("Reconnect remote only") { remote.reconnectTV() }
+                        Button("Reset Samsung pairing…", role: .destructive) { confirmSamsungReset = true }
+                            .accessibilityHint("Forgets only the Samsung TV approval, then asks the TV again")
                         Button("Reconnect volume link only") { remote.reconnectVolumeLink() }
                         Button("Test hold: Right arrow, Press then Release (experimental)") { remote.samsungHoldTest() }
                         Text("Open a menu on the TV first. If focus moves once, Press/Release behaves like a click on this model; if it keeps moving while held, it is a real hold. Normal buttons keep using repeated clicks either way.")
@@ -104,7 +110,7 @@ struct ConnectionSheet: View {
                         Text("Set this to the highest number your soundbar shows. The slider spans this whole range, so full slider = soundbar maximum.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    Text("When this is off, or the TV cannot be reached, the volume buttons use ADB as before. The app connects to the Samsung TV automatically and retries if it is unreachable.")
+                    Text("Volume goes only to the Samsung TV: its UPnP level when it answers, otherwise its remote keys. When this is off, or the TV cannot be reached, volume is shown as unavailable; it is never sent to the Android box. The app connects to the Samsung TV automatically and retries if it is unreachable.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
@@ -149,6 +155,12 @@ struct ConnectionSheet: View {
             }
             .navigationTitle("Connection")
             .navigationBarTitleDisplayMode(.inline)
+            .confirmationDialog("Reset Samsung pairing?", isPresented: $confirmSamsungReset, titleVisibility: .visible) {
+                Button("Reset Samsung pairing", role: .destructive) { remote.resetSamsungPairing() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(SamsungPairingPolicy.resetExplanation)
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { remote.showConnection = false }

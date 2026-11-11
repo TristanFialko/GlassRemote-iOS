@@ -184,6 +184,10 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var samsungState: SamsungLinkState = .off {
         didSet { if samsungState != .connected { samsungPlayPause = .unknown } }
     }
+    /// Why the TV refused the remote link (nil unless `samsungState == .denied`). Phase 9 recovery §3.
+    @Published private(set) var samsungDenial: SamsungDenialReason?
+    /// Token-free pairing diagnostics: saved approval, whether it was sent, the TV's last answer.
+    @Published private(set) var samsungPairingDiagnostics = ""
     /// What the Samsung Play/Pause button last SENT. The TV exposes no playback state over the
     /// remote WebSocket, so this is never confirmed playback state; it resets to unknown whenever
     /// the target changes or the TV link leaves `.connected`.
@@ -210,8 +214,13 @@ final class RemoteModel: ObservableObject {
         // A keyboard stream that ended on its own is repaired automatically.
         keyboard.onStopped = { [weak self] in self?.keyboardStopped() }
 
-        tv.onStatus = { [weak self] text in self?.samsungStatus = text }
+        tv.onStatus = { [weak self] text in
+            guard let self else { return }
+            self.samsungStatus = text
+            self.samsungPairingDiagnostics = self.tv.pairingDiagnostics
+        }
         tv.onState = { [weak self] state in self?.samsungState = state }
+        tv.onDenial = { [weak self] reason in self?.samsungDenial = reason }
         tv.onStats = { [weak self] stats in self?.samsungDiagnostics = stats.summary }
         // v5 §5: a key the TV connection accepted and then failed is reported, never re-sent over ADB.
         tv.onSendFailed = { [weak self] name in self?.samsungSendFailed(name) }
