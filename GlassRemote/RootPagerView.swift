@@ -189,15 +189,24 @@ private struct MiniPlayerProbe: View {
         let media = remote.media
         let connected = remote.connected
         let connecting = remote.isBusyConnecting
+        // Phase 9 recovery §4: evaluated in the body on every sample or connection change, so a new
+        // session never depends on the timeline re-running its content. The timeline only adds the one
+        // stale re-check that arrives without input.
+        let shownNow = MiniPlayerPolicy.isVisible(media: media, connected: connected, connecting: connecting, now: Date())
         TimelineView(.explicit(MiniPlayerPolicy.recheckSchedule(media: media, now: Date()))) { context in
             let shown = MiniPlayerPolicy.isVisible(media: media, connected: connected, connecting: connecting,
                                                    now: max(context.date, Date()))
             Color.clear
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
-                .onAppear { report(shown) }
                 .onChange(of: shown) { _, value in report(value) }
         }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .onAppear { report(shownNow) }
+        .onChange(of: shownNow) { _, value in report(value) }
+        .onChange(of: media) { _, _ in report(MiniPlayerPolicy.isVisible(media: remote.media, connected: remote.connected,
+                                                                         connecting: remote.isBusyConnecting, now: Date())) }
     }
 
     private func report(_ shown: Bool) {

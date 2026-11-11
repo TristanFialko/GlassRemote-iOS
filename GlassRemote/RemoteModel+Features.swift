@@ -70,7 +70,16 @@ extension RemoteModel {
             (try? await self.runShell(connection, ["sh", "-c", "cat /proc/uptime; dumpsys media_session"])) ?? ""
         } ?? ""
         guard connected, !output.isEmpty else { return }
-        media = MediaParser.parse(output) ?? .idle
+        // Phase 9 recovery §4: an unreadable PlaybackState no longer resets Now Playing to idle.
+        let sample = MediaParser.read(output)
+        if sample == .unreadable {
+            let line = output.split(whereSeparator: { $0.isNewline })
+                .first(where: { $0.contains("PlaybackState {") })
+                .map { String($0.trimmingCharacters(in: .whitespaces).prefix(160)) } ?? ""
+            GRLog.note("media", "active session with an unreadable PlaybackState: \(line)")
+        }
+        let next = MediaPollPolicy.next(current: media, read: sample)
+        if next != media { media = next }
     }
 
     /// Android media key codes: 85 play/pause, 87 next, 88 previous, 89 rewind, 90 fast-forward.
