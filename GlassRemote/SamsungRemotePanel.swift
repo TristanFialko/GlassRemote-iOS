@@ -190,7 +190,7 @@ struct SamsungKeyRow: View {
         let label = guess == .sentPlay ? "Pause (last sent: Play)" : (guess == .sentPause ? "Play (last sent: Pause)" : "Play or pause")
         return RemoteClusterKey(label: label, caption: captions ? SamsungRemoteLayout.caption(for: .play) : nil, enabled: ready, height: height, action: {
             Haptics.light()
-            withAnimation(.easeInOut(duration: 0.2)) { remote.samsungTogglePlayPause() }
+            withAnimation(Motion.adaptive(Motion.snappy)) { remote.samsungTogglePlayPause() }
         }) {
             Image(systemName: symbol).scaledFont(19, .medium)
                 .modifier(SymbolReplace())

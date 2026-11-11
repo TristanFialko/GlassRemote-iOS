@@ -26,7 +26,7 @@ final class PageNavigator: ObservableObject {
     func go(_ target: AppPage, haptic: Bool = true) {
         guard target != page else { return }
         if haptic { Haptics.soft() }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { page = target }
+        withAnimation(Motion.adaptive(Motion.page)) { page = target }
     }
 
     /// Remote page's Search shortcut: open Discover and focus its search field.

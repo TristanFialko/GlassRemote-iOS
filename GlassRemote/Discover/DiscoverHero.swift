@@ -27,7 +27,7 @@ struct DiscoverHero: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.glassTheme) private var theme
     /// Horizontal finger travel while a hero swipe is in progress; springs back on lift or cancellation.
-    @GestureState(resetTransaction: Transaction(animation: .spring(response: 0.32, dampingFraction: 0.86)))
+    @GestureState(resetTransaction: Transaction(animation: Motion.release))
     private var drag: CGFloat = 0
 
     private var reduceMotion: Bool { systemReduceMotion || MotionPreference.reduced }

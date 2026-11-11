@@ -36,8 +36,8 @@ struct GlassVolumeSlider: View {
             let clamped = CGFloat(min(max(value, 0), 1))
             let thumb = VolumeSliderGeometry.thumbDiameter(height: height)
             let fillWidth = VolumeSliderGeometry.fillWidth(value: clamped, width: width, thumb: thumb)
-            let settle: Animation? = dragging || reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86)
-            let press: Animation? = reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7)
+            let settle: Animation? = dragging ? nil : Motion.unlessReduced(Motion.settle, reduceMotion: reduceMotion)
+            let press: Animation? = Motion.unlessReduced(Motion.pressBounce, reduceMotion: reduceMotion)
 
             let thumbScale: CGFloat = dragging && !reduceMotion ? 1.06 : 1
             let thumbRect = VolumeSliderGeometry.thumbRect(fillWidth: fillWidth, thumb: thumb, scale: thumbScale)
@@ -69,7 +69,7 @@ struct GlassVolumeSlider: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.trailing, 20)
                         .opacity(readoutHidden ? 0 : 1)
-                        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: readoutHidden)
+                        .animation(Motion.unlessReduced(Motion.fade, reduceMotion: reduceMotion), value: readoutHidden)
                 }
                 .frame(width: width, height: height, alignment: .leading)
                 .refractiveLens(thumbRect, cornerRadius: thumbRect.width / 2, style: .thumb)

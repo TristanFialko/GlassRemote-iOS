@@ -156,7 +156,7 @@ struct DiscoverPage: View {
                 .padding(.bottom, -18)
                 .ignoresSafeArea(.container, edges: .top)
                 .opacity(solid ? 1 : 0)
-                .animation(.easeInOut(duration: 0.2), value: solid)
+                .animation(Motion.adaptive(Motion.fade), value: solid)
                 .allowsHitTesting(false)
         }
     }
@@ -718,7 +718,7 @@ struct PosterButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.965 : 1)
             .opacity(configuration.isPressed ? 0.9 : 1)
-            .animation(configuration.isPressed ? .easeOut(duration: 0.12) : Motion.snappy, value: configuration.isPressed)
+            .animation(Motion.adaptive(configuration.isPressed ? Motion.press : Motion.snappy), value: configuration.isPressed)
     }
 }
 

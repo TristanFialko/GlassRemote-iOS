@@ -110,7 +110,7 @@ struct ProfileEditorSheet: View {
                             initials: UserProfile(name: name.isEmpty ? "?" : name).initials,
                             tint: editing?.tint ?? 0, size: 104)
             .overlay { if loadingPhoto { ProgressView().tint(.white) } }
-            .animation(Motion.snappy, value: preview != nil)
+            .animation(Motion.adaptive(Motion.snappy), value: preview != nil)
     }
 
     private func loadPhoto(_ item: PhotosPickerItem?) {

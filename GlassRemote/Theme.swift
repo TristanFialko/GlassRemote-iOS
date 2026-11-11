@@ -694,7 +694,7 @@ final class ThemeStore: ObservableObject {
 
     private func commit(_ new: ArtworkPalette) {
         guard new != palette else { return }
-        withAnimation(.easeInOut(duration: 0.8)) { palette = new }
+        withAnimation(Motion.adaptive(Motion.ambient)) { palette = new }
     }
 }
 
@@ -906,7 +906,7 @@ struct ThemePickerSheet: View {
         let preview = preview(for: id)
         let on = store.selected == id
         return Button {
-            withAnimation(.easeInOut(duration: 0.35)) { store.selected = id }
+            withAnimation(Motion.adaptive(Motion.theme)) { store.selected = id }
             Haptics.soft()
         } label: {
             VStack(spacing: 8) {
@@ -941,7 +941,7 @@ struct ThemePickerSheet: View {
                 HStack(spacing: 10) {
                     ForEach(AmbientStyle.allCases) { style in
                         let on = store.ambient == style
-                        Button { withAnimation(.easeInOut(duration: 0.35)) { store.ambient = style }; Haptics.soft() } label: {
+                        Button { withAnimation(Motion.adaptive(Motion.theme)) { store.ambient = style }; Haptics.soft() } label: {
                             VStack(spacing: 6) {
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.ink.opacity(0.08))

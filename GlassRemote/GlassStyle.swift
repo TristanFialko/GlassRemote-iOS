@@ -276,7 +276,7 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
     /// The finger can stop without lifting: once events stop arriving, the stretch relaxes.
     private func relaxStretch(after stamp: Date) {
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 90_000_000)
+            try? await Task.sleep(nanoseconds: InteractionTiming.lensIdleNanos)
             guard var current = drag, current.time == stamp, current.speed != 0 else { return }
             current.speed = 0
             drag = current
@@ -321,10 +321,9 @@ private struct LensMotion: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .animation(dragging ? .interactiveSpring(response: 0.16, dampingFraction: 0.86)
-                                : .spring(response: 0.38, dampingFraction: 0.80), value: offset)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: dragging)
-            .animation(.interactiveSpring(response: 0.22, dampingFraction: 0.8), value: stretch)
+            .animation(dragging ? Motion.tracking : Motion.adaptive(Motion.lensSettle), value: offset)
+            .animation(Motion.unlessReduced(Motion.lensLift, reduceMotion: UIAccessibility.isReduceMotionEnabled), value: dragging)
+            .animation(Motion.unlessReduced(Motion.lensStretch, reduceMotion: UIAccessibility.isReduceMotionEnabled), value: stretch)
     }
 }
 
@@ -365,7 +364,7 @@ struct PressStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .opacity(configuration.isPressed ? 0.88 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(Motion.adaptive(configuration.isPressed ? Motion.press : Motion.snappy), value: configuration.isPressed)
             .onChange(of: configuration.isPressed) { _, pressed in
                 if pressed && haptic { Haptics.soft() }
             }
@@ -402,7 +401,7 @@ struct ModeSelector: View {
         GlassScrubSelector(
             values: [true, false],
             selection: Binding(get: { isMouse }, set: { newValue in
-                withAnimation(.easeInOut(duration: 0.18)) { isMouse = newValue }
+                withAnimation(Motion.adaptive(Motion.snappy)) { isMouse = newValue }
             }),
             height: segmentHeight + inset * 2,
             inset: inset
@@ -427,7 +426,7 @@ struct ModeSelector: View {
             let wantMouse = direction == .decrement
             guard wantMouse != isMouse else { return }
             Haptics.soft()
-            withAnimation(.easeInOut(duration: 0.18)) { isMouse = wantMouse }
+            withAnimation(Motion.adaptive(Motion.snappy)) { isMouse = wantMouse }
         }
     }
 }

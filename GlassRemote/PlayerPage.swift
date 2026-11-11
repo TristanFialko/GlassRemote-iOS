@@ -48,7 +48,7 @@ struct PlayerPage: View {
                         }
                         .padding(.horizontal, 24)
                         .padding(.bottom, 8)
-                        .animation(.easeInOut(duration: 0.35), value: sessionTitle)
+                        .animation(Motion.adaptive(Motion.content), value: sessionTitle)
                     }
                     transport(media: media)
                         .padding(.horizontal, 20)
@@ -96,7 +96,7 @@ struct PlayerPage: View {
                     }
                     // Centred while it fits, scrolls at the largest text sizes.
                     .frame(maxWidth: .infinity, minHeight: infoHeight)
-                    .animation(.easeInOut(duration: 0.35), value: sessionTitle)
+                    .animation(Motion.adaptive(Motion.content), value: sessionTitle)
                 }
                 transport(media: media)
             }
@@ -136,7 +136,7 @@ struct PlayerPage: View {
         .clipShape(shape)
         .overlay(shape.stroke(Color.ink.opacity(0.22), lineWidth: 0.8))
         .shadow(color: (portrait ? theme.accent : Color.black).opacity(portrait ? 0.35 : 0.5), radius: 22, y: 12)
-        .animation(.spring(response: 0.5, dampingFraction: 0.86), value: poster)
+        .animation(Motion.adaptive(Motion.poster), value: poster)
         .accessibilityLabel(portrait ? (landscape ? "Artwork" : "Poster") : "App artwork")
     }
 
