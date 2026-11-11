@@ -80,7 +80,10 @@ final class Phase9DiscoverTests: XCTestCase {
         XCTAssertEqual(HeroArtworkPolicy.crop(image: .zero, region: region), .fill(focal: HeroArtworkPolicy.backdropFocal))
         XCTAssertEqual(HeroArtworkPolicy.crop(image: CGSize(width: 680, height: 1000), region: .zero),
                        .fill(focal: HeroArtworkPolicy.posterFocal))
-        XCTAssertEqual(HeroArtworkPolicy.fillRect(image: .zero, region: region), CGRect(origin: .zero, size: region))
+        for focal in focals {
+            XCTAssertEqual(HeroArtworkPolicy.fillRect(image: .zero, region: region, focal: focal), CGRect(origin: .zero, size: region),
+                           "a missing image falls back to the region whatever the focal point")
+        }
         XCTAssertEqual(HeroArtworkPolicy.cropShare(image: .zero, region: region), 0)
     }
 
