@@ -70,8 +70,21 @@ extension CinemetaCatalog {
         var trailers: [Trailer] = []
 
         var seasons: [Int] { Array(Set(episodes.map(\.season))).filter { $0 > 0 }.sorted() }
-        /// Portrait-photo cast when the source has it, otherwise names only.
-        var people: [Person] { castMembers.isEmpty ? cast.map { Person(name: $0) } : castMembers }
+        /// v6 §8: the fullest real cast. Credited people with characters and portraits come first (in
+        /// source order), then any names only the plain cast list has, which show the monogram
+        /// placeholder. Nothing is invented: every entry is a name the source published, and a portrait
+        /// is only ever the photo published for that person.
+        var people: [Person] { Self.mergedPeople(members: castMembers, names: cast) }
+
+        static func mergedPeople(members: [Person], names: [String], limit: Int = 40) -> [Person] {
+            var seen = Set(members.map { $0.name.lowercased() })
+            var out = Array(members.prefix(limit))
+            for name in names where out.count < limit {
+                guard seen.insert(name.lowercased()).inserted else { continue }
+                out.append(Person(name: name))
+            }
+            return out
+        }
     }
 
     // MARK: Lenient decoding
