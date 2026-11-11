@@ -245,3 +245,58 @@ Scope: every section of the continuation brief, §A–§L. Order: A Apps folder,
 - **Adaptive palette.** Tones are already chosen by matching WCAG relative luminance per scheme, with the accent's luminance clamped (bounded contrast), so a yellow and a blue read alike. Hue selection still uses the existing saturation and brightness weighted histogram; it was not changed in this checkpoint.
 - **Tests:** `Phase9IdentityTests` covers backdrop placement (the window origin lines up, it stays fixed while paging, unknown or invalid sizes fall back) and the window canvas size; legacy settings, the Mountains migration, a round trip, and per-profile ambient with inheritance and persistence; the avatar redraw identity; and source audits for the profile backdrop, the dock avatar, and no connection access in the profile store.
 - **Not verified on a device:** the seam fix under every ambient, the avatar at rail size, and the cross-fade.
+
+## Phase 9 continuation v4 (brief: GlassRemote_Phase_9_Continuation_v4_Autonomous.md)
+
+Branch `Phase-9` (never reset or recreated). PRs #2-#5 are not merged; PR #5 is the draft CI tracking PR.
+
+### Commits and CI
+
+| Commit | What | CI run | Result |
+| --- | --- | --- | --- |
+| 9e10773 | (start of v4 pass) | 43084596909 | cancelled by the next push |
+| 875c865 | §F: fix the Phase9DiscoverTests compile error | 43084896581 (job 130746598257) | **success**: first complete green Phase 9 run (356 tests, device build, IPA 4.4M) |
+| af642e8 | §A: player redesign + Phase9PlayerTests + SEEKING_REPORT §A5 + checklist | 43088491292 (job 130759006667) | **success** (373 tests, 0 failures; device build succeeded; unsigned IPA 4.4M) |
+| (this commit) | §B audit tests, §C notes, this checkpoint | see PR #5 | pending at time of writing |
+
+### §A Player redesign (af642e8)
+
+- **Policy first.** `GlassRemote/PlayerPolicy.swift` holds every decision as pure, tested code: `PlayerLayoutPolicy` (aspect-fit sizing, portrait artwork share, landscape split), `PlayerArtworkKind` (2:3 poster, 16:9 key art, square app art), `PlayerSessionKind` (explicit audio packages only; Nuvio and catalogue apps are always video), `PlayerControls` (play/pause primary; rewind / fast-forward only when advertised; previous / next only for audio sessions; progress only with a real positive duration), `PlayerSessionPhase` (not connected, connecting, idle, playing, paused, buffering, stale after 30 s without a poll), `PlayerTimeline` (1 s ticks while playing, 5 s otherwise, frozen when stale), `PlayerTransition.key` (artwork and metadata change together; position polls never restart the fade) and `PlayerBackdropPolicy` (crop, luminance profile, scrim opacity that keeps white text >= 4.5:1).
+- **A1 portrait.** Artwork is the dominant element, aspect-fit (never stretched) inside the space left above title, state, transport and volume; tighter gaps; safe areas and the dock respected. Missing art falls back to the app's artwork or a symbol on a dark card. Reuses `ArtworkCache`, `PlayerArtworkStore`, `ThemeStore.submitArtwork` and `Motion`.
+- **A2 background.** `PlayerBackdrop.swift`: one store per artwork URL (LRU 12) makes the 24 px `ArtworkWash` and a luminance profile once, off the critical path; the canvas draws it enlarged with a theme-aware tone and a contrast scrim, no live blur. It is drawn in `RootPagerView`'s single root canvas, so in landscape it runs unbroken behind the rail, and fades with the page.
+- **A3 landscape.** Square artwork on the leading side; title, state/time, transport and volume beside it; the rail stays visible.
+- **A4 controls.** Explicit Play or Pause (buffering pauses). Relative seek kept, with the existing confirmation and 10 s relabelling. No previous / next for video; track skip only for explicit audio sessions, never Nuvio. Inert controls removed. Neutral glass volume slider (0-100 %, haptics, `VolumeSync` echo gate) on the Player page. `NowPlayingSheet` follows the same capability rules.
+- **A5 seekTo.** No verifiable route (details in SEEKING_REPORT.md "Phase 9 §A5"). Relative seek stays; no scrubber.
+- **A6 states and tests.** `Phase9PlayerTests`: layout fit and dominance, artwork kinds, landscape split, backdrop crop, scrim contrast over 41 luminance steps, brighter art gets a stronger scrim, pixel profile, capabilities, track-skip safety, progress needs a duration, play/pause routing, phases, throttling, transition key, volume readout.
+- **Not device-verified:** layout on real phones, backdrop legibility on real posters, Nuvio actions, Player-page volume, stale/foreground behaviour, landscape rail continuity.
+
+### §B Profiles and add-ons audit
+
+- **Already correct (checked in code and existing tests):** several Torrentio configurations install side by side with their own install id, enabled state, order and Keychain item (`Phase71AddonIdentityTests`); the saved list holds only a redacted link, written atomically with file protection; full links live in the Keychain (`KeychainStore`, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`) under `addon.<profile>.<install id>`; deleting a profile purges its list and items (`ProfileStore.delete`); the Samsung pairing token is in the Keychain; add-on links must be https, with http only for localhost, `.local` and private IPv4 ranges (`Phase7Tests`); `project.yml` adds no `NSAppTransportSecurity` exception (local-network http is allowed by ATS by default).
+- **Gaps closed with tests (`Phase9AddonAuditTests`):** migration runs once and repeated loads change nothing (same id, a clean list is not rewritten, link kept, old item gone, no link or `legacySecretKey` in the saved file); a mixed list migrates only the legacy record and keeps order and settings; a legacy record without a Keychain item migrates without inventing a link and Play skips it; purge removes links of records that were never loaded (including unmigrated ones) and leaves another profile's install of the same add-on alone; Keychain accounts are scoped by profile and install; the transport-security baseline (no arbitrary-loads exception, public http rejected, local http accepted).
+- **No code changes were needed**: the audit found no failing behaviour, so only tests were added.
+
+### §C Performance (static review; no profiling possible)
+
+No Instruments, device or simulator profiling was available in this environment (no macOS host; CI only builds and runs unit tests), so nothing below is a measurement.
+
+- Player: the elapsed-time `TimelineView` ticks every 1 s only while playing, every 5 s otherwise, and stops advancing when the session is stale.
+- Player background: one 24 px wash and one luminance profile per artwork URL (LRU 12), computed once and cached; no live blur or full-resolution redraws; the old blurred radial gradient is gone.
+- Artwork decodes are downsampled (`maxPixel` 900) off the main thread by `ArtworkCache`; palette extraction in `ThemeStore` is detached.
+- Known, left as is: `RemoteModel.pollMedia` assigns `media` on every poll, which republishes even when nothing changed. The Player's transition key ignores position, so it does not restart animations; making the assignment conditional is a safe follow-up once it can be measured.
+
+### Exact checkpoint (next session starts here)
+
+1. Read PR #5's latest bot comment and the check run for the newest `Phase-9` HEAD; confirm "Executed N tests", the Release/device build, ARM32/ARM64 helpers, "Bundle and verify helpers" and the `glassremote-unsigned-ipa` artifact.
+2. If anything failed, fix it from the annotations before any new work.
+3. Remaining brief items: §D regression checklist pass on a device by the user, §F physical-device checks (below), §G repo hygiene review.
+
+### Physical-device checks still needed (§F)
+
+- Player portrait/landscape layout on a small and a large iPhone; dock and rail never overlapped.
+- Backdrop legibility on bright, dark and greyscale posters in dark and light themes.
+- Nuvio: play/pause, rewind/fast-forward and the absence of previous/next; an audio app's track skip.
+- Volume from the Player page matches the Remote page and the TV.
+- Stale "Waiting for the TV", background/foreground and ADB reconnect recovery.
+- Landscape rail continuity of the backdrop.
+- Add-ons: two Torrentio configurations streaming side by side after an upgrade from a pre-install-id build; deleting a profile purges its add-ons.
