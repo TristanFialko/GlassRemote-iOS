@@ -1,13 +1,17 @@
 import SwiftUI
 
 /// Shared page state. Anything (the Remote's search button, Apps, ...) can ask for a page here;
-/// `RootPagerView` owns the animation. Changing pages only moves an offset: it never touches the
-/// connection, helpers or polling, and never sends TV input.
+/// `RootPagerView` owns the presentation. Changing pages only changes which page is visible (a short
+/// opacity fade, v5 §2): every page stays alive, so it never touches the connection, helpers or
+/// polling, and never sends TV input.
 @MainActor
 final class PageNavigator: ObservableObject {
     @Published var page: AppPage = .landing {
         didSet { if page != oldValue { searchFocus.pageChanged(to: page) } }
     }
+    /// v5 §2: Now Playing is presented over the current page (opened from the mini-player), not a
+    /// dock page. The dock stays visible above it; choosing any dock item closes it.
+    @Published private(set) var playerPresented = false
     /// Phase 7.4: the page the pager has finished sliding to (reported by RootPagerView's
     /// PageSettleObserver). Not published: nothing renders from it.
     private(set) var settledPage: AppPage?
@@ -23,10 +27,30 @@ final class PageNavigator: ObservableObject {
         go(.profile)
     }
 
+    /// Dock and rail selection. Closes Now Playing first; choosing the page that is already
+    /// underneath the player simply closes the player.
     func go(_ target: AppPage, haptic: Bool = true) {
-        guard target != page else { return }
+        let wasPresented = playerPresented
+        if wasPresented { closePlayer(haptic: false) }
+        guard target != page else {
+            if wasPresented && haptic { Haptics.soft() }
+            return
+        }
         if haptic { Haptics.soft() }
-        withAnimation(Motion.adaptive(Motion.page)) { page = target }
+        withAnimation(TabSwitchPolicy.adaptiveAnimation) { page = target }
+    }
+
+    /// The mini-player (or the Remote page's Now Playing card) opens the full player.
+    func openPlayer(haptic: Bool = true) {
+        guard !playerPresented else { return }
+        if haptic { Haptics.soft() }
+        withAnimation(NowPlayingPresentation.adaptiveAnimation) { playerPresented = true }
+    }
+
+    func closePlayer(haptic: Bool = true) {
+        guard playerPresented else { return }
+        if haptic { Haptics.soft() }
+        withAnimation(NowPlayingPresentation.adaptiveAnimation) { playerPresented = false }
     }
 
     /// Remote page's Search shortcut: open Discover and focus its search field.
@@ -137,11 +161,20 @@ enum PageSettlePolicy {
 }
 
 /// Geometry of the floating page dock. Everything is derived from the real bottom safe-area inset
-/// (measured by `RootPagerView`), so the dock sits correctly on every iPhone, with or without a home
-/// indicator, and pages keep exactly the clearance it needs.
+/// (measured by `RootPagerView` with the keyboard ignored, so the dock never rides up with it), so the
+/// dock sits correctly on every iPhone, with or without a home indicator, and pages keep exactly the
+/// clearance it needs.
 enum DockMetrics {
-    /// Dock height (was 64): a slightly more substantial bar with a larger lens.
-    static let height: CGFloat = 70
+    /// v5 §2: a thinner, icon-only bar (was 70 with labels and a lens). Each item is a full-height,
+    /// at least `minimumTouchTarget`-wide button, so the targets stay comfortable.
+    static let height: CGFloat = 58
+    /// Horizontal padding inside the dock capsule, before the first and after the last item.
+    static let itemInset: CGFloat = 8
+    /// Apple's minimum comfortable touch target.
+    static let minimumTouchTarget: CGFloat = 44
+    /// v5 §2: the compact Now Playing bar above the dock, and the gap between the two.
+    static let miniPlayerHeight: CGFloat = 58
+    static let miniPlayerGap: CGFloat = 8
     /// Gap between the dock's bottom edge and the bottom safe-area edge, before the drop below.
     static let baseGap: CGFloat = 4
     /// Space pages keep between their content and the dock's top edge.
@@ -155,6 +188,17 @@ enum DockMetrics {
 
     /// Space a page keeps clear at the bottom so no control is ever hidden behind the dock.
     static func clearance(safeBottom: CGFloat) -> CGFloat { height + baseGap - drop(safeBottom: safeBottom) + breathing }
+
+    /// The same, plus the mini-player when it is showing above the dock.
+    static func clearance(safeBottom: CGFloat, miniPlayer: Bool) -> CGFloat {
+        clearance(safeBottom: safeBottom) + (miniPlayer ? miniPlayerHeight + miniPlayerGap : 0)
+    }
+
+    /// Width of one dock item for a dock `width` wide with `count` items.
+    static func itemWidth(dockWidth width: CGFloat, count: Int) -> CGFloat {
+        guard count > 0 else { return 0 }
+        return max(width - itemInset * 2, 0) / CGFloat(count)
+    }
 
     /// Distance from the physical bottom edge of the screen up to the dock's top edge.
     static func topFromScreenBottom(safeBottom: CGFloat) -> CGFloat { safeBottom + baseGap - drop(safeBottom: safeBottom) + height }

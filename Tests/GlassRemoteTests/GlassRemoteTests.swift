@@ -114,24 +114,7 @@ final class LiveTypingToggleTests: XCTestCase {
 final class PagerMathTests: XCTestCase {
     func testLandingPageIsRemoteAndOrderIsStable() {
         XCTAssertEqual(AppPage.landing, .remote)
-        XCTAssertEqual(AppPage.allCases, [.remote, .player, .discover, .profile])
-    }
-
-    func testTargetPageThresholdsAndClamping() {
-        XCTAssertEqual(AppPage.target(from: .remote, translation: -200, predicted: -250, width: 390), .player)
-        XCTAssertEqual(AppPage.target(from: .remote, translation: -40, predicted: -60, width: 390), .remote)   // too small
-        XCTAssertEqual(AppPage.target(from: .remote, translation: -30, predicted: -300, width: 390), .player)  // flick
-        XCTAssertEqual(AppPage.target(from: .remote, translation: 300, predicted: 400, width: 390), .remote)   // clamped at start
-        XCTAssertEqual(AppPage.target(from: .discover, translation: -200, predicted: -260, width: 390), .profile)
-        XCTAssertEqual(AppPage.target(from: .profile, translation: -300, predicted: -400, width: 390), .profile)     // clamped at end
-        XCTAssertEqual(AppPage.target(from: .discover, translation: 200, predicted: 260, width: 390), .player)
-    }
-
-    func testEdgeResistance() {
-        XCTAssertEqual(AppPage.resisted(100, on: .remote), 25)
-        XCTAssertEqual(AppPage.resisted(-100, on: .profile), -25)
-        XCTAssertEqual(AppPage.resisted(-100, on: .discover), -100)
-        XCTAssertEqual(AppPage.resisted(100, on: .player), 100)
+        XCTAssertEqual(AppPage.allCases, [.remote, .discover, .profile])
     }
 }
 
@@ -587,7 +570,7 @@ final class DiscoverArtworkTests: XCTestCase {
 final class TabTests: XCTestCase {
     /// Phase 7 adds Profile; the original three tabs keep their names and order.
     func testFourTabsInOrderKeepingTheOriginalThree() {
-        XCTAssertEqual(AppPage.allCases.map(\.title), ["Remote", "Player", "Discover", "Profile"])
+        XCTAssertEqual(AppPage.allCases.map(\.title), ["Remote", "Discover", "Profile"])
     }
     func testEveryTabHasASymbol() {
         for page in AppPage.allCases { XCTAssertFalse(page.symbol.isEmpty) }

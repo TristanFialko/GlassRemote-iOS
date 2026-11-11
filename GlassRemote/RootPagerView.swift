@@ -1,105 +1,102 @@
 import SwiftUI
 import UIKit
 
-/// Hosts the three pages side by side and keeps ALL of them alive. Switching pages only moves an
-/// offset: nothing is torn down or recreated, so ADB, the HID helpers, media polling and the
-/// Remote page's touch state are never affected by navigation. Navigation sends no TV input.
+/// v5 §2: hosts the three dock pages (Remote, Discover, Profile) and the Now Playing presentation,
+/// and keeps ALL of them alive. Switching pages is a short opacity fade (`TabSwitchPolicy`): nothing
+/// slides, nothing is torn down or recreated, so ADB, the HID helpers, media polling and the Remote
+/// page's touch state are never affected by navigation. Navigation sends no TV input.
 ///
-/// Gesture policy (one UIKit pan recogniser, `PagerPan`, replaces the old SwiftUI drag):
-/// - It FAILS at the start of any drag that is not horizontal-dominant, so a vertical swipe can never
-///   page and never competes with the Discover scroll view (previously a SwiftUI DragGesture ran
-///   alongside every scroll and re-evaluated this view on every frame).
-/// - It ignores touches that begin on the dock (the dock scrubs by itself).
-/// - Remote: the page itself never pages (the trackpad / D-pad own the touch). Only the two thin
-///   edge strips in the page's side padding start a page swipe.
-/// - Discover / Player: a horizontal-dominant swipe anywhere changes page, EXCEPT one that begins
-///   inside a horizontal scroll view (a carousel), which scrolls the carousel instead.
+/// There is no page swipe any more (the Phase 6 to 9 `PagerPan` recogniser is gone): the dock in
+/// portrait and the glass rail in landscape are the only page controls, so a swipe on the trackpad,
+/// in a carousel or in a scroll view only ever does that thing.
 ///
-/// Landscape (Phase 6): the dock becomes a vertical glass rail on the leading edge and pages sit
-/// beside it. Rotation only changes values (padding, alignment, the dock's axis); the pages are the
-/// same views, so rotating never rebuilds a page or touches the connection. Touches that land on
-/// the rail never start a page swipe.
+/// Now Playing is not a page. It opens from the mini-player above the dock (portrait) or the artwork
+/// tile under the rail (landscape), which only appear while a session is genuinely active
+/// (`MiniPlayerPolicy`). The player stays mounted while closed (invisible, no touches, hidden from
+/// VoiceOver), so its artwork lookup and the Adaptive theme keep following the session and opening it
+/// is instant. Its artwork background is part of the root canvas (`PlayerBackdrop`), under the dock.
 ///
-/// Continuation §D: landscape pages run vertically, matching the rail: Remote at the top, Player,
-/// Discover, Profile at the bottom. A clearly vertical swipe moves to the adjacent page; rail taps stay
-/// the rail's. The strip switches between an HStack and a VStack layout with `AnyLayout`, which keeps
-/// every page's identity, so rotating never recreates a page. Portrait (and RTL portrait) is unchanged.
+/// Keyboard: the dock and mini-player live in their own layer that ignores the keyboard safe area,
+/// so they stay anchored at the bottom when Discover's search keyboard comes up (pages still avoid it).
+///
+/// Landscape (Phase 6): the dock stands on end as a vertical glass rail on the leading edge and pages
+/// sit beside it. Rotation only changes values (padding, alignment, the dock's axis), never the views.
 struct RootPagerView: View {
     @StateObject private var navigator = PageNavigator()
-    /// Live finger travel along the pager's axis while a page swipe is in progress (0 otherwise).
-    @State private var dragTravel: CGFloat = 0
+    /// Whether a genuinely active session should show the mini-player. Reported by `MiniPlayerProbe`,
+    /// so this view never observes `RemoteModel` and does not re-render on its updates.
+    @State private var miniPlayerVisible = false
+    /// The bottom safe-area inset measured with the keyboard ignored (the home indicator only).
+    @State private var stableSafeBottom: CGFloat = 34
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    @Environment(\.layoutDirection) private var layoutDirection
 
-    private let edgeWidth: CGFloat = 16
     private var page: AppPage { navigator.page }
-    private var spring: Animation { Motion.resolve(Motion.page, reduceMotion: reduceMotion) }
+    private var presented: Bool { navigator.playerPresented }
 
     var body: some View {
+        ZStack {
+            pages
+            chrome
+        }
+        .background {
+            // Phase 9 §A2: one root canvas. The player's artwork background is part of it, under the dock,
+            // the landscape rail and every page, so it never splits at the rail's edge.
+            ZStack {
+                AmbientBackdrop()
+                PlayerBackdrop(visible: navigator.playerPresented)
+            }
+        }
+        .environmentObject(navigator)
+        .onChange(of: navigator.page) { _, page in ThemeStore.shared.pageChanged(page) }
+        .onChange(of: navigator.playerPresented) { _, shown in ThemeStore.shared.playerPresentationChanged(shown) }
+    }
+
+    // MARK: Pages
+
+    private var pages: some View {
         GeometryReader { geo in
             let width = geo.size.width
-            let safeBottom = geo.safeAreaInsets.bottom
+            let height = geo.size.height
             let safeLeading = geo.safeAreaInsets.leading
             let safeTrailing = geo.safeAreaInsets.trailing
             let landscape = LayoutContext.resolve(verticalSizeClass: verticalSizeClass, size: geo.size).isLandscape
-            let safeTop = geo.safeAreaInsets.top
-            // Continuation §D: side by side in portrait, top to bottom in landscape.
-            let axis = PagerAxis.resolve(isLandscape: landscape)
-            let pageGap = PagerAxis.pageGap(axis, safeTop: safeTop, safeBottom: safeBottom)
-            let pageStride = PagerAxis.pageStride(axis, size: geo.size, safeTop: safeTop, safeBottom: safeBottom)
-            let pageCount = CGFloat(AppPage.allCases.count)
-            let strip = axis == .vertical ? AnyLayout(VStackLayout(spacing: pageGap)) : AnyLayout(HStackLayout(spacing: 0))
-            let stripAlignment: Alignment = axis == .vertical ? .top : .leading
-            let clearance = landscape ? DockMetrics.landscapeBottomClearance : DockMetrics.clearance(safeBottom: safeBottom)
+            let clearance = landscape ? DockMetrics.landscapeBottomClearance
+                : DockMetrics.clearance(safeBottom: stableSafeBottom, miniPlayer: miniPlayerVisible)
+            // The mini-player hides while the player is open, so the player keeps only the dock's clearance.
+            let playerClearance = landscape ? DockMetrics.landscapeBottomClearance
+                : DockMetrics.clearance(safeBottom: stableSafeBottom)
             let leading: CGFloat = landscape ? DockMetrics.railClearance(safeLeading: safeLeading) : 0
             let context = LayoutContext(isLandscape: landscape,
-                                        size: CGSize(width: max(width - leading, 0), height: geo.size.height))
-            let travel = AppPage.resisted(dragTravel, on: page)
-            // The rail never grows past the visible height (the keyboard can shrink it in landscape).
-            let railLength = min(DockMetrics.railLength(count: AppPage.allCases.count), max(geo.size.height - 8, 120))
+                                        size: CGSize(width: max(width - leading, 0), height: height))
 
-            ZStack(alignment: landscape ? .leading : .bottom) {
-                strip {
-                    ForEach(AppPage.allCases) { item in
-                        let depth = PageDepth.distance(of: item, current: page, travel: travel, width: pageStride)
-                        content(for: item, clearance: clearance)
-                            // Landscape: pages sit beside the rail. Only a value changes on rotation, never
-                            // the view, so every page (and the Remote's touch state) stays alive.
-                            .padding(.leading, leading)
-                            .frame(width: width, height: geo.size.height)
-                            .scaleEffect(PageDepth.scale(depth, reduceMotion: reduceMotion))
-                            .opacity(PageDepth.opacity(depth, reduceMotion: reduceMotion))
-                            .allowsHitTesting(item == page)
-                            .accessibilityHidden(item != page)
-                    }
+            ZStack {
+                ForEach(AppPage.allCases) { item in
+                    let visible = TabSwitchPolicy.isVisible(item, current: page, playerPresented: presented)
+                    content(for: item, clearance: clearance)
+                        // Landscape: pages sit beside the rail. Only a value changes on rotation, never
+                        // the view, so every page (and the Remote's touch state) stays alive.
+                        .padding(.leading, leading)
+                        .frame(width: width, height: height)
+                        .opacity(visible ? 1 : 0)
+                        .allowsHitTesting(visible)
+                        .accessibilityHidden(!visible)
                 }
-                .frame(width: axis == .vertical ? width : width * pageCount,
-                       height: axis == .vertical ? pageStride * pageCount - pageGap : geo.size.height,
-                       alignment: stripAlignment)
-                .offset(axis.stripOffset(page: page, travel: travel, stride: pageStride))
-                // Phase 7.4: reports when the slide has actually finished (Discover's search focus waits for it).
-                .modifier(PageSettleObserver(page: page) { navigator.pageSettled($0) })
-                .frame(width: width, height: geo.size.height, alignment: stripAlignment)
-                .animation(spring, value: page)
-                .clipShape(PagerClip(axis: axis, safeTop: safeTop, safeBottom: safeBottom))
 
-                if landscape {
-                    // The dock stands on end as a glass rail on the leading edge, vertically centred.
-                    PageDock(axis: .vertical)
-                        .frame(height: railLength)
-                        .padding(.leading, DockMetrics.railGap)
-                        .offset(x: -DockMetrics.railDrop(safeLeading: safeLeading))
-                        .transition(.opacity)
-                } else {
-                    PageDock()
-                        .padding(.horizontal, DockMetrics.sideInset)
-                        .padding(.bottom, DockMetrics.baseGap)
-                        // Sinks into the bottom safe area by a measured amount (never into the indicator).
-                        .offset(y: DockMetrics.drop(safeBottom: safeBottom))
-                        .transition(.opacity)
-                }
+                PlayerPage()
+                    .padding(.leading, leading)
+                    .frame(width: width, height: height)
+                    .environment(\.dockClearance, playerClearance)
+                    .opacity(presented ? 1 : 0)
+                    .offset(y: NowPlayingPresentation.offset(presented: presented, reduceMotion: reduceMotion))
+                    .allowsHitTesting(presented)
+                    .accessibilityHidden(!presented)
+                    .animation(NowPlayingPresentation.presentationAnimation(reduceMotion: reduceMotion), value: presented)
             }
+            // Phase 7.4: reports when the switch has finished (Discover's search focus waits for it).
+            .modifier(PageSettleObserver(page: page) { navigator.pageSettled($0) })
+            .animation(TabSwitchPolicy.switchAnimation(reduceMotion: reduceMotion), value: page)
+            .frame(width: width, height: height)
             .environment(\.dockClearance, clearance)
             .environment(\.railClearance, leading)
             // Continuation §F2: the safe areas beside a landscape page, for full-bleed artwork.
@@ -108,50 +105,108 @@ struct RootPagerView: View {
             .environment(\.layoutContext, context)
             // §G2: pages with their own backdrop align it to this window canvas (no seams).
             .environment(\.windowCanvasSize, BackdropAlignment.canvasSize(size: geo.size, insets: geo.safeAreaInsets))
-            .background {
-                PagerPan(
-                    page: page,
-                    axis: axis,
-                    edgeWidth: edgeWidth,
-                    dockZone: landscape ? 0 : DockMetrics.topFromScreenBottom(safeBottom: safeBottom) + 8,
-                    railZone: landscape ? DockMetrics.railZone(safeLeading: safeLeading) : 0,
-                    rightToLeft: layoutDirection == .rightToLeft,
-                    onChanged: { dragTravel = $0 },
-                    onEnded: { translation, predicted in
-                        let target = AppPage.target(from: page, translation: translation, predicted: predicted, width: pageStride)
-                        if target != page { Haptics.soft() }
-                        withAnimation(spring) { navigator.page = target; dragTravel = 0 }
-                    },
-                    onCancelled: { withAnimation(spring) { dragTravel = 0 } }
-                )
-            }
         }
-        .background {
-            // Phase 9 §A2: one root canvas. The Player's artwork background is part of it, under the dock,
-            // the landscape rail and every page, so it never splits at the rail's edge.
-            ZStack {
-                AmbientBackdrop()
-                PlayerBackdrop(visible: navigator.page == .player)
-            }
-        }
-        .environmentObject(navigator)
-        .onChange(of: navigator.page) { _, page in ThemeStore.shared.pageChanged(page) }
-        // Continuation §D: rotating mid-swipe drops the swipe; travel never carries across axes.
-        .onChange(of: verticalSizeClass) { _, _ in dragTravel = 0 }
     }
 
     @ViewBuilder
     private func content(for item: AppPage, clearance: CGFloat) -> some View {
         switch item {
         case .remote: RemoteView().padding(.bottom, clearance)
-        case .player: PlayerPage()
         case .discover: DiscoverPage()
         case .profile: ProfilePage()
         }
     }
+
+    // MARK: Dock, rail and mini-player
+
+    private var chrome: some View {
+        GeometryReader { geo in
+            let landscape = LayoutContext.resolve(verticalSizeClass: verticalSizeClass, size: geo.size).isLandscape
+            let safeBottom = geo.safeAreaInsets.bottom
+            let safeLeading = geo.safeAreaInsets.leading
+            let showMini = MiniPlayerPolicy.isShown(sessionVisible: miniPlayerVisible, playerPresented: presented)
+            // The rail never grows past the visible height.
+            let railLength = min(DockMetrics.railLength(count: AppPage.allCases.count), max(geo.size.height - 8, 120))
+
+            ZStack(alignment: landscape ? .leading : .bottom) {
+                if landscape {
+                    // The dock stands on end as a glass rail on the leading edge, vertically centred; the
+                    // Now Playing tile sits below it, so the rail never moves when the tile appears.
+                    PageDock(axis: .vertical)
+                        .frame(height: railLength)
+                        .padding(.leading, DockMetrics.railGap)
+                        .offset(x: -DockMetrics.railDrop(safeLeading: safeLeading))
+                        .frame(maxHeight: .infinity)
+                        .overlay(alignment: .bottomLeading) {
+                            if showMini && DockMetrics.railTileFits(height: geo.size.height, count: AppPage.allCases.count) {
+                                NowPlayingRailTile()
+                                    .padding(.leading, DockMetrics.railGap)
+                                    .padding(.bottom, DockMetrics.railMiniBottom)
+                                    .offset(x: -DockMetrics.railDrop(safeLeading: safeLeading))
+                                    .transition(.opacity)
+                            }
+                        }
+                        .transition(.opacity)
+                } else {
+                    VStack(spacing: DockMetrics.miniPlayerGap) {
+                        if showMini {
+                            NowPlayingMiniPlayer()
+                                .transition(.opacity.combined(with: .offset(y: 6)))
+                        }
+                        PageDock()
+                    }
+                    .padding(.horizontal, DockMetrics.sideInset)
+                    .padding(.bottom, DockMetrics.baseGap)
+                    // Sinks into the bottom safe area by a measured amount (never into the indicator).
+                    .offset(y: DockMetrics.drop(safeBottom: safeBottom))
+                    .transition(.opacity)
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: landscape ? .leading : .bottom)
+            .animation(NowPlayingPresentation.presentationAnimation(reduceMotion: reduceMotion), value: showMini)
+            .background { MiniPlayerProbe(visible: $miniPlayerVisible) }
+            .onAppear { stableSafeBottom = safeBottom }
+            .onChange(of: safeBottom) { _, value in stableSafeBottom = value }
+        }
+        // v5 §2: the keyboard never lifts the dock or the mini-player.
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+    }
 }
 
-// MARK: - Page-swipe recogniser
+/// Watches the media session and reports whether the mini-player should show. Isolated in its own
+/// tiny view so the root never re-renders on `RemoteModel` updates. Re-checks every few seconds so a
+/// session that stops reporting disappears once it is stale.
+private struct MiniPlayerProbe: View {
+    @EnvironmentObject private var remote: RemoteModel
+    @Binding var visible: Bool
+
+    var body: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onAppear(perform: update)
+            .onChange(of: remote.media) { _, _ in update() }
+            .onChange(of: remote.connected) { _, _ in update() }
+            .onChange(of: remote.isBusyConnecting) { _, _ in update() }
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: MiniPlayerPolicy.recheckNanos)
+                    update()
+                }
+            }
+    }
+
+    private func update() {
+        let shown = MiniPlayerPolicy.isVisible(media: remote.media, connected: remote.connected,
+                                               connecting: remote.isBusyConnecting, now: Date())
+        if shown != visible { visible = shown }
+    }
+}
+
+// MARK: - Gesture policy (retained)
+
+/// Phase 6 to 9 page-swipe decisions. v5 §2 removed the page swipe, so the root no longer uses
+/// these, but they stay as pure, tested helpers (selector exclusion zones, carousel detection).
 
 /// Pure decisions of the page-swipe recogniser (unit tested).
 enum PagerGesturePolicy {
@@ -231,219 +286,14 @@ enum PagerGesturePolicy {
     }
 }
 
-/// Attaches one `UIPanGestureRecognizer` to the hosting view (the same technique `TwoFingerScroll`
-/// uses), so one-finger touches keep reaching SwiftUI untouched. It never cancels or delays touches
-/// and runs alongside every other recogniser.
-private struct PagerPan: UIViewRepresentable {
-    let page: AppPage
-    /// Continuation §D: horizontal in portrait, vertical in landscape.
-    let axis: PagerAxis
-    let edgeWidth: CGFloat
-    /// Height from the bottom edge of the screen that belongs to the dock.
-    let dockZone: CGFloat
-    /// Landscape: width from the leading edge of the screen that belongs to the rail (0 in portrait).
-    let railZone: CGFloat
-    let rightToLeft: Bool
-    let onChanged: (CGFloat) -> Void
-    let onEnded: (_ translation: CGFloat, _ predicted: CGFloat) -> Void
-    let onCancelled: () -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeUIView(context: Context) -> PagerAnchorView {
-        let view = PagerAnchorView()
-        view.backgroundColor = .clear
-        let coordinator = context.coordinator
-        let pan = UIPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.handle(_:)))
-        pan.maximumNumberOfTouches = 1
-        pan.cancelsTouchesInView = false
-        pan.delaysTouchesBegan = false
-        pan.delaysTouchesEnded = false
-        pan.delegate = coordinator
-        view.recognizer = pan
-        return view
-    }
-
-    func updateUIView(_ uiView: PagerAnchorView, context: Context) {
-        if context.coordinator.axis != axis {
-            // Rotation mid-swipe: the old swipe is cancelled (out of this view update), never re-aimed.
-            if let pan = uiView.recognizer,
-               PagerGesturePolicy.cancelsOnAxisChange(active: pan.state == .began || pan.state == .changed,
-                                                      from: context.coordinator.axis, to: axis) {
-                Task { @MainActor in Coordinator.cancel(pan) }
-            }
-            context.coordinator.axis = axis
-        }
-        context.coordinator.page = page
-        context.coordinator.edgeWidth = edgeWidth
-        context.coordinator.dockZone = dockZone
-        context.coordinator.railZone = railZone
-        context.coordinator.rightToLeft = rightToLeft
-        context.coordinator.onChanged = onChanged
-        context.coordinator.onEnded = onEnded
-        context.coordinator.onCancelled = onCancelled
-    }
-
-    static func dismantleUIView(_ uiView: PagerAnchorView, coordinator: Coordinator) { uiView.detach() }
-
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var page: AppPage = .remote
-        var edgeWidth: CGFloat = 16
-        var dockZone: CGFloat = 90
-        var railZone: CGFloat = 0
-        var rightToLeft = false
-        var onChanged: (CGFloat) -> Void = { _ in }
-        var onEnded: (CGFloat, CGFloat) -> Void = { _, _ in }
-        var onCancelled: () -> Void = {}
-        var axis: PagerAxis = .horizontal
-        private var startedInHorizontalScroller = false
-        /// Continuation §D: the vertical scroll view (if any) the current touch landed in.
-        private weak var startScroller: UIScrollView?
-
-        /// Ends a recogniser's current gesture (it reports `.cancelled`) without disabling it.
-        static func cancel(_ recognizer: UIGestureRecognizer) {
-            recognizer.isEnabled = false
-            recognizer.isEnabled = true
-        }
-
-        @objc func handle(_ pan: UIPanGestureRecognizer) {
-            guard let view = pan.view else { return }
-            let translation = axis.component(pan.translation(in: view))
-            switch pan.state {
-            case .began:
-                // §D: at a scroll view's end the page takes the swipe; the scroll view does not also bounce.
-                if axis == .vertical, let scroll = startScroller { Self.cancel(scroll.panGestureRecognizer) }
-                onChanged(translation)
-            case .changed:
-                onChanged(translation)
-            case .ended:
-                // Where a flick would carry the page (the same idea as SwiftUI's predictedEndTranslation).
-                onEnded(translation, translation + axis.component(pan.velocity(in: view)) * 0.25)
-            case .cancelled, .failed:
-                onCancelled()
-            default:
-                break
-            }
-        }
-
-        // Decided per touch, before any movement: dock touches and Remote's centre never reach the pager.
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-            guard let host = gestureRecognizer.view else { return false }
-            let point = touch.location(in: host)
-            if point.y > host.bounds.height - dockZone { return false }
-            if PagerGesturePolicy.inRail(x: point.x, width: host.bounds.width, railZone: railZone,
-                                         rightToLeft: rightToLeft) { return false }
-            // Phase 7.1: a touch that lands on a selector belongs to it, decided before any movement.
-            if PagerGesturePolicy.inExcludedZone(point, zones: PagerExclusionRegistry.shared.frames(in: host)) { return false }
-            // §D: the landscape Remote pages only from the free space in its side columns.
-            let swipeAreas = (axis == .vertical && page == .remote) ? PagerSwipeAreaRegistry.shared.frames(in: host) : []
-            guard PagerGesturePolicy.acceptsTouch(on: page, at: point, in: host.bounds.size, edgeWidth: edgeWidth,
-                                                  axis: axis, swipeAreas: swipeAreas) else { return false }
-            startedInHorizontalScroller = Self.enclosingHorizontalScroller(of: touch.view) != nil
-            startScroller = axis == .vertical ? Self.enclosingVerticalScroller(of: touch.view) : nil
-            return true
-        }
-
-        // Decided when the drag would begin: only a clearly horizontal drag, never from a carousel.
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let pan = gestureRecognizer as? UIPanGestureRecognizer, let view = pan.view else { return false }
-            let t = pan.translation(in: view)
-            guard axis.isDominant(dx: t.x, dy: t.y) else { return false }   // across the axis: never a page swipe
-            switch axis {
-            case .horizontal:
-                if startedInHorizontalScroller { return false }             // the carousel owns it
-            case .vertical:
-                // §D: a scrolling page keeps its drag unless it is already at its end that way.
-                if let scroll = startScroller {
-                    if scroll.isDecelerating { return false }
-                    let inset = scroll.adjustedContentInset
-                    guard PagerGesturePolicy.scrollerYieldsVerticalPage(dy: t.y, offsetY: scroll.contentOffset.y,
-                                                                        contentHeight: scroll.contentSize.height,
-                                                                        boundsHeight: scroll.bounds.height,
-                                                                        insetTop: inset.top, insetBottom: inset.bottom)
-                    else { return false }
-                }
-            }
-            if ScrubTouch.shared.isActive { return false }                                          // a selector owns it
-            return true
-        }
-
-        // Never block, wait for, or cancel any other recogniser (scroll views, buttons, the trackpad).
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
-
-        private static func enclosingHorizontalScroller(of view: UIView?) -> UIScrollView? {
-            var current = view
-            while let candidate = current {
-                if let scroll = candidate as? UIScrollView,
-                   PagerGesturePolicy.isHorizontalScroller(contentSize: scroll.contentSize, bounds: scroll.bounds.size,
-                                                           scrollEnabled: scroll.isScrollEnabled) {
-                    return scroll
-                }
-                current = candidate.superview
-            }
-            return nil
-        }
-
-        /// Continuation §D: the nearest enclosing scroll view that really scrolls vertically (a page's
-        /// own scroll view; carousels have no vertical range and are skipped).
-        private static func enclosingVerticalScroller(of view: UIView?) -> UIScrollView? {
-            var current = view
-            while let candidate = current {
-                if let scroll = candidate as? UIScrollView {
-                    let inset = scroll.adjustedContentInset
-                    if PagerGesturePolicy.isVerticalScroller(contentHeight: scroll.contentSize.height,
-                                                             boundsHeight: scroll.bounds.height,
-                                                             insetTop: inset.top, insetBottom: inset.bottom,
-                                                             scrollEnabled: scroll.isScrollEnabled) {
-                        return scroll
-                    }
-                }
-                current = candidate.superview
-            }
-            return nil
-        }
-    }
-}
-
-/// Zero-interaction view that only attaches the recogniser to the hosting view.
-private final class PagerAnchorView: UIView {
-    var recognizer: UIPanGestureRecognizer?
-    private weak var attachedTo: UIView?
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        detach()
-        guard window != nil, let recognizer, let host = hostView() else { return }
-        host.addGestureRecognizer(recognizer)
-        attachedTo = host
-    }
-
-    func detach() {
-        if let recognizer { attachedTo?.removeGestureRecognizer(recognizer) }
-        attachedTo = nil
-    }
-
-    private func hostView() -> UIView? {
-        var responder: UIResponder? = self
-        while let current = responder {
-            if let controller = current as? UIViewController { return controller.view }
-            responder = current.next
-        }
-        return nil
-    }
-
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }
-}
-
 // MARK: - Dock
 
-/// Floating Liquid Glass page bar. Slide a finger along it and the glass bubble follows, switching
-/// pages as it crosses each icon (like the YouTube bar). Tapping works the same way.
-/// The icon / caption labels are drawn above the glass (see `GlassScrubSelector`). The dock follows
-/// the `.dock` contrast rules: its own scrim, ink and edge from the theme, never the accent, so it
-/// stays legible in light themes and over bright artwork.
-/// In landscape the same dock runs vertically as the page rail (`axis: .vertical`).
+/// v5 §2: a thinner, icon-only Liquid Glass bar (Apple Music style). Three full-height buttons, each
+/// filling its share of the bar, so every target is comfortably larger than 44 pt. A button commits on
+/// release (a press that slides off cancels), there is no sliding lens and no refraction over the icons,
+/// so they stay crisp. The selected icon takes the theme accent when it is legible on the dock
+/// (`DockStyle`), otherwise full dock ink; the others are muted dock ink. In landscape the same dock
+/// runs vertically as the page rail (`axis: .vertical`).
 struct PageDock: View {
     var axis: Axis = .horizontal
     @EnvironmentObject private var navigator: PageNavigator
@@ -451,41 +301,176 @@ struct PageDock: View {
 
     var body: some View {
         let vertical = axis == .vertical
-        GlassScrubSelector(
-            values: AppPage.allCases,
-            selection: Binding(get: { navigator.page }, set: { navigator.go($0, haptic: false) }),
-            height: vertical ? DockMetrics.railWidth : DockMetrics.height,
-            inset: vertical ? DockMetrics.railInset : 6,
-            role: .dock,
-            axis: axis
-        ) { item, selected in
-            VStack(spacing: vertical ? 3 : 4) {
-                if item == .profile {
-                    // §G3: the active profile's photo or initials instead of a generic glyph.
-                    DockProfileAvatar(size: vertical ? 24 : 26, selected: selected)
-                } else {
-                    Image(systemName: item.symbol(selected: selected)).scaledFont(vertical ? 20 : 22, .semibold)
+        let layout = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
+        let selectedInk = DockStyle.selectedInk(theme)
+        layout {
+            ForEach(AppPage.allCases) { item in
+                let selected = item == navigator.page && !navigator.playerPresented
+                Button { navigator.go(item) } label: {
+                    DockIcon(item: item, selected: selected, vertical: vertical)
+                        .foregroundStyle(selected ? selectedInk : theme.dockInkInactive)
+                        .frame(minWidth: DockMetrics.minimumTouchTarget, maxWidth: .infinity,
+                               minHeight: DockMetrics.minimumTouchTarget, maxHeight: .infinity)
+                        .contentShape(Rectangle())
                 }
-                Text(item.title).scaledFont(vertical ? 9.5 : 10.5, .semibold).lineLimit(1).minimumScaleFactor(0.8)
+                .buttonStyle(DockButtonStyle())
+                .accessibilityLabel(item.title)
+                .accessibilityAddTraits(selected ? [.isSelected] : [])
             }
-            .foregroundStyle(selected ? theme.dockInk : theme.dockInkInactive)
-            .accessibilityLabel(item.title)
         }
+        .padding(vertical ? .vertical : .horizontal, vertical ? DockMetrics.railInset : DockMetrics.itemInset)
+        .frame(width: vertical ? DockMetrics.railWidth : nil, height: vertical ? nil : DockMetrics.height)
+        .glassBar(Capsule(), interactive: false)
+        .animation(TabSwitchPolicy.animation, value: navigator.page)
+        .animation(TabSwitchPolicy.animation, value: navigator.playerPresented)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Pages")
     }
 }
 
-/// Clips the page strip along its axis only (neighbouring pages stay hidden). Portrait lets content
-/// extend vertically, so Discover's hero can run under the status bar; landscape (§D) cuts neighbours
-/// at the safe-area edges above and below and lets content run sideways under the rail.
-struct PagerClip: Shape {
-    var axis: PagerAxis
-    var safeTop: CGFloat = 0
-    var safeBottom: CGFloat = 0
+private struct DockIcon: View {
+    let item: AppPage
+    let selected: Bool
+    let vertical: Bool
 
-    func path(in rect: CGRect) -> Path {
-        Path(PagerAxis.clipRect(axis, in: rect, safeTop: safeTop, safeBottom: safeBottom))
+    var body: some View {
+        if item == .profile {
+            // §G3: the active profile's photo or initials instead of a generic glyph.
+            DockProfileAvatar(size: vertical ? 26 : 28, selected: selected)
+        } else {
+            Image(systemName: item.symbol(selected: selected))
+                .scaledFont(vertical ? 21 : 22, selected ? .semibold : .medium)
+        }
+    }
+}
+
+/// Dock and mini-player buttons: pressed items dim slightly; nothing scales or refracts.
+struct DockButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? DockStyle.pressedOpacity : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Mini-player
+
+/// v5 §2: the compact Now Playing bar above the dock (Apple Music style). Artwork, title and
+/// subtitle open the full player; the play / pause button sends the explicit command through
+/// `RemoteModel.sendMedia`. Shown only for a genuinely active session (`MiniPlayerPolicy`).
+struct NowPlayingMiniPlayer: View {
+    @EnvironmentObject private var remote: RemoteModel
+    @EnvironmentObject private var navigator: PageNavigator
+    @ObservedObject private var artwork = PlayerArtworkStore.shared
+    @Environment(\.glassTheme) private var theme
+
+    var body: some View {
+        let media = remote.media
+        let app = remote.apps.first(where: { $0.package == media.package })
+        let summary = MiniPlayerSummary.resolve(media: media, appName: app?.name)
+        let controls = PlayerControls.resolve(media: media)
+        let key = PlayerTransition.key(media: media)
+
+        HStack(spacing: 8) {
+            Button { navigator.openPlayer() } label: {
+                HStack(spacing: 11) {
+                    MiniArtwork(url: artwork.posterURL(forSessionTitle: summary.sessionTitle)
+                                    ?? artwork.landscapeURL(forSessionTitle: summary.sessionTitle),
+                                appAsset: app?.asset, size: 40)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(summary.title).scaledFont(15, .semibold).lineLimit(1)
+                        if !summary.detail.isEmpty {
+                            Text(summary.detail).scaledFont(12.5, .medium)
+                                .foregroundStyle(theme.dockInkInactive).lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                // Artwork and metadata change together.
+                .id(key)
+                .transition(.opacity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(DockButtonStyle())
+            .accessibilityLabel(summary.accessibilityLabel)
+            .accessibilityHint("Opens Now Playing")
+
+            Button { remote.sendMedia(PlayerControls.playPauseCommand(for: media)) } label: {
+                Image(systemName: media.isPlaying ? "pause.fill" : "play.fill")
+                    .scaledFont(19, .semibold)
+                    .frame(width: DockMetrics.minimumTouchTarget, height: DockMetrics.minimumTouchTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(DockButtonStyle())
+            .disabled(!controls.playPause || remote.mediaCommandPending)
+            .opacity(controls.playPause ? 1 : 0.4)
+            .accessibilityLabel(media.isPlaying ? "Pause" : "Play")
+        }
+        .foregroundStyle(theme.dockInk)
+        .padding(.leading, 9)
+        .padding(.trailing, 7)
+        .frame(height: DockMetrics.miniPlayerHeight)
+        .glassBar(Capsule(), interactive: false)
+        .animation(Motion.adaptive(Motion.fade), value: key)
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+    }
+}
+
+/// Landscape: the mini-player is a single artwork tile under the rail; tapping it opens the player.
+struct NowPlayingRailTile: View {
+    @EnvironmentObject private var remote: RemoteModel
+    @EnvironmentObject private var navigator: PageNavigator
+    @ObservedObject private var artwork = PlayerArtworkStore.shared
+
+    var body: some View {
+        let media = remote.media
+        let app = remote.apps.first(where: { $0.package == media.package })
+        let summary = MiniPlayerSummary.resolve(media: media, appName: app?.name)
+        Button { navigator.openPlayer() } label: {
+            MiniArtwork(url: artwork.posterURL(forSessionTitle: summary.sessionTitle)
+                            ?? artwork.landscapeURL(forSessionTitle: summary.sessionTitle),
+                        appAsset: app?.asset, size: DockMetrics.railTileArtwork)
+                .id(PlayerTransition.key(media: media))
+                .transition(.opacity)
+                .frame(width: DockMetrics.railWidth, height: DockMetrics.railWidth)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(DockButtonStyle())
+        .glassBar(RoundedRectangle(cornerRadius: DockMetrics.railWidth / 2.6, style: .continuous), interactive: false)
+        .accessibilityLabel(summary.accessibilityLabel)
+        .accessibilityHint("Opens Now Playing")
+    }
+}
+
+/// Small square artwork: the session's poster when known, else the app's icon, else a glyph.
+private struct MiniArtwork: View {
+    let url: URL?
+    let appAsset: String?
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if let url {
+                CachedArtwork(url: url, contentMode: .fill) { fallback }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.2, style: .continuous))
+        .accessibilityHidden(true)
+    }
+
+    @ViewBuilder private var fallback: some View {
+        if let appAsset, UIImage(named: "\(appAsset)_dark") != nil {
+            Image("\(appAsset)_dark").resizable().scaledToFill()
+        } else {
+            ZStack {
+                Color.inkAlpha(0.12)
+                Image(systemName: AppPage.playerSymbolOutline).scaledFont(size * 0.42, .medium)
+                    .foregroundStyle(Color.inkAlpha(0.7))
+            }
+        }
     }
 }
 

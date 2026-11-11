@@ -12,6 +12,7 @@ import SwiftUI
 /// is drawn by `RootPagerView` (PlayerBackdrop.swift), so it runs unbroken behind the dock and the rail.
 struct PlayerPage: View {
     @EnvironmentObject private var remote: RemoteModel
+    @EnvironmentObject private var navigator: PageNavigator
     @ObservedObject private var artwork = PlayerArtworkStore.shared
     @ObservedObject private var backdropStore = PlayerBackdropStore.shared
     @Environment(\.glassTheme) private var theme
@@ -34,12 +35,21 @@ struct PlayerPage: View {
                                 controls: PlayerControls.resolve(media: media),
                                 key: PlayerTransition.key(media: media))
 
-        GeometryReader { proxy in
-            if layoutContext.isLandscape {
-                landscapeLayout(size: proxy.size, scene: scene)
-            } else {
-                portraitLayout(scene: scene)
+        VStack(spacing: 0) {
+            // v5 §2: Now Playing is presented over the pages; this closes it (so does any dock item).
+            if !layoutContext.isLandscape {
+                closeButton.frame(maxWidth: .infinity)
             }
+            GeometryReader { proxy in
+                if layoutContext.isLandscape {
+                    landscapeLayout(size: proxy.size, scene: scene)
+                } else {
+                    portraitLayout(scene: scene)
+                }
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if layoutContext.isLandscape { closeButton.padding(.trailing, 4) }
         }
         .background { fallbackLight }
         .foregroundStyle(Color.ink)
@@ -53,13 +63,25 @@ struct PlayerPage: View {
         // Adaptive theme: this page only reports its artwork; the shared palette decides the colours. The
         // backdrop store makes the background once per artwork, not per poll.
         .onChange(of: art) { _, url in
-            ThemeStore.shared.submitArtwork(url, for: .player)
+            ThemeStore.shared.submitArtwork(url, for: .nowPlaying)
             PlayerBackdropStore.shared.show(url)
         }
         .onAppear {
-            ThemeStore.shared.submitArtwork(art, for: .player)
+            ThemeStore.shared.submitArtwork(art, for: .nowPlaying)
             PlayerBackdropStore.shared.show(art)
         }
+    }
+
+    private var closeButton: some View {
+        Button { navigator.closePlayer() } label: {
+            Image(systemName: "chevron.down")
+                .scaledFont(18, .semibold)
+                .foregroundStyle(Color.inkAlpha(0.78))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(DockButtonStyle())
+        .accessibilityLabel("Close Now Playing")
     }
 
     // MARK: Layouts

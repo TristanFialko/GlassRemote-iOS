@@ -73,7 +73,7 @@ struct DockProfileAvatar: View {
         let identity = DockAvatarIdentity(id: profile.id, initials: profile.initials, revision: store.imageRevision)
         AvatarCircle(image: store.image(for: profile.id), initials: profile.initials, tint: profile.tint, size: size)
             .overlay {
-                Circle().strokeBorder(selected ? theme.dockInk : theme.dockInkInactive, lineWidth: selected ? 1.6 : 1)
+                Circle().strokeBorder(selected ? DockStyle.selectedInk(theme) : theme.dockInkInactive, lineWidth: selected ? 2 : 1)
             }
             .id(identity)
             .transition(.opacity)

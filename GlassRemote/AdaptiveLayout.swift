@@ -43,6 +43,9 @@ extension DockMetrics {
     static let railWidth: CGFloat = 64
     static let railSegment: CGFloat = 62
     static let railInset: CGFloat = 6
+    /// v5 §2: the landscape Now Playing tile under the rail (artwork side, gap above the bottom edge).
+    static let railTileArtwork: CGFloat = 44
+    static let railMiniBottom: CGFloat = 8
     /// Gap between the rail and the leading safe-area edge, before the drop below.
     static let railGap: CGFloat = 6
     /// Space pages keep between the rail and their content.
@@ -55,6 +58,12 @@ extension DockMetrics {
     static func railDrop(safeLeading: CGFloat) -> CGFloat { min(max(safeLeading * 0.2, 0), 12) }
 
     static func railLength(count: Int) -> CGFloat { CGFloat(max(count, 1)) * railSegment + railInset * 2 }
+
+    /// v5 §2: whether the Now Playing tile fits below a vertically centred rail of `count` items in a
+    /// window `height` tall, without touching it.
+    static func railTileFits(height: CGFloat, count: Int) -> Bool {
+        (height - railLength(count: count)) / 2 >= railWidth + railMiniBottom + 4
+    }
 
     /// Leading space a page keeps clear of the rail, measured from the leading safe-area edge.
     static func railClearance(safeLeading: CGFloat) -> CGFloat {
@@ -69,26 +78,6 @@ extension DockMetrics {
 }
 
 // MARK: - Page depth
-
-/// Section transitions: while a page slides away it recedes slightly (scale and opacity) and the
-/// incoming page comes forward, so swipes and dock jumps read as one fluid motion. Off with
-/// Reduce Motion.
-enum PageDepth {
-    /// How far `item` is from the centre of the screen, in pages (0 = on screen, capped at 1).
-    static func distance(of item: AppPage, current: AppPage, travel: CGFloat, width: CGFloat) -> CGFloat {
-        guard width > 0 else { return 0 }
-        let position = CGFloat(item.rawValue - current.rawValue) + travel / width
-        return min(abs(position), 1)
-    }
-
-    static func scale(_ distance: CGFloat, reduceMotion: Bool) -> CGFloat {
-        reduceMotion ? 1 : 1 - 0.05 * min(max(distance, 0), 1)
-    }
-
-    static func opacity(_ distance: CGFloat, reduceMotion: Bool) -> Double {
-        reduceMotion ? 1 : Double(1 - 0.3 * min(max(distance, 0), 1))
-    }
-}
 
 // MARK: - Scrub selector geometry
 

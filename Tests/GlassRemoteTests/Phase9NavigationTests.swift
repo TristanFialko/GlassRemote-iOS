@@ -2,8 +2,8 @@ import CoreGraphics
 import XCTest
 @testable import GlassRemote
 
-/// Continuation §D: landscape pages run vertically (Remote at the top, Profile at the bottom); portrait
-/// stays horizontal. These pin the axis maths, the gesture ownership rules and the Remote's swipe areas.
+/// Continuation §D: the retained axis maths and gesture-ownership helpers, and the Remote's swipe
+/// areas. v5 §2 removed page swiping (the dock and rail switch pages), so the swipe-target tests are gone.
 final class Phase9NavigationTests: XCTestCase {
 
     // MARK: Axis
@@ -11,7 +11,7 @@ final class Phase9NavigationTests: XCTestCase {
     func testPortraitStaysHorizontalAndLandscapeRunsVertically() {
         XCTAssertEqual(PagerAxis.resolve(isLandscape: false), .horizontal)
         XCTAssertEqual(PagerAxis.resolve(isLandscape: true), .vertical)
-        XCTAssertEqual(AppPage.allCases, [.remote, .player, .discover, .profile], "one page order for both axes")
+        XCTAssertEqual(AppPage.allCases, [.remote, .discover, .profile], "one page order for both axes")
     }
 
     func testPortraitStripIsTheOldFormula() {
@@ -27,7 +27,7 @@ final class Phase9NavigationTests: XCTestCase {
         XCTAssertEqual(PagerAxis.pageStride(.horizontal, size: CGSize(width: 393, height: 852), safeTop: 59, safeBottom: 34), 393)
         XCTAssertEqual(PagerAxis.pageGap(.horizontal, safeTop: 59, safeBottom: 34), 0)
         XCTAssertEqual(PagerAxis.horizontal.component(CGPoint(x: -40, y: 300)), -40)
-        XCTAssertEqual(PagerAxis.horizontal.stripOffset(page: .discover, travel: 0, stride: 393), CGSize(width: -786, height: 0))
+        XCTAssertEqual(PagerAxis.horizontal.stripOffset(page: .discover, travel: 0, stride: 393), CGSize(width: -393, height: 0))
     }
 
     func testLandscapeStacksPagesTopToBottom() {
@@ -35,9 +35,9 @@ final class Phase9NavigationTests: XCTestCase {
         let stride = PagerAxis.pageStride(.vertical, size: size, safeTop: 0, safeBottom: 21)
         XCTAssertEqual(stride, 393, "a whole screen per page, home-indicator zone included")
         XCTAssertEqual(PagerAxis.pageGap(.vertical, safeTop: 0, safeBottom: 21), 21)
-        XCTAssertEqual(PagerAxis.vertical.stripOffset(page: .player, travel: -50, stride: 400), CGSize(width: 0, height: -450))
+        XCTAssertEqual(PagerAxis.vertical.stripOffset(page: .discover, travel: -50, stride: 400), CGSize(width: 0, height: -450))
         XCTAssertEqual(PagerAxis.vertical.stripOffset(page: .remote, travel: 0, stride: stride), .zero, "Remote is at the top")
-        XCTAssertEqual(PagerAxis.vertical.stripOffset(page: .profile, travel: 0, stride: stride).height, -3 * stride, "Profile at the bottom")
+        XCTAssertEqual(PagerAxis.vertical.stripOffset(page: .profile, travel: 0, stride: stride).height, -2 * stride, "Profile at the bottom")
         XCTAssertEqual(PagerAxis.vertical.component(CGPoint(x: -40, y: 300)), 300)
     }
 
@@ -72,35 +72,6 @@ final class Phase9NavigationTests: XCTestCase {
         XCTAssertFalse(PagerAxis.horizontal.isDominant(dx: 2, dy: -20))
     }
 
-    func testSwipeUpGoesDownTheStack() {
-        let stride: CGFloat = 393
-        XCTAssertEqual(AppPage.target(from: .remote, translation: -stride / 2, predicted: -stride / 2, width: stride), .player)
-        XCTAssertEqual(AppPage.target(from: .player, translation: -stride / 2, predicted: -stride / 2, width: stride), .discover)
-        XCTAssertEqual(AppPage.target(from: .discover, translation: stride / 2, predicted: stride / 2, width: stride), .player)
-        XCTAssertEqual(AppPage.target(from: .player, translation: stride / 2, predicted: stride / 2, width: stride), .remote)
-        XCTAssertEqual(AppPage.target(from: .player, translation: -40, predicted: -400, width: stride), .discover, "a flick")
-    }
-
-    func testBoundariesHoldAndResist() {
-        XCTAssertEqual(AppPage.target(from: .remote, translation: 300, predicted: 900, width: 393), .remote, "nothing above the Remote")
-        XCTAssertEqual(AppPage.target(from: .profile, translation: -300, predicted: -900, width: 393), .profile, "nothing below Profile")
-        XCTAssertEqual(AppPage.resisted(100, on: .remote), 25)
-        XCTAssertEqual(AppPage.resisted(-100, on: .profile), -25)
-        XCTAssertEqual(AppPage.resisted(-100, on: .remote), -100)
-    }
-
-    func testShortOrCancelledSwipesStay() {
-        XCTAssertEqual(AppPage.target(from: .player, translation: -60, predicted: -120, width: 393), .player)
-        XCTAssertEqual(AppPage.target(from: .player, translation: 0, predicted: 0, width: 393), .player)
-    }
-
-    func testRapidFlicksMoveOnePageAtATime() {
-        XCTAssertEqual(AppPage.target(from: .remote, translation: -30, predicted: -5_000, width: 393), .player)
-        var page = AppPage.remote
-        for _ in 0..<6 { page = AppPage.target(from: page, translation: -30, predicted: -5_000, width: 393) }
-        XCTAssertEqual(page, .profile)
-    }
-
     func testLandscapeRemotePagesOnlyFromItsFreeColumnSpace() {
         let size = CGSize(width: 852, height: 393)
         let areas = [CGRect(x: 120, y: 160, width: 219, height: 116), CGRect(x: 640, y: 130, width: 190, height: 140)]
@@ -112,7 +83,7 @@ final class Phase9NavigationTests: XCTestCase {
         XCTAssertFalse(accepts(.remote, CGPoint(x: 420, y: 200), areas), "the pad keeps its touches")
         XCTAssertFalse(accepts(.remote, CGPoint(x: 5, y: 200), areas), "no portrait edge strips in landscape")
         XCTAssertFalse(accepts(.remote, CGPoint(x: 200, y: 200), []), "folder open: no swipe areas")
-        for page in [AppPage.player, .discover, .profile] {
+        for page in [AppPage.discover, .profile] {
             XCTAssertTrue(accepts(page, CGPoint(x: 420, y: 200), []))
         }
         // Portrait is unchanged: edge strips only, and swipe areas are ignored.
@@ -159,11 +130,6 @@ final class Phase9NavigationTests: XCTestCase {
         XCTAssertTrue(PagerGesturePolicy.cancelsOnAxisChange(active: true, from: .vertical, to: .horizontal))
         XCTAssertFalse(PagerGesturePolicy.cancelsOnAxisChange(active: false, from: .horizontal, to: .vertical))
         XCTAssertFalse(PagerGesturePolicy.cancelsOnAxisChange(active: true, from: .vertical, to: .vertical))
-    }
-
-    func testDepthUsesTheAxisStride() {
-        XCTAssertEqual(PageDepth.distance(of: .player, current: .remote, travel: -196.5, width: 393), 0.5, accuracy: 1e-9)
-        XCTAssertEqual(PageDepth.distance(of: .remote, current: .remote, travel: 0, width: 393), 0, accuracy: 1e-9)
     }
 
     // MARK: Remote swipe areas
