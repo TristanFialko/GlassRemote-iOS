@@ -11,7 +11,8 @@ import SwiftUI
 /// Which column a Remote control occupies in the landscape stage. Portrait ignores it.
 enum RemoteStageColumn: Int, Equatable {
     /// `deck`: the landscape volume deck, under the pad and the trailing column.
-    case leading, pad, trailing, deck
+    /// `gap`: continuation §D, a page-swipe area in a side column's free space (leading first).
+    case leading, pad, trailing, deck, gap
 }
 
 struct RemoteStageSlot: LayoutValueKey {
@@ -167,12 +168,19 @@ struct RemoteStageLayout: Layout {
     /// on the stage size. The Android and Samsung pads are then identical in the same size class.
     var reservesColumns: Bool = true
 
+    /// Continuation §D: a free column area shorter than this is not offered as a page-swipe area.
+    static let swipeAreaMinHeight: CGFloat = 44
+
     struct Frames: Equatable {
         var leading: [CGRect]
         var trailing: [CGRect]
         var pad: CGRect?
         /// Continuation §C3: the volume deck, under the pad and the trailing column.
         var deck: CGRect? = nil
+        /// Continuation §D: free space in the leading and trailing columns (between their top and
+        /// bottom-pinned children, one spacing clear of both). Nil when too short to swipe on.
+        var leadingGap: CGRect? = nil
+        var trailingGap: CGRect? = nil
     }
 
     /// Pure frame computation (unit tested). Heights are each child's natural height at its column
@@ -217,9 +225,22 @@ struct RemoteStageLayout: Layout {
         let deckRect: CGRect? = deck
             ? CGRect(x: middleX, y: max(height - deckHeight, 0), width: max(width - middleX, 0), height: deckHeight)
             : nil
-        return Frames(leading: stack(leading, leadingBottom, x: 0, w: leadingWidth, foot: height),
-                      trailing: stack(trailing, trailingBottom, x: trailingX, w: trailingWidth, foot: upper),
-                      pad: pad, deck: deckRect)
+        func gap(_ rects: [CGRect], _ bottom: [Bool], x: CGFloat, w: CGFloat, foot columnFoot: CGFloat) -> CGRect? {
+            guard w > 0 else { return nil }
+            var top: CGFloat = 0
+            var base: CGFloat = columnFoot
+            for i in rects.indices {
+                if i < bottom.count && bottom[i] { base = min(base, rects[i].minY - spacing) }
+                else { top = max(top, rects[i].maxY + spacing) }
+            }
+            guard base - top >= RemoteStageLayout.swipeAreaMinHeight else { return nil }
+            return CGRect(x: x, y: top, width: w, height: base - top)
+        }
+        let leadingRects = stack(leading, leadingBottom, x: 0, w: leadingWidth, foot: height)
+        let trailingRects = stack(trailing, trailingBottom, x: trailingX, w: trailingWidth, foot: upper)
+        return Frames(leading: leadingRects, trailing: trailingRects, pad: pad, deck: deckRect,
+                      leadingGap: gap(leadingRects, leadingBottom, x: 0, w: leadingWidth, foot: height),
+                      trailingGap: gap(trailingRects, trailingBottom, x: trailingX, w: trailingWidth, foot: upper))
     }
 
     /// The pad's frame on a stage of this size when both columns and the volume deck are reserved
@@ -243,12 +264,14 @@ struct RemoteStageLayout: Layout {
         var trailingIndex: [Int] = []
         var padIndex: [Int] = []
         var deckIndex: [Int] = []
+        var gapIndex: [Int] = []
         for (i, view) in subviews.enumerated() {
             switch view[RemoteStageSlot.self] {
             case .leading: leadingIndex.append(i)
             case .trailing: trailingIndex.append(i)
             case .pad: padIndex.append(i)
             case .deck: deckIndex.append(i)
+            case .gap: gapIndex.append(i)
             }
         }
         func heights(_ indices: [Int], width: CGFloat) -> [CGFloat] {
@@ -276,6 +299,11 @@ struct RemoteStageLayout: Layout {
         }
         if let deck = frames.deck {
             for i in deckIndex { place(i, deck) }
+        }
+        // §D: swipe areas take the free column space (leading first); without one they are zero-sized.
+        let gaps: [CGRect?] = [frames.leadingGap, frames.trailingGap]
+        for (n, i) in gapIndex.enumerated() {
+            place(i, (n < gaps.count ? gaps[n] : nil) ?? CGRect(x: 0, y: 0, width: 0, height: 0))
         }
     }
 }

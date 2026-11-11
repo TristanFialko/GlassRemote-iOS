@@ -145,6 +145,12 @@ struct RemoteView: View {
                     }
                     volumeBar(thickness: volumeThickness)
                         .remoteStage(.deck)
+                    if isLandscape && !folder.isVisible {
+                        // Continuation §D: the free space in the side columns is where a vertical page
+                        // swipe may start on the Remote; everything else on it is a control.
+                        PagerSwipeArea().remoteStage(.gap)
+                        PagerSwipeArea().remoteStage(.gap)
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
