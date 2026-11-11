@@ -31,6 +31,38 @@ enum SamsungRemoteLayout {
     static let powerMenuKeys: [SamsungKey] = [.power]
 
     static let removedFromSurface: Set<SamsungKey> = [.up, .down, .left, .right, .enter]
+
+    // MARK: Phase 8 landscape stage
+
+    /// Leading column foot: navigation.
+    static let landscapeNavigation: [Item] = [
+        Item(key: .back, title: "Back", symbol: "arrow.uturn.backward"),
+        Item(key: .home, title: "Home", symbol: "house")
+    ]
+
+    /// Trailing column top: transport (one combined Play/Pause).
+    static let landscapeMedia: [Item] = [
+        Item(key: .rewind, title: "Rewind", symbol: "backward.fill"),
+        Item(key: .play, title: "Play/Pause", symbol: "playpause.fill"),
+        Item(key: .fastForward, title: "Fast forward", symbol: "forward.fill")
+    ]
+
+    /// Trailing column foot, just above the volume slider: the TV group (mute and channel).
+    static let landscapeTVGroup: [Item] = [
+        Item(key: .mute, title: "Mute", symbol: "speaker.slash.fill"),
+        Item(key: .channelDown, title: "Channel down", symbol: "chevron.down"),
+        Item(key: .channelUp, title: "Channel up", symbol: "chevron.up")
+    ]
+
+    /// Every key on the landscape surface, in column order. Each appears once.
+    static var landscapeKeys: [SamsungKey] {
+        (landscapeNavigation + landscapeMedia + landscapeTVGroup).map(\.key)
+    }
+
+    /// The status banner is shown whenever the TV link is not fully up (or the TV is not set up).
+    static func showsBanner(enabled: Bool, state: SamsungLinkState) -> Bool {
+        !enabled || state != .connected
+    }
 }
 
 /// Samsung TV layout for the Remote page: a large, permanent trackpad and a short key set. Uses
@@ -38,27 +70,30 @@ enum SamsungRemoteLayout {
 /// Every control is disabled while the TV link is down, and the banner says exactly why.
 struct SamsungRemotePanel: View {
     @EnvironmentObject private var remote: RemoteModel
-
-    private var ready: Bool { remote.samsungRemoteReady }
+    var padMinHeight: CGFloat = 220
 
     var body: some View {
         VStack(spacing: 10) {
-            banner
+            if SamsungRemoteLayout.showsBanner(enabled: remote.tvVolumeEnabled, state: remote.samsungState) {
+                SamsungLinkBanner()
+            }
             SamsungTrackpad()
-                .disabled(!ready)
-                .frame(minHeight: 220, maxHeight: .infinity)
+                .disabled(!remote.samsungRemoteReady)
+                .frame(minHeight: padMinHeight, maxHeight: .infinity)
                 .layoutPriority(1)
             ForEach(Array(SamsungRemoteLayout.primaryRows.enumerated()), id: \.offset) { _, row in
-                keyRow(row)
+                SamsungKeyRow(items: row)
             }
         }
-        .opacity(ready ? 1 : 0.92)
+        .opacity(remote.samsungRemoteReady ? 1 : 0.92)
     }
+}
 
-    // MARK: Connection banner
+/// Says exactly why the Samsung controls are unavailable, with the one action that fixes it.
+struct SamsungLinkBanner: View {
+    @EnvironmentObject private var remote: RemoteModel
 
-    @ViewBuilder
-    private var banner: some View {
+    var body: some View {
         let state = remote.samsungState
         if !remote.tvVolumeEnabled {
             bannerRow("tv.slash", "Samsung TV is off", "Set it up") { remote.showConnection = true }
@@ -81,36 +116,60 @@ struct SamsungRemotePanel: View {
             } else {
                 ProgressView().controlSize(.small).tint(Color.ink)
             }
-            Text(text).scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
+            Text(text).scaledFont(13, .semibold).lineLimit(2).minimumScaleFactor(0.8)
             Spacer(minLength: 0)
             if let action, let run {
                 Button(action: run) {
-                    Text(action).scaledFont(13, .semibold).padding(.horizontal, 12).frame(height: 28)
+                    Text(action).scaledFont(13, .semibold).lineLimit(1).padding(.horizontal, 12).frame(height: 28)
                         .glassSurface(Capsule(), interactive: true, elevated: true)
                 }.buttonStyle(PressStyle())
             }
         }
         .foregroundStyle(Color.ink)
-        .padding(.horizontal, 14).frame(height: 40)
-        .glassSurface(Capsule())
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .frame(minHeight: 40)
+        .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .accessibilityElement(children: .combine)
     }
+}
 
-    // MARK: Key rows (one glass group per row, same buttons as the Android remote)
+/// One glass group of Samsung keys, drawn with the Remote's cluster keys. Disabled while the TV
+/// link is down.
+struct SamsungKeyRow: View {
+    @EnvironmentObject private var remote: RemoteModel
+    let items: [SamsungRemoteLayout.Item]
+    var height: CGFloat = 54
+    var captions: Bool = false
 
-    private func keyRow(_ items: [SamsungRemoteLayout.Item]) -> some View {
+    private var ready: Bool { remote.samsungRemoteReady }
+
+    var body: some View {
         GlassGroup(spacing: 10) {
             HStack(spacing: 10) {
                 ForEach(items, id: \.key) { item in
                     if item.key == .play {
                         playPauseButton
                     } else if item.key == .home {
-                        RemoteKeyButton(label: item.title, enabled: ready, action: { remote.samsungKey(item.key) }) { HomeGlyph() }
+                        RemoteClusterKey(label: item.title, caption: caption(item), enabled: ready, height: height,
+                                         action: { remote.samsungKey(item.key) }) { HomeGlyph() }
                     } else {
-                        RemoteKeyButton(symbol: item.symbol, label: item.title, enabled: ready) { remote.samsungKey(item.key) }
+                        RemoteClusterKey(symbol: item.symbol, label: item.title, caption: caption(item),
+                                         enabled: ready, height: height) { remote.samsungKey(item.key) }
                     }
                 }
             }
+        }
+    }
+
+    private func caption(_ item: SamsungRemoteLayout.Item) -> String? {
+        guard captions else { return nil }
+        switch item.key {
+        case .play: return "Play"
+        case .fastForward: return "Forward"
+        case .channelUp: return "Ch +"
+        case .channelDown: return "Ch −"
+        default: return item.title
         }
     }
 
@@ -120,7 +179,7 @@ struct SamsungRemotePanel: View {
         let guess = remote.samsungPlayPause
         let symbol = guess == .sentPlay ? "pause.fill" : (guess == .sentPause ? "play.fill" : "playpause.fill")
         let label = guess == .sentPlay ? "Pause (last sent: Play)" : (guess == .sentPause ? "Play (last sent: Pause)" : "Play or pause")
-        return RemoteKeyButton(label: label, enabled: ready, action: {
+        return RemoteClusterKey(label: label, caption: captions ? "Play" : nil, enabled: ready, height: height, action: {
             Haptics.light()
             withAnimation(.easeInOut(duration: 0.2)) { remote.samsungTogglePlayPause() }
         }) {

@@ -14,6 +14,14 @@ final class PageNavigator: ObservableObject {
     /// Bumped only when Discover should focus its search field now (see SearchFocusPolicy).
     @Published private(set) var searchFocusFire = 0
     private var searchFocus = SearchFocusPolicy(page: .landing)
+    /// Phase 8: a Profile sub-page another page asked for (the Remote menu, Samsung set-up).
+    /// ProfilePage opens it and clears it. Settings live only in Profile now.
+    @Published var pendingProfileRoute: ProfileRoute?
+
+    func openProfile(_ route: ProfileRoute? = nil) {
+        pendingProfileRoute = route
+        go(.profile)
+    }
 
     func go(_ target: AppPage, haptic: Bool = true) {
         guard target != page else { return }

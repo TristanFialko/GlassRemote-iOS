@@ -14,9 +14,11 @@ struct ProfilePage: View {
     @Environment(\.dockClearance) private var dockClearance
     @Environment(\.layoutContext) private var layout
     @State private var editor: ProfileEditorTarget?
+    @EnvironmentObject private var navigator: PageNavigator
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView(showsIndicators: false) {
                 Group {
                     if layout.isLandscape {
@@ -45,6 +47,17 @@ struct ProfilePage: View {
             }
         }
         .sheet(item: $editor) { target in ProfileEditorSheet(target: target) }
+        .onAppear { consumePendingRoute() }
+        .onChange(of: navigator.pendingProfileRoute) { _ in consumePendingRoute() }
+    }
+
+    /// Opens a sub-page requested from another tab (Phase 8: settings moved out of the Remote menu).
+    private func consumePendingRoute() {
+        guard let route = navigator.pendingProfileRoute else { return }
+        navigator.pendingProfileRoute = nil
+        var fresh = NavigationPath()
+        fresh.append(route)
+        path = fresh
     }
 
     private var sections: some View {
