@@ -22,6 +22,8 @@ extension RemoteModel {
     /// Sends one allowlisted key to the Samsung TV; reports honestly when the link is down.
     @discardableResult
     func samsungKey(_ key: SamsungKey) -> Bool {
+        // Phase 9 recovery §5: volume keys share the volume route (socket key, else UPnP).
+        if let name = key.legacyVolumeName { return volume(name) }
         if tv.sendKey(key) { return true }
         status = samsungUnavailableMessage
         return false

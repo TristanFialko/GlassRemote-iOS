@@ -91,19 +91,37 @@ extension RemoteModel {
 
     // MARK: - Volume routing
 
-    /// v5 §5: volume and mute go only to the Samsung TV (its UPnP level, else its remote socket). The
-    /// Android TV volume path is gone: with no Samsung route nothing is sent and the soundbar is
-    /// reported unavailable. Returns whether the TV connection took the key.
+    /// v5 §5: volume and mute go only to the Samsung TV. Phase 9 recovery §5: the route is
+    /// `VolumeButtonPolicy` — the TV's remote-socket key first (what its own remote sends, so an
+    /// ARC soundbar follows), else a UPnP RenderingControl step / mute toggle when the socket is down
+    /// but the volume link is up. The Android TV volume path is gone: with no Samsung route nothing
+    /// is sent and the soundbar is reported unavailable. Returns whether a Samsung route took it.
     @discardableResult
     func volume(_ name: String, haptic: Bool = true, readBack: Bool = true) -> Bool {
         endpointLearner.invalidate()   // a volume key is a newer command: discard any pending endpoint attempt
-        guard tvVolumeEnabled, tv.send(name) else {
+        let route = VolumeButtonPolicy.route(for: name, tvVolumeEnabled: tvVolumeEnabled,
+                                             remoteReady: samsungRemoteReady, upnpReady: volumeLinkReady)
+        let taken: Bool
+        switch route {
+        case .samsungKey(let key): taken = tv.send(key)
+        case .upnpStep(let delta): taken = volumeLink.step(by: delta)
+        case .upnpMuteToggle: taken = volumeLink.toggleMute()
+        case .unavailable: taken = false
+        }
+        guard taken else {
             reportSoundbarUnavailable()
             return false
         }
+        if case .samsungKey = route {} else { GRLog.note("volume", "\(name) sent over UPnP (remote socket not ready)") }
         if haptic { Haptics.soft() }
         if readBack { scheduleVolumeReadback() }
         return true
+    }
+
+    /// Whether volume +/−/mute can reach the TV right now (remote socket or UPnP link).
+    var volumeButtonsAvailable: Bool {
+        VolumeButtonPolicy.isAvailable(tvVolumeEnabled: tvVolumeEnabled, remoteReady: samsungRemoteReady,
+                                       upnpReady: volumeLinkReady)
     }
 
     /// The explicit unavailable state (never a silent fallback to the Android box).
@@ -130,6 +148,9 @@ extension RemoteModel {
             self.volumeLinkReady = available
             self.volumeStateReset()
             if !available { self.tvVolumeFraction = nil }
+        }
+        volumeLink.onMute = { [weak self] muted in
+            self?.volumeStatus = muted ? "TV volume: muted (confirmed by the TV)" : "TV volume: unmuted (confirmed by the TV)"
         }
         volumeLink.onVolume = { [weak self] value in
             guard let self else { return }

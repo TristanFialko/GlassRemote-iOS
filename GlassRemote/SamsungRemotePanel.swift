@@ -178,11 +178,16 @@ struct SamsungKeyRow: View {
                                          action: { remote.samsungKey(item.key) }) { HomeGlyph() }
                     } else {
                         RemoteClusterKey(symbol: item.symbol, label: item.title, caption: caption(item),
-                                         enabled: ready, height: height) { remote.samsungKey(item.key) }
+                                         enabled: enabled(item.key), height: height) { remote.samsungKey(item.key) }
                     }
                 }
             }
         }
+    }
+
+    /// Volume keys stay usable over the UPnP volume link while the remote socket is down (§5).
+    private func enabled(_ key: SamsungKey) -> Bool {
+        key.legacyVolumeName != nil ? remote.volumeButtonsAvailable : ready
     }
 
     private func caption(_ item: SamsungRemoteLayout.Item) -> String? {
