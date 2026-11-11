@@ -210,9 +210,9 @@ struct TitleDetailView: View {
                     showStreams = true
                 } label: {
                     Label("Play", systemImage: "play.fill").scaledFont(16, .semibold)
-                        .foregroundStyle(Color.white)
+                        .foregroundStyle(theme.playInk)
                         .frame(maxWidth: .infinity).frame(height: 52)
-                        .background(Capsule().fill(theme.accent))
+                        .background(Capsule().fill(theme.playFill))
                         .glassSurface(Capsule(), interactive: true)
                 }
                 .buttonStyle(GlassPressStyle())

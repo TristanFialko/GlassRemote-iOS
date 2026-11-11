@@ -178,9 +178,10 @@ struct DiscoverHero: View {
                 Label(t.kind == .movie ? "Play" : "Episodes",
                       systemImage: t.kind == .movie ? "play.fill" : "list.bullet.rectangle.portrait")
                     .scaledFont(15, .semibold)
-                    .foregroundStyle(Color.black)
+                    .foregroundStyle(theme.playInk)
                     .padding(.horizontal, 22).frame(height: 44)
-                    .background(Capsule().fill(Color.white))
+                    .background(Capsule().fill(theme.playFill))
+                    .glassSurface(Capsule(), interactive: true)
             }
             .buttonStyle(GlassPressStyle())
             .accessibilityLabel(t.kind == .movie ? "Play \(t.name)" : "Episodes of \(t.name)")

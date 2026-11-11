@@ -9,7 +9,8 @@ import UIKit
 // model, page or helper is recreated.
 
 enum ThemeID: String, CaseIterable, Identifiable {
-    case defaultDark, deepBlue, violet, amber, lightGlass, forest, crimson, ocean, glassWhite, adaptive, auto
+    case defaultDark, deepBlue, violet, amber, lightGlass, forest, crimson, ocean, glassWhite,
+         synthwave, rosewood, graphite, glacier, adaptive, auto
     var id: String { rawValue }
 
     var title: String {
@@ -23,6 +24,10 @@ enum ThemeID: String, CaseIterable, Identifiable {
         case .crimson: return "Crimson"
         case .ocean: return "Ocean"
         case .glassWhite: return "Glass White"
+        case .synthwave: return "Synthwave"
+        case .rosewood: return "Rosewood"
+        case .graphite: return "Graphite"
+        case .glacier: return "Glacier"
         case .adaptive: return "Adaptive"
         case .auto: return "Auto"
         }
@@ -39,6 +44,10 @@ enum ThemeID: String, CaseIterable, Identifiable {
         case .crimson: return "Black and red"
         case .ocean: return "Teal and cyan"
         case .glassWhite: return "Minimal, neutral"
+        case .synthwave: return "Neon magenta and cyan"
+        case .rosewood: return "Rose gold on plum"
+        case .graphite: return "Graphite and champagne"
+        case .glacier: return "Icy light, deep teal"
         case .adaptive: return "Accents from artwork"
         case .auto: return "Follows iOS Light / Dark"
         }
@@ -101,6 +110,13 @@ struct GlassTheme: Equatable {
                               tint: 0x7A0F23, tintOpacity: 0.30, accent: 0xF0324F, accent2: 0xFF7A8E)
     static let ocean = dark(.ocean, top: 0x00100F, mid: 0x04343A, bottom: 0x000A0B, glow: 0x14C2D6,
                             tint: 0x0A5B66, tintOpacity: 0.30, accent: 0x18C9DC, accent2: 0x5BE3D0)
+    // Phase 8 themes: each has its own hue family, accent pair and canvas, not a recolour of another.
+    static let synthwave = dark(.synthwave, top: 0x0B0218, mid: 0x2A0A45, bottom: 0x05010D, glow: 0xFF2BD6, glowOpacity: 0.26,
+                                tint: 0x3B0F5E, tintOpacity: 0.32, accent: 0xFF3FD8, accent2: 0x3FE0FF)
+    static let rosewood = dark(.rosewood, top: 0x0E0507, mid: 0x3A1820, bottom: 0x070203, glow: 0xE8A08C, glowOpacity: 0.24,
+                               tint: 0x5A2430, tintOpacity: 0.30, accent: 0xF2A48F, accent2: 0xFFD3B8)
+    static let graphite = dark(.graphite, top: 0x0C0D0F, mid: 0x1C1F24, bottom: 0x050607, glow: 0xC9A46A, glowOpacity: 0.18,
+                               tint: 0x2A2D33, tintOpacity: 0.26, accent: 0xD9B27A, accent2: 0xF0D9AE)
 
     static let lightGlass = GlassTheme(
         id: .lightGlass, isLight: true,
@@ -116,6 +132,13 @@ struct GlassTheme: Equatable {
         glassTint: rgb(0xFFFFFF), glassTintOpacity: 0.40,
         accent: rgb(0x6B6B75), accent2: rgb(0x9A9AA3), lensOpacity: 0.12, accentSurfaceOpacity: 0.14, rim: .white)
 
+    static let glacier = GlassTheme(
+        id: .glacier, isLight: true,
+        canvasTop: rgb(0xEEF8FB), canvasMid: rgb(0xD3ECF3), canvasBottom: rgb(0xB8DCE8),
+        glow: rgb(0xFFFFFF).opacity(0.75),
+        glassTint: rgb(0xF4FCFF), glassTintOpacity: 0.30,
+        accent: rgb(0x0E8FB0), accent2: rgb(0x5CC8DE), lensOpacity: 0.20, accentSurfaceOpacity: 0.24, rim: .white)
+
     static func base(for id: ThemeID, systemScheme: ColorScheme) -> GlassTheme {
         switch id {
         case .defaultDark: return defaultDark
@@ -127,6 +150,10 @@ struct GlassTheme: Equatable {
         case .crimson: return crimson
         case .ocean: return ocean
         case .glassWhite: return glassWhite
+        case .synthwave: return synthwave
+        case .rosewood: return rosewood
+        case .graphite: return graphite
+        case .glacier: return glacier
         case .adaptive: var t = defaultDark; t.id = .adaptive; return t
         case .auto:
             var t = systemScheme == .light ? lightGlass : defaultDark
@@ -269,6 +296,37 @@ enum ColorMath {
         let parts = Self.hsv(r: Double(r), g: Double(g), b: Double(b))
         let c = Self.color(hue: parts.h, saturation: parts.s, luminance: maxLuminance)
         return Color(red: c.r, green: c.g, blue: c.b)
+    }
+}
+
+// MARK: - Primary action (Play) colours
+
+extension GlassTheme {
+    /// Rough perceived brightness of a colour, 0...1 (sRGB weights, no linearisation).
+    static func luminance(of color: Color) -> Double {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a) else { return 0.5 }
+        return Double(0.2126 * r + 0.7152 * g + 0.0722 * b)
+    }
+
+    /// True when the accent is a grey (Default Dark, Glass White, Auto, Adaptive with no artwork).
+    var accentIsNeutral: Bool {
+        var h: CGFloat = 0, s: CGFloat = 0, v: CGFloat = 0, a: CGFloat = 0
+        guard UIColor(accent).getHue(&h, saturation: &s, brightness: &v, alpha: &a) else { return true }
+        return s < 0.15
+    }
+
+    /// Phase 8: Play's fill. Neutral dark themes get a quiet frosted pill instead of a solid white slab;
+    /// neutral light themes a soft graphite pill; coloured themes keep their accent.
+    var playFill: Color {
+        if accentIsNeutral { return isLight ? Color(white: 0.16).opacity(0.88) : Color.white.opacity(0.16) }
+        return accent.opacity(0.92)
+    }
+
+    /// Text and glyph colour on `playFill`: dark on bright accents, white otherwise.
+    var playInk: Color {
+        if accentIsNeutral { return .white }
+        return GlassTheme.luminance(of: accent) > 0.6 ? Color(white: 0.06) : .white
     }
 }
 
@@ -518,8 +576,15 @@ enum ArtworkPaletteExtractor {
 // MARK: - Store
 
 enum AmbientStyle: String, CaseIterable, Identifiable {
-    case none, blue, violet, ember, teal, aurora, mountains
+    case none, blue, violet, ember, teal, aurora, dusk, nebula, prism, mist
     var id: String { rawValue }
+
+    /// Phase 8 removed "Mountains"; a stored value migrates to Dusk (the closest warm sky). Unknown → Off.
+    static func migrated(_ raw: String?) -> AmbientStyle {
+        guard let raw else { return .none }
+        if raw == "mountains" { return .dusk }
+        return AmbientStyle(rawValue: raw) ?? .none
+    }
     var title: String {
         switch self {
         case .none: return "Off"
@@ -528,7 +593,10 @@ enum AmbientStyle: String, CaseIterable, Identifiable {
         case .ember: return "Ember"
         case .teal: return "Teal"
         case .aurora: return "Aurora"
-        case .mountains: return "Mountains"
+        case .dusk: return "Dusk"
+        case .nebula: return "Nebula"
+        case .prism: return "Prism"
+        case .mist: return "Mist"
         }
     }
 }
@@ -559,7 +627,11 @@ final class ThemeStore: ObservableObject {
 
     init() {
         selected = ThemeID(rawValue: UserDefaults.standard.string(forKey: Self.themeKey) ?? "") ?? .defaultDark
-        ambient = AmbientStyle(rawValue: UserDefaults.standard.string(forKey: Self.ambientKey) ?? "") ?? .none
+        let storedAmbient = UserDefaults.standard.string(forKey: Self.ambientKey)
+        ambient = AmbientStyle.migrated(storedAmbient)
+        if let storedAmbient, storedAmbient != ambient.rawValue {
+            UserDefaults.standard.set(ambient.rawValue, forKey: Self.ambientKey)
+        }
     }
 
     func theme(systemScheme: ColorScheme) -> GlassTheme {
@@ -669,7 +741,10 @@ struct AmbientArtwork: View {
             case .ember: flow([Color(red: 1, green: 0.4, blue: 0.05), Color(red: 1, green: 0.75, blue: 0.2)], bg: Color(red: 0.1, green: 0.03, blue: 0.01))
             case .teal: flow([Color(red: 0.0, green: 0.7, blue: 0.7), Color(red: 0.3, green: 0.95, blue: 0.8)], bg: Color(red: 0.0, green: 0.07, blue: 0.08))
             case .aurora: aurora
-            case .mountains: mountains
+            case .dusk: dusk
+            case .nebula: nebula
+            case .prism: prism
+            case .mist: mist
             }
         }
         // A scrim keeps text and glass legible whatever the picture does.
@@ -704,13 +779,66 @@ struct AmbientArtwork: View {
         }
     }
 
-    private var mountains: some View {
+    // Phase 8 backgrounds: all drawn and static (no timers, nothing renders while idle).
+    private var dusk: some View {
         GeometryReader { geo in
-            ZStack(alignment: .bottom) {
-                LinearGradient(colors: [Color(red: 0.08, green: 0.1, blue: 0.3), Color(red: 0.85, green: 0.4, blue: 0.3), Color(red: 1, green: 0.7, blue: 0.4)],
+            ZStack {
+                LinearGradient(colors: [Color(red: 0.06, green: 0.05, blue: 0.20), Color(red: 0.42, green: 0.14, blue: 0.32),
+                                        Color(red: 0.95, green: 0.45, blue: 0.30)], startPoint: .top, endPoint: .bottom)
+                Circle()
+                    .fill(RadialGradient(colors: [Color(red: 1, green: 0.76, blue: 0.46).opacity(0.9), .clear],
+                                         center: .center, startRadius: 0, endRadius: geo.size.width * 0.45))
+                    .frame(width: geo.size.width * 0.9, height: geo.size.width * 0.9)
+                    .position(x: geo.size.width * 0.5, y: geo.size.height * 0.92)
+                FlowCurve(phase: 0.7)
+                    .stroke(LinearGradient(colors: [Color.pink.opacity(0.6), Color.orange.opacity(0.5)], startPoint: .leading, endPoint: .trailing),
+                            lineWidth: 30)
+                    .blur(radius: 22).opacity(0.6)
+            }
+        }
+    }
+
+    private var nebula: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            ZStack {
+                Color(red: 0.03, green: 0.01, blue: 0.08)
+                blob(Color(red: 0.55, green: 0.15, blue: 0.95), size: w * 1.1).position(x: w * 0.2, y: h * 0.3)
+                blob(Color(red: 1.0, green: 0.3, blue: 0.6), size: w * 0.9).position(x: w * 0.85, y: h * 0.55)
+                blob(Color(red: 0.2, green: 0.5, blue: 1.0), size: w * 0.8).position(x: w * 0.4, y: h * 0.85)
+            }
+        }
+    }
+
+    private func blob(_ color: Color, size: CGFloat) -> some View {
+        Circle()
+            .fill(RadialGradient(colors: [color.opacity(0.75), color.opacity(0)], center: .center, startRadius: 0, endRadius: size / 2))
+            .frame(width: size, height: size)
+    }
+
+    private var prism: some View {
+        ZStack {
+            Color(red: 0.02, green: 0.02, blue: 0.05)
+            ForEach(0..<4, id: \.self) { i in
+                FlowCurve(phase: Double(i) * 0.22)
+                    .stroke(LinearGradient(colors: prismColors(i), startPoint: .leading, endPoint: .trailing), lineWidth: 10)
+                    .blur(radius: 7).opacity(0.75)
+            }
+        }
+    }
+
+    private func prismColors(_ i: Int) -> [Color] {
+        let all: [Color] = [.red, .orange, .yellow, .green, .cyan, .blue, .purple]
+        return [all[i % all.count], all[(i + 2) % all.count], all[(i + 4) % all.count]]
+    }
+
+    private var mist: some View {
+        GeometryReader { geo in
+            ZStack {
+                LinearGradient(colors: [Color(red: 0.72, green: 0.80, blue: 0.90), Color(red: 0.50, green: 0.60, blue: 0.72)],
                                startPoint: .top, endPoint: .bottom)
-                MountainShape(seed: 0).fill(Color(red: 0.2, green: 0.22, blue: 0.4)).frame(height: geo.size.height * 0.42).opacity(0.9)
-                MountainShape(seed: 1).fill(Color(red: 0.08, green: 0.08, blue: 0.18)).frame(height: geo.size.height * 0.3)
+                FlowCurve(phase: 0.2).stroke(Color.white.opacity(0.7), lineWidth: 80).blur(radius: 40).offset(y: -geo.size.height * 0.1)
+                FlowCurve(phase: 0.6).stroke(Color.white.opacity(0.5), lineWidth: 50).blur(radius: 30)
             }
         }
     }
@@ -729,20 +857,6 @@ private struct FlowCurve: Shape {
     }
 }
 
-private struct MountainShape: Shape {
-    let seed: Int
-    func path(in rect: CGRect) -> Path {
-        let peaks: [CGFloat] = seed == 0 ? [0, 0.35, 0.2, 0.7, 0.45, 1.0, 0.5, 0.8, 0.3, 0.55, 0] : [0, 0.2, 0.45, 0.25, 0.6, 0.3, 0.4, 0.15, 0]
-        var p = Path()
-        p.move(to: CGPoint(x: 0, y: rect.height))
-        let step = rect.width / CGFloat(max(peaks.count - 1, 1))
-        for (i, h) in peaks.enumerated() { p.addLine(to: CGPoint(x: CGFloat(i) * step, y: rect.height * (1 - h))) }
-        p.addLine(to: CGPoint(x: rect.width, y: rect.height))
-        p.closeSubpath()
-        return p
-    }
-}
-
 // MARK: - Theme picker
 
 struct ThemePickerSheet: View {
@@ -752,7 +866,8 @@ struct ThemePickerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
-    private let coloured: [ThemeID] = [.defaultDark, .deepBlue, .violet, .amber, .lightGlass, .forest, .crimson, .ocean, .glassWhite]
+    private let coloured: [ThemeID] = [.defaultDark, .deepBlue, .violet, .amber, .lightGlass, .forest, .crimson, .ocean, .glassWhite,
+                                       .synthwave, .rosewood, .graphite, .glacier]
 
     var body: some View {
         ScrollView(showsIndicators: false) {

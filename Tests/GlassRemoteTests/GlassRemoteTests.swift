@@ -632,8 +632,8 @@ final class PlayerArtworkMatcherTests: XCTestCase {
 
 final class ThemeSystemTests: XCTestCase {
     func testElevenThemesAndAutoDoesNotMeanAdaptive() {
-        XCTAssertEqual(ThemeID.allCases.count, 11)
-        XCTAssertEqual(Set(ThemeID.allCases.map(\.rawValue)).count, 11)
+        XCTAssertEqual(ThemeID.allCases.count, 15)
+        XCTAssertEqual(Set(ThemeID.allCases.map(\.rawValue)).count, 15)
         XCTAssertNotEqual(ThemeID.adaptive, ThemeID.auto)
     }
 
