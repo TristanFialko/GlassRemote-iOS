@@ -176,3 +176,16 @@ final class Phase8SamsungLandscapeTests: XCTestCase {
         }
     }
 }
+
+final class Phase8VolumeSliderTests: XCTestCase {
+    func testFillHidesAtZeroAndCoversTheThumbOtherwise() {
+        let thumb = VolumeSliderGeometry.thumbDiameter(height: 58)
+        XCTAssertEqual(thumb, 48)
+        XCTAssertEqual(VolumeSliderGeometry.fillWidth(value: 0, width: 300, thumb: thumb), 0)
+        XCTAssertEqual(VolumeSliderGeometry.fillWidth(value: 0.01, width: 300, thumb: thumb), thumb + VolumeSliderGeometry.inset * 2)
+        XCTAssertEqual(VolumeSliderGeometry.fillWidth(value: 0.5, width: 300, thumb: thumb), 150)
+        XCTAssertEqual(VolumeSliderGeometry.fillWidth(value: 1, width: 300, thumb: thumb), 300)
+        XCTAssertEqual(VolumeSliderGeometry.fillWidth(value: 1.4, width: 300, thumb: thumb), 300)
+        XCTAssertEqual(VolumeSliderGeometry.fillWidth(value: 0.5, width: 0, thumb: thumb), 0)
+    }
+}

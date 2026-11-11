@@ -57,7 +57,7 @@ struct GlassDpad: View {
 
     /// Proportions as fractions of the pad's diameter.
     enum Metrics {
-        static let pebble: CGFloat = 0.38      // visible OK button
+        static let pebble: CGFloat = 0.36      // visible OK button (Phase 8: slimmer, so the arrows breathe)
         static let okHit: CGFloat = 0.42       // OK touch area (slightly larger than the pebble)
         static let groove: CGFloat = 0.48      // engraved ring around OK
         static let glyphRadius: CGFloat = 0.36 // chevrons sit midway between the groove and the rim
@@ -93,6 +93,12 @@ struct GlassDpad: View {
                                          center: UnitPoint(x: 0.5, y: 0.08), startRadius: 2, endRadius: size * 0.75))
             Circle().fill(LinearGradient(colors: [.clear, Color.black.opacity(light ? 0.04 : 0.16)],
                                          startPoint: .center, endPoint: .bottom))
+            // Phase 8: a shallow basin falling towards the OK groove gives the disc real depth.
+            Circle().fill(RadialGradient(colors: [Color.black.opacity(light ? 0.07 : 0.24), .clear],
+                                         center: .center, startRadius: size * Metrics.groove * 0.5, endRadius: size * 0.42))
+            // A faint theme tint in the lower rim, like light passing through coloured glass.
+            Circle().fill(RadialGradient(colors: [.clear, theme.accent.opacity(light ? 0.05 : 0.10)],
+                                         center: UnitPoint(x: 0.5, y: 0.2), startRadius: size * 0.3, endRadius: size * 0.6))
             // Four fine seams on the diagonals separate the directions without boxing them in.
             DpadSeams(inner: Metrics.groove + 0.04, outer: 0.93)
                 .stroke(Color.ink.opacity(light ? 0.10 : 0.09), style: StrokeStyle(lineWidth: 1, lineCap: .round))
@@ -109,6 +115,7 @@ struct GlassDpad: View {
         }
         .frame(width: size, height: size)
         .shadow(color: .black.opacity(light ? 0.14 : 0.45), radius: 16, y: 9)
+        .shadow(color: theme.accent.opacity(light ? 0.08 : 0.16), radius: 30, y: 16)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -159,6 +166,9 @@ struct GlassDpad: View {
                          onPressChange: { setLit(.ok, $0) }) {
             ZStack {
                 Color.clear.glassSurface(Circle(), interactive: true, elevated: true, accent: true)
+                // Phase 8: a gentle top-lit theme body so OK reads as the pad's focal point.
+                Circle().fill(LinearGradient(colors: [theme.accent.opacity(light ? 0.10 : 0.16), theme.accent2.opacity(0.04)],
+                                             startPoint: .top, endPoint: .bottom))
                 // Specular cap: the top of the pebble catches the light.
                 Ellipse()
                     .fill(LinearGradient(colors: [Color.white.opacity(light ? 0.55 : 0.30), Color.white.opacity(0)],
@@ -176,6 +186,7 @@ struct GlassDpad: View {
                     .foregroundStyle(Color.ink)
             }
             .frame(width: pebble, height: pebble)
+            .scaleEffect(isLit && !reduceMotion ? 0.95 : 1)
             // Pressing pushes the pebble into the disc: its shadow tightens.
             .shadow(color: .black.opacity(isLit ? 0.22 : (light ? 0.18 : 0.42)), radius: isLit ? 3 : 9, y: isLit ? 1 : 6)
             .animation(press, value: isLit)
