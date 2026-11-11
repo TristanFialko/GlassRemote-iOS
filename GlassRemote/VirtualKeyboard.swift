@@ -20,15 +20,13 @@ final class VirtualKeyboard {
         "UP": .key(0x52), "DOWN": .key(0x51), "LEFT": .key(0x50), "RIGHT": .key(0x4F),
         "OK": .key(0x28),                       // Enter
         "BACK": .consumer(0x224),               // AC Back
-        "HOME": .consumer(0x223),               // AC Home
-        "VOLUME_UP": .consumer(0xE9),
-        "VOLUME_DOWN": .consumer(0xEA),
-        "MUTE": .consumer(0xE2)
+        "HOME": .consumer(0x223)                // AC Home
+        // v5 §5: no volume or mute usages. Volume is Samsung-only and never reaches the Android box.
     ]
 
     /// Buttons actually routed through the virtual keyboard. The rest stay on the
     /// existing ADB keyevent path until their Android mapping is verified on the TV.
-    /// Once a button is verified, add its name here (e.g. "BACK", "VOLUME_UP").
+    /// Once a button is verified, add its name here (e.g. "BACK").
     static let routedKeys: Set<String> = ["UP", "DOWN", "LEFT", "RIGHT", "OK"]
 
     private static let helperName = "glass_uhid_keyboard"

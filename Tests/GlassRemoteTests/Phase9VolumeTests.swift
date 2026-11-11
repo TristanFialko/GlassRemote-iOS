@@ -34,28 +34,6 @@ final class Phase9VolumeTests: XCTestCase {
         }
     }
 
-    func testAndroidUsesTheBoxsOwnRange() {
-        let scale = VolumeScale.android(AndroidVolumeReading(current: 7, min: 0, max: 15))
-        XCTAssertEqual(scale.route, .androidKeys)
-        XCTAssertEqual(scale.steps, 15)
-        let shown = checkpoints.map { scale.percent(forFraction: scale.fraction(forPercent: $0)) }
-        XCTAssertEqual(shown, [0, 7, 27, 53, 73, 93, 100])
-        for raw in 0...15 {
-            XCTAssertEqual(scale.raw(forFraction: scale.fraction(forRaw: raw)), raw, "level \(raw) round-trips")
-        }
-    }
-
-    func testAndroidFallsBackToTwentyStepsUntilTheBoxAnswers() {
-        let scale = VolumeScale.android(nil)
-        XCTAssertEqual(scale.steps, VolumeScale.defaultAndroidLevels)
-        XCTAssertEqual(scale.percent(forFraction: 0.01), 5)
-        XCTAssertEqual(scale.percent(forFraction: 0.5), 50)
-        XCTAssertEqual(scale.percent(forFraction: 1), 100)
-        XCTAssertEqual(VolumeReadout.text(percent: scale.percent(forFraction: 0.5)), "50%", "never the step index")
-        XCTAssertEqual(VolumeScale.android(AndroidVolumeReading(current: 3, min: 5, max: 5)).steps,
-                       VolumeScale.defaultAndroidLevels, "an empty range is ignored")
-    }
-
     func testSamsungKeysUseTheSoundbarScaleSeparately() {
         let keys = VolumeScale.samsungKeys(max: 60)
         XCTAssertEqual(keys.route, .samsungKeys)
@@ -63,13 +41,13 @@ final class Phase9VolumeTests: XCTestCase {
         XCTAssertEqual(keys.percent(forFraction: 0.5), 50)
         XCTAssertEqual(keys.percent(forFraction: 1), 100)
         XCTAssertEqual(keys.step(forFraction: 1), 60)
-        XCTAssertNotEqual(keys, VolumeScale.android(nil))
+        XCTAssertNotEqual(keys, VolumeScale.unavailable)
     }
 
     func testOnlyTheEndsShowZeroAndOneHundred() {
         let scales: [VolumeScale] = [.samsungAbsolute(.standard), .samsungAbsolute(VolumeCalibration(lo: 3, hi: 96)),
-                                     .samsungKeys(max: 200), .android(nil),
-                                     .android(AndroidVolumeReading(current: 0, min: 0, max: 7))]
+                                     .samsungKeys(max: 200), .samsungKeys(max: 15),
+                                     .samsungKeys(max: 7)]
         for scale in scales {
             for raw in (scale.lo + 1)..<scale.hi {
                 let p = scale.percent(forRaw: raw)
@@ -93,21 +71,6 @@ final class Phase9VolumeTests: XCTestCase {
         XCTAssertEqual(VolumeReadout.symbol(percent: 100, floorIsMute: true), "speaker.wave.3.fill")
         XCTAssertEqual(VolumeReadout.text(percent: 100), "100%")
         XCTAssertEqual(VolumeReadout.text(percent: 0), "0%")
-    }
-
-    func testAndroidVolumeOutputParses() {
-        XCTAssertEqual(AndroidVolumeReading.parse("volume is 7 in range [0..15]\n"),
-                       AndroidVolumeReading(current: 7, min: 0, max: 15))
-        XCTAssertEqual(AndroidVolumeReading.parse("[V] will get volume\n[V] volume is 12 in range [0..100]\n"),
-                       AndroidVolumeReading(current: 12, min: 0, max: 100))
-        XCTAssertEqual(AndroidVolumeReading.parse("volume is 40 in range [0..15]"),
-                       AndroidVolumeReading(current: 15, min: 0, max: 15), "current is clamped into the range")
-        XCTAssertNil(AndroidVolumeReading.parse("cmd: Can't find service: media_session"))
-        XCTAssertNil(AndroidVolumeReading.parse("volume is 5 in range [5..5]"))
-        XCTAssertNil(AndroidVolumeReading.parse(""))
-        XCTAssertEqual(AndroidVolumeReading.commands.count, 2)
-        XCTAssertTrue(AndroidVolumeReading.commands.allSatisfy { !$0.joined().contains("||") },
-                      "each command is one quoted argument list")
     }
 
     // MARK: C2 echoes and reconcile
@@ -154,7 +117,7 @@ final class Phase9VolumeTests: XCTestCase {
         XCTAssertTrue(VolumeHapticPolicy.shouldTick(previousStep: 3, newStep: 4, userInitiated: true))
         XCTAssertFalse(VolumeHapticPolicy.shouldTick(previousStep: 3, newStep: 9, userInitiated: false),
                        "TV readings never tick")
-        let scales: [VolumeScale] = [.android(AndroidVolumeReading(current: 0, min: 0, max: 15)), .samsungAbsolute(.standard)]
+        let scales: [VolumeScale] = [.samsungKeys(max: 15), .samsungAbsolute(.standard)]
         for scale in scales {
             var previous: Int? = scale.step(forFraction: 0)
             var ticks = 0
@@ -168,7 +131,7 @@ final class Phase9VolumeTests: XCTestCase {
     }
 
     func testVoiceOverStepsLandOnRealLevels() {
-        let short = VolumeScale.android(AndroidVolumeReading(current: 0, min: 0, max: 15))
+        let short = VolumeScale.samsungKeys(max: 15)
         XCTAssertEqual(short.accessibilityStep, 1)
         XCTAssertEqual(short.adjusted(short.fraction(forRaw: 8), up: true), short.fraction(forRaw: 9), accuracy: 1e-9)
         XCTAssertEqual(short.adjusted(1, up: true), 1, accuracy: 1e-9)

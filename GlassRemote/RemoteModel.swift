@@ -110,15 +110,12 @@ final class RemoteModel: ObservableObject {
     var volumeLevelKnown = false
     var volumePendingSteps = 0
     var volumeDrainTask: Task<Void, Never>?
-    /// Continuation §C2: the Android box's own music-stream volume (nil until it has answered).
-    @Published var androidVolume: AndroidVolumeReading?
     /// Every device reading, numbered, so the slider settles on it even when the value repeats.
     @Published var volumeReading: VolumeReadingEvent?
     var volumeReadingSerial = 0
     /// Who owns the slider: the finger, the hold-off after it, or the device (VolumeScale.swift).
     var volumeSync = VolumeSync()
     var volumeReconcileTask: Task<Void, Never>?
-    var androidVolumeTask: Task<Void, Never>?
     var tvSupervisorTask: Task<Void, Never>?
 
     let apps: [TVApp] = [
@@ -216,8 +213,8 @@ final class RemoteModel: ObservableObject {
         tv.onStatus = { [weak self] text in self?.samsungStatus = text }
         tv.onState = { [weak self] state in self?.samsungState = state }
         tv.onStats = { [weak self] stats in self?.samsungDiagnostics = stats.summary }
-        // A volume key accepted by the TV connection that then failed is re-sent over ADB.
-        tv.onSendFailed = { [weak self] name in self?.key(name) }
+        // v5 §5: a key the TV connection accepted and then failed is reported, never re-sent over ADB.
+        tv.onSendFailed = { [weak self] name in self?.samsungSendFailed(name) }
         tv.onReadyChanged = { [weak self] ready in
             self?.samsungRemoteReady = ready
             self?.volumeStateReset()
@@ -579,6 +576,8 @@ final class RemoteModel: ObservableObject {
     }
 
     func key(_ key: String) {
+        // v5 §5: volume and mute never reach the Android box; they go to the Samsung TV or nowhere.
+        if VolumeKeyPolicy.isVolumeKey(key) { volume(key, haptic: false); return }
         // Samsung-only keys (power, source) go to the TV, not the Android box.
         if SamsungTV.tvOnlyKeys.contains(key) {
             if !tv.send(key) { status = "TV key needs the Samsung link · enable it in Settings" }
@@ -586,8 +585,7 @@ final class RemoteModel: ObservableObject {
         }
         let adbCodes: [String: String] = [
             "UP": "19", "DOWN": "20", "LEFT": "21", "RIGHT": "22",
-            "OK": "23", "BACK": "4", "HOME": "3",
-            "VOLUME_DOWN": "25", "MUTE": "164", "VOLUME_UP": "24"
+            "OK": "23", "BACK": "4", "HOME": "3"
         ]
 
         guard connected else {
@@ -608,7 +606,7 @@ final class RemoteModel: ObservableObject {
         // ADB fallback is deliberately limited to system/media controls. D-pad and
         // OK never fall back to ADB, avoiding extra shell input traffic during playback.
         let adbOnlyControls: Set<String> = [
-            "BACK", "HOME", "VOLUME_UP", "VOLUME_DOWN", "MUTE"
+            "BACK", "HOME"
         ]
         guard adbOnlyControls.contains(key) else {
             status = "Virtual keyboard unavailable · reconnect to restore navigation"

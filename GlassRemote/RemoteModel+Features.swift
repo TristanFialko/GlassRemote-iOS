@@ -91,19 +91,33 @@ extension RemoteModel {
 
     // MARK: - Volume routing
 
-    /// Volume and mute go to the Samsung TV when that connection is ready, otherwise
-    /// through the existing ADB path.
-    func volume(_ name: String, haptic: Bool = true, readBack: Bool = true) {
+    /// v5 §5: volume and mute go only to the Samsung TV (its UPnP level, else its remote socket). The
+    /// Android TV volume path is gone: with no Samsung route nothing is sent and the soundbar is
+    /// reported unavailable. Returns whether the TV connection took the key.
+    @discardableResult
+    func volume(_ name: String, haptic: Bool = true, readBack: Bool = true) -> Bool {
         endpointLearner.invalidate()   // a volume key is a newer command: discard any pending endpoint attempt
-        if tvVolumeEnabled, tv.send(name) {
-            if haptic { Haptics.soft() }
-            scheduleVolumeReadback()
-            return
+        guard tvVolumeEnabled, tv.send(name) else {
+            reportSoundbarUnavailable()
+            return false
         }
         if haptic { Haptics.soft() }
-        key(name)
-        // Continuation §C2: a volume key changed the box's level; read it back so the slider follows.
-        if readBack, name.hasPrefix("VOLUME_") { scheduleAndroidVolumeReadback() }
+        if readBack { scheduleVolumeReadback() }
+        return true
+    }
+
+    /// The explicit unavailable state (never a silent fallback to the Android box).
+    var soundbarUnavailableMessage: String { "Soundbar unavailable · \(samsungUnavailableMessage)" }
+
+    func reportSoundbarUnavailable() {
+        status = soundbarUnavailableMessage
+        GRLog.note("volume", "volume command not sent: no Samsung route (Android TV volume is not used)")
+    }
+
+    /// A key the TV connection accepted and then failed to deliver: reported, never re-sent over ADB.
+    func samsungSendFailed(_ name: String) {
+        GRLog.note("samsung", "send failed for \(name); not re-sent over ADB")
+        if VolumeKeyPolicy.isVolumeKey(name) { reportSoundbarUnavailable() } else { status = samsungUnavailableMessage }
     }
 
     // MARK: - Real TV volume (UPnP RenderingControl)
@@ -204,51 +218,9 @@ extension RemoteModel {
     func refreshDeviceVolume() {
         switch volumeScale.route {
         case .samsungAbsolute: volumeLink.refresh()
-        case .androidKeys: refreshAndroidVolume()
         case .samsungKeys: break   // the soundbar does not report its level over the remote socket
+        case .unavailable: break   // v5 §5: no Samsung route; the Android box is never asked
         }
-    }
-
-    /// Asks the Android box for its music-stream volume and range (`AndroidVolumeReading`).
-    func refreshAndroidVolume() {
-        guard let connection = adb, connected, androidVolumeTask == nil else { return }
-        androidVolumeTask = Task { [weak self] in
-            var reading: AndroidVolumeReading?
-            for command in AndroidVolumeReading.commands {
-                guard let model = self, !Task.isCancelled else { break }
-                if let output = try? await model.runShell(connection, command),
-                   let parsed = AndroidVolumeReading.parse(output) {
-                    reading = parsed
-                    break
-                }
-            }
-            guard let self else { return }
-            self.androidVolumeTask = nil
-            if let reading { self.applyAndroidVolume(reading) }
-        }
-    }
-
-    /// A short read-back after an ADB volume key (buttons, not slider sweeps).
-    private func scheduleAndroidVolumeReadback() {
-        guard volumeScale.route == .androidKeys else { return }
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            self?.refreshAndroidVolume()
-        }
-    }
-
-    /// The box reported its level: the slider can show it, and key presses become exact counts.
-    func applyAndroidVolume(_ reading: AndroidVolumeReading) {
-        androidVolume = reading
-        GRLog.note("volume", "Android music volume \(reading.current) in \(reading.min)...\(reading.max)")
-        guard volumeScale.route == .androidKeys else { return }
-        let scale = volumeScale
-        if volumePendingSteps == 0, volumeDrainTask == nil, !volumeDragActive {
-            volumeLevelsInUse = scale.steps
-            volumeAssumedLevel = reading.current - scale.lo
-            volumeLevelKnown = true
-        }
-        publishVolumeReading(scale.fraction(forRaw: reading.current))
     }
 
     func publishVolumeReading(_ fraction: Double) {
@@ -259,15 +231,16 @@ extension RemoteModel {
     // MARK: - Slider -> volume mapping
 
     /// Number of volume-key presses a full slider sweep spans. Through the TV this is the
-    /// soundbar's own scale (`tvVolumeMax`); over ADB it stays at the original 20 steps.
+    /// soundbar's own scale (`tvVolumeMax`). v5 §5: there is no ADB volume scale.
     var volumeLevels: Int { volumeScale.steps }
 
     /// Continuation §C2: the current target's real range (VolumeScale.swift). Same routing as the
-    /// commands: the TV's absolute level when it reports one, then the TV's keys, then ADB.
+    /// commands: the TV's absolute level when it reports one, then the TV's keys, otherwise
+    /// unavailable (v5 §5: never the Android box).
     var volumeScale: VolumeScale {
         if tvVolumeEnabled, volumeLinkReady { return .samsungAbsolute(volumeCalibration) }
         if tvVolumeEnabled, samsungRemoteReady { return .samsungKeys(max: tvVolumeMax) }
-        return .android(androidVolume)
+        return .unavailable
     }
 
     /// Forget what we assumed about the real volume (range or route changed).
@@ -295,6 +268,8 @@ extension RemoteModel {
             return
         }
         let scale = volumeScale
+        // v5 §5: no Samsung route means nothing is sent (no ADB fallback) and the user is told.
+        guard scale.isAvailable else { reportSoundbarUnavailable(); return }
         let levels = scale.steps
         // The real level this fraction commands (only the very ends reach 0 and the top).
         let target = scale.step(forFraction: fraction)
@@ -329,7 +304,12 @@ extension RemoteModel {
                 self.volumePendingSteps += up ? -1 : 1
                 // The slider already ticked each level the finger crossed (VolumeHapticPolicy), so the
                 // presses stay silent; the reconcile after the drag reads the result back.
-                self.volume(up ? "VOLUME_UP" : "VOLUME_DOWN", haptic: false, readBack: false)
+                guard self.volume(up ? "VOLUME_UP" : "VOLUME_DOWN", haptic: false, readBack: false) else {
+                    // The Samsung link dropped mid-sweep: stop and forget the assumed level.
+                    self.volumePendingSteps = 0
+                    self.volumeLevelKnown = false
+                    break
+                }
                 try? await Task.sleep(nanoseconds: 40_000_000)
             }
             self?.volumeDrainTask = nil

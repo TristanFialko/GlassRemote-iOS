@@ -218,7 +218,8 @@ final class RemoteRoutingTests: XCTestCase {
 
     func testVolumeKeepsExistingPreference() {
         XCTAssertEqual(RemoteRouting.device(for: .volume, target: .android, androidConnected: true, samsungRemoteReady: true), .samsung)
-        XCTAssertEqual(RemoteRouting.device(for: .volume, target: .android, androidConnected: true, samsungRemoteReady: false), .android)
+        // v5 §5: never the Android box, even when it is connected and the Samsung link is down.
+        XCTAssertNil(RemoteRouting.device(for: .volume, target: .android, androidConnected: true, samsungRemoteReady: false))
         XCTAssertNil(RemoteRouting.device(for: .volume, target: .android, androidConnected: false, samsungRemoteReady: false))
     }
 }

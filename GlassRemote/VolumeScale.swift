@@ -12,16 +12,17 @@ import Foundation
 //   mute.
 // - Samsung over its remote socket only (no readable level): one KEY_VOLUP / KEY_VOLDOWN per step of
 //   the soundbar's own scale (`tvVolumeMax`, 5…200, set in Connection settings).
-// - Android over ADB: VOLUME_UP / VOLUME_DOWN key events on the music stream. Its real range comes
-//   from `cmd media_session volume --stream 3 --get` ("volume is 7 in range [0..15]") when the box
-//   answers; until then the original 20-step assumption stands.
+// - Android TV: never used for volume (v5 §5). With no Samsung route the scale is `.unavailable`:
+//   nothing is sent, the slider is disabled and says the soundbar is unavailable. There is no ADB
+//   keyevent, HID consumer usage or Android read-back for volume any more.
 
 /// One target's real volume range.
 struct VolumeScale: Equatable, Sendable {
     enum Route: Equatable, Sendable {
         case samsungAbsolute
         case samsungKeys
-        case androidKeys
+        /// v5 §5: no Samsung route. Nothing is sent and the slider is disabled.
+        case unavailable
     }
 
     var route: Route
@@ -29,9 +30,6 @@ struct VolumeScale: Equatable, Sendable {
     var lo: Int
     /// Raw value that means 100 %.
     var hi: Int
-
-    /// The Android fallback when the box has not reported its range.
-    static let defaultAndroidLevels = 20
 
     static func samsungAbsolute(_ calibration: VolumeCalibration) -> VolumeScale {
         VolumeScale(route: .samsungAbsolute, lo: calibration.lo, hi: max(calibration.hi, calibration.lo + 1))
@@ -41,12 +39,11 @@ struct VolumeScale: Equatable, Sendable {
         VolumeScale(route: .samsungKeys, lo: 0, hi: Swift.max(levels, 1))
     }
 
-    static func android(_ reported: AndroidVolumeReading?) -> VolumeScale {
-        guard let reported, reported.max > reported.min else {
-            return VolumeScale(route: .androidKeys, lo: 0, hi: defaultAndroidLevels)
-        }
-        return VolumeScale(route: .androidKeys, lo: reported.min, hi: reported.max)
-    }
+    /// v5 §5: the Samsung link is off or not ready. Android TV volume is never a fallback.
+    static let unavailable = VolumeScale(route: .unavailable, lo: 0, hi: 100)
+
+    /// False only for `.unavailable`: the slider is disabled and no command is sent.
+    var isAvailable: Bool { route != .unavailable }
 
     /// Raw steps between 0 % and 100 %.
     var steps: Int { max(hi - lo, 1) }
@@ -93,30 +90,6 @@ struct VolumeScale: Equatable, Sendable {
         let current = self.raw(forFraction: fraction)
         let next = up ? min(current + accessibilityStep, hi) : max(current - accessibilityStep, lo)
         return self.fraction(forRaw: next)
-    }
-}
-
-/// The Android box's own report of its music-stream volume.
-struct AndroidVolumeReading: Equatable, Sendable {
-    var current: Int
-    var min: Int
-    var max: Int
-
-    /// The shell commands that report it, tried in order (Android 10+, then the older `media` tool).
-    static let commands: [[String]] = [
-        ["cmd", "media_session", "volume", "--stream", "3", "--get"],
-        ["media", "volume", "--stream", "3", "--get"]
-    ]
-
-    /// Parses "volume is 7 in range [0..15]" (with or without the "[v]" prefix of older builds).
-    static func parse(_ output: String) -> AndroidVolumeReading? {
-        guard let range = output.range(of: #"volume is (\d+) in range \[(\d+)\.\.(\d+)\]"#, options: .regularExpression) else {
-            return nil
-        }
-        let numbers = output[range].split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
-        guard numbers.count == 3, numbers[2] > numbers[1], numbers[2] - numbers[1] <= 1000 else { return nil }
-        let current = Swift.min(Swift.max(numbers[0], numbers[1]), numbers[2])
-        return AndroidVolumeReading(current: current, min: numbers[1], max: numbers[2])
     }
 }
 
@@ -202,4 +175,31 @@ enum VolumeReadout {
         if percent <= 0 { return floorIsMute ? "Muted, 0 percent" : "Minimum, 0 percent" }
         return "\(min(percent, 100)) percent"
     }
+}
+
+/// v5 §5: Samsung is the only volume source. These app key names are volume commands: they go to the
+/// Samsung TV or are not sent at all, never to the Android box (no ADB keyevent, no HID usage).
+enum VolumeKeyPolicy {
+    static let keys: Set<String> = ["VOLUME_UP", "VOLUME_DOWN", "MUTE"]
+    static func isVolumeKey(_ name: String) -> Bool { keys.contains(name) }
+}
+
+/// v5 §5: a fast sweep crosses many levels and ticking every one buzzes. A tick needs a real level
+/// change (`VolumeHapticPolicy`) and at least `minimumInterval` since the last tick; reaching either
+/// end always ticks so 0 % and 100 % are felt. Pure and unit tested (Phase9VolumeV5Tests).
+struct VolumeHapticThrottle: Equatable {
+    static let minimumInterval: TimeInterval = 0.06
+    private(set) var lastTick: Date?
+
+    mutating func shouldTick(previousStep: Int?, newStep: Int, steps: Int, userInitiated: Bool,
+                             at now: Date = Date()) -> Bool {
+        guard VolumeHapticPolicy.shouldTick(previousStep: previousStep, newStep: newStep,
+                                            userInitiated: userInitiated) else { return false }
+        let atEnd = newStep <= 0 || newStep >= steps
+        if !atEnd, let lastTick, now.timeIntervalSince(lastTick) < Self.minimumInterval { return false }
+        lastTick = now
+        return true
+    }
+
+    mutating func reset() { lastTick = nil }
 }

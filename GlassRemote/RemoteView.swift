@@ -690,16 +690,13 @@ struct RemoteView: View {
                 }
                 remote.setVolumeFraction(newValue)
             }
-            // Continuation §C2: every device reading (Samsung UPnP or the Android box) goes through
+            // Continuation §C2: every device reading (Samsung UPnP only, v5 §5) goes through
             // VolumeSync, so it never fights a finger and the settled value is shown after a drag.
             .onChange(of: remote.volumeReading) { _, event in
                 guard let event,
                       let shown = remote.sliderValue(forReading: event.fraction, showing: volumeSliderValue) else { return }
                 externalVolumeEcho = shown
                 volumeSliderValue = shown
-            }
-            .onChange(of: remote.connected) { _, isConnected in
-                if isConnected { remote.refreshAndroidVolume() }
             }
             .onAppear { remote.refreshDeviceVolume() }
     }
