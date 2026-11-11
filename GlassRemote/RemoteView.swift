@@ -307,7 +307,7 @@ struct RemoteView: View {
         ModeSelector(isMouse: $remote.isTrackpad,
                      segmentHeight: RemoteLayoutPolicy.selectorHeight(compact: compact, isLandscape: isLandscape) - 8,
                      onTouchChange: { inputGuard.selectorTouchChanged($0) })
-            .onChange(of: remote.isTrackpad) { _ in inputGuard.modeChanged() }
+            .onChange(of: remote.isTrackpad) { _, _ in inputGuard.modeChanged() }
     }
 
     // MARK: - Mouse / D-pad surface
@@ -455,7 +455,7 @@ struct RemoteView: View {
                     }
                     resetPointer()
                 })
-            .onChange(of: showLauncher) { _ in cancelPointer() }
+            .onChange(of: showLauncher) { _, _ in cancelPointer() }
             .onDisappear { cancelPointer() }
     }
 
@@ -477,7 +477,7 @@ struct RemoteView: View {
                 .updating($padTouching) { _, state, _ in state = true }
                 .onChanged { _ in inputGuard.padTouchChanged(isTrackpad: remote.isTrackpad) }
         )
-        .onChange(of: padTouching) { touching in
+        .onChange(of: padTouching) { _, touching in
             if !touching { inputGuard.padTouchEnded() }
         }
         // Swipe anywhere on the pad to send an arrow, like the Apple TV remote.
@@ -554,7 +554,7 @@ struct RemoteView: View {
     private var volumeBar: some View {
         GlassVolumeSlider(value: $volumeSliderValue, floorIsMute: remote.volumeCalibration.lo == 0,
                           onDragChange: { remote.volumeDragChanged($0) })
-            .onChange(of: volumeSliderValue) { newValue in
+            .onChange(of: volumeSliderValue) { _, newValue in
                 // A value we just applied from the TV's own reading must not be sent back to it.
                 if let echo = externalVolumeEcho, abs(newValue - echo) < 0.0001 {
                     externalVolumeEcho = nil
@@ -562,7 +562,7 @@ struct RemoteView: View {
                 }
                 remote.setVolumeFraction(newValue)
             }
-            .onChange(of: remote.tvVolumeFraction) { reading in
+            .onChange(of: remote.tvVolumeFraction) { _, reading in
                 guard let reading, remote.volumeSliderAcceptsExternal,
                       abs(reading - volumeSliderValue) > 0.0001 else { return }
                 externalVolumeEcho = reading

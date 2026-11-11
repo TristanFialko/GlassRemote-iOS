@@ -56,7 +56,7 @@ struct NowPlayingSheet: View {
             .padding(.horizontal, 24).padding(.top, 14).padding(.bottom, 12)
         }
         .themedSheet()
-        .onChange(of: media.isActive) { active in if !active { dismiss() } }  // single-parameter form: deployment target is iOS 16
+        .onChange(of: media.isActive) { _, active in if !active { dismiss() } }
     }
 
     private func artwork(app: TVApp?, media: MediaState) -> some View {

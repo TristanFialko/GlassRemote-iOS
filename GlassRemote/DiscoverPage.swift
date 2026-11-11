@@ -118,14 +118,14 @@ struct DiscoverPage: View {
         }
         .task { await model.loadHomeIfNeeded() }
         // Adaptive theme: the featured artwork (or the title being viewed) feeds the ONE shared palette.
-        .onChange(of: model.featured?.id) { _ in publishArtwork() }
-        .onChange(of: target?.id) { _ in publishArtwork() }
-        .onChange(of: heroID) { _ in publishArtwork() }
+        .onChange(of: model.featured?.id) { _, _ in publishArtwork() }
+        .onChange(of: target?.id) { _, _ in publishArtwork() }
+        .onChange(of: heroID) { _, _ in publishArtwork() }
         .task { if account.state == .signedIn, account.libraryPhase == .idle { await account.refresh() } }
         // Phase 7.4: Search shortcut from the Remote page. The navigator fires only once Discover has
         // finished sliding in and the field is mounted (SearchFocusPolicy); no fixed delay.
-        .onChange(of: navigator.searchFocusFire) { _ in searching = true }
-        .onChange(of: scenePhase) { navigator.sceneActiveChanged($0 == .active) }
+        .onChange(of: navigator.searchFocusFire) { _, _ in searching = true }
+        .onChange(of: scenePhase) { _, phase in navigator.sceneActiveChanged(phase == .active) }
     }
 
     /// Floating glass header over the hero. Search stays reachable at all times; in landscape the filter
@@ -181,7 +181,7 @@ struct DiscoverPage: View {
                 .submitLabel(.search)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.words)
-                .onChange(of: model.query) { _ in model.queryChanged() }
+                .onChange(of: model.query) { _, _ in model.queryChanged() }
                 .onSubmit { searching = false }
             if !model.query.isEmpty {
                 Button { model.query = ""; model.queryChanged(); searching = true } label: {
@@ -744,7 +744,7 @@ struct UnclippedHScroll<Content: View>: View {
 
 private struct ScrollClipOff: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 17.0, *) { content.scrollClipDisabled() } else { content }
+        content.scrollClipDisabled()
     }
 }
 

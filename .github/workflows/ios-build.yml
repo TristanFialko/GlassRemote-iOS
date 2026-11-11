@@ -25,6 +25,17 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Ensure Metal toolchain
+        # Phase 9 compiles a Metal shader (GlassRemote/DesignSystem/Refraction.metal). Xcode 26 ships the
+        # Metal toolchain as a separate component, so fetch it when this runner image lacks it.
+        run: |
+          if xcrun metal -v >/dev/null 2>&1; then
+            echo "Metal toolchain present: $(xcrun metal -v 2>&1 | head -n 1)"
+          else
+            xcodebuild -downloadComponent MetalToolchain
+            xcrun metal -v 2>&1 | head -n 1
+          fi
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

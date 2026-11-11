@@ -64,7 +64,7 @@ struct ProfileEditorSheet: View {
                         .textInputAutocapitalization(.words)
                         .submitLabel(.done)
                         .onSubmit(save)
-                        .onChange(of: name) { value in
+                        .onChange(of: name) { _, value in
                             if value.count > UserProfile.maxNameLength { name = String(value.prefix(UserProfile.maxNameLength)) }
                         }
                 }
@@ -100,7 +100,7 @@ struct ProfileEditorSheet: View {
             }
         }
         .onAppear { if let editing, name.isEmpty { name = editing.name } }
-        .onChange(of: pickedItem) { item in loadPhoto(item) }
+        .onChange(of: pickedItem) { _, item in loadPhoto(item) }
         .themedSheet()
     }
 

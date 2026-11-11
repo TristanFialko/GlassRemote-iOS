@@ -106,7 +106,7 @@ struct RootPagerView: View {
         }
         .background { AmbientBackdrop() }
         .environmentObject(navigator)
-        .onChange(of: navigator.page) { ThemeStore.shared.pageChanged($0) }
+        .onChange(of: navigator.page) { _, page in ThemeStore.shared.pageChanged(page) }
     }
 
     @ViewBuilder

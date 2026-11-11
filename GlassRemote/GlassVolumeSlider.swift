@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Phase 8 volume slider: a glass track, a theme-tinted fill, a glass thumb riding the fill edge and
-/// a live step readout.
+/// Volume slider: a glass track, a theme-tinted fill, a native glass thumb riding the fill edge (Phase 9:
+/// it refracts the fill, glyph and readout beneath it) and a live step readout.
 ///
 /// Behaviour is unchanged from Phase 5: dragging is relative (like Apple's Control Centre slider), so
 /// a touch on its own never jumps the volume; within 1.5 % of an end snaps to the end; the value is
@@ -49,50 +49,59 @@ struct GlassVolumeSlider: View {
             let fillWidth = VolumeSliderGeometry.fillWidth(value: clamped, width: width, thumb: thumb)
             let settle: Animation? = dragging || reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86)
 
+            let thumbScale: CGFloat = dragging && !reduceMotion ? 1.08 : 1
+            let thumbRect = VolumeSliderGeometry.thumbRect(fillWidth: fillWidth, thumb: thumb, scale: thumbScale)
+
             ZStack(alignment: .leading) {
-                // Fill: theme gradient with a specular sheen along the top edge.
-                Capsule(style: .continuous)
-                    .fill(LinearGradient(colors: [theme.accent.opacity(0.92), theme.accent2.opacity(0.86)],
-                                         startPoint: .leading, endPoint: .trailing))
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .fill(LinearGradient(colors: [Color.white.opacity(0.34), Color.white.opacity(0)],
-                                                 startPoint: .top, endPoint: .center))
-                    )
-                    .frame(width: fillWidth)
-                    .opacity(value <= 0 ? 0 : 1)
-                    .animation(settle, value: value)
+                // Everything under the thumb: fill, glyph and readout. Phase 9: the thumb's bounded
+                // refraction lens bends exactly this layer, inside the thumb's circle and nowhere else.
+                ZStack(alignment: .leading) {
+                    // Fill: theme gradient with a specular sheen along the top edge.
+                    Capsule(style: .continuous)
+                        .fill(LinearGradient(colors: [theme.accent.opacity(0.92), theme.accent2.opacity(0.86)],
+                                             startPoint: .leading, endPoint: .trailing))
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .fill(LinearGradient(colors: [Color.white.opacity(0.34), Color.white.opacity(0)],
+                                                     startPoint: .top, endPoint: .center))
+                        )
+                        .frame(width: fillWidth)
+                        .opacity(value <= 0 ? 0 : 1)
 
-                // Speaker glyph on the leading end.
-                Image(systemName: symbolName)
-                    .scaledFont(19, .semibold)
-                    .foregroundStyle(Color.ink)
-                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-                    .modifier(SymbolSwap())
-                    .frame(width: 30, alignment: .leading)
-                    .padding(.leading, 20)
+                    // Speaker glyph on the leading end.
+                    Image(systemName: symbolName)
+                        .scaledFont(19, .semibold)
+                        .foregroundStyle(Color.ink)
+                        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 30, alignment: .leading)
+                        .padding(.leading, 20)
 
-                // Step readout on the trailing end; fades while the thumb passes over it.
-                Text(readout)
-                    .scaledFont(13, .semibold)
-                    .monospacedDigit()
-                    .foregroundStyle(Color.inkAlpha(0.78))
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.trailing, 20)
-                    .opacity(fillWidth > width - 76 ? 0 : 1)
-                    .animation(.easeOut(duration: 0.15), value: fillWidth > width - 76)
+                    // Step readout on the trailing end; fades while the thumb passes over it.
+                    Text(readout)
+                        .scaledFont(13, .semibold)
+                        .monospacedDigit()
+                        .foregroundStyle(Color.inkAlpha(0.78))
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.trailing, 20)
+                        .opacity(fillWidth > width - 76 ? 0 : 1)
+                        .animation(.easeOut(duration: 0.15), value: fillWidth > width - 76)
+                }
+                .frame(width: width, height: height, alignment: .leading)
+                .refractiveLens(thumbRect, cornerRadius: thumbRect.width / 2, style: .thumb)
+                .animation(settle, value: value)
+                .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: dragging)
 
-                // Glass thumb on the fill edge.
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .overlay(Circle().fill(Color.white.opacity(dragging ? 0.30 : 0.20)))
-                    .overlay(Circle().strokeBorder(
-                        LinearGradient(colors: [Color.white.opacity(0.85), Color.white.opacity(0.15)],
-                                       startPoint: .top, endPoint: .bottom), lineWidth: 1))
+                // Glass thumb on the fill edge: native clear Liquid Glass over the refracted layer.
+                Color.clear
                     .frame(width: thumb, height: thumb)
+                    .glassEffect(Glass.clear.tint(Color.white.opacity(dragging ? 0.12 : 0.06)), in: Circle())
+                    .overlay(Circle().strokeBorder(
+                        LinearGradient(colors: [Color.white.opacity(0.70), Color.white.opacity(0.12)],
+                                       startPoint: .top, endPoint: .bottom), lineWidth: 1))
                     .shadow(color: .black.opacity(0.30), radius: dragging ? 8 : 5, y: dragging ? 4 : 2)
-                    .scaleEffect(dragging && !reduceMotion ? 1.08 : 1)
-                    .offset(x: max(fillWidth - thumb - VolumeSliderGeometry.inset, VolumeSliderGeometry.inset))
+                    .scaleEffect(thumbScale)
+                    .offset(x: VolumeSliderGeometry.thumbX(fillWidth: fillWidth, thumb: thumb))
                     .animation(settle, value: value)
                     .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: dragging)
                     .allowsHitTesting(false)
@@ -111,7 +120,7 @@ struct GlassVolumeSlider: View {
                     }
                     .onEnded { _ in dragStart = nil; onDragChange(false) }
             )
-            .onChange(of: step) { _ in if dragging { Haptics.soft() } }
+            .onChange(of: step) { _, _ in if dragging { Haptics.soft() } }
         }
         .frame(height: height)
         .glassSurface(Capsule(style: .continuous), interactive: true, elevated: true)
@@ -144,16 +153,16 @@ enum VolumeSliderGeometry {
         let minimum = thumb + inset * 2
         return min(max(width * v, minimum), width)
     }
-}
 
-/// Smooth symbol replace on iOS 17+, plain swap on iOS 16 (the project's deployment target).
-private struct SymbolSwap: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(iOS 17.0, *) {
-            content.contentTransition(.symbolEffect(.replace))
-        } else {
-            content
-        }
+    /// Leading edge of the thumb: it rides the fill's edge and never leaves the track.
+    static func thumbX(fillWidth: CGFloat, thumb: CGFloat) -> CGFloat {
+        max(fillWidth - thumb - inset, inset)
+    }
+
+    /// The thumb's on-screen circle (press scale applied about its centre), for the refraction lens.
+    static func thumbRect(fillWidth: CGFloat, thumb: CGFloat, scale: CGFloat = 1) -> CGRect {
+        let size = thumb * scale
+        let centre = CGPoint(x: thumbX(fillWidth: fillWidth, thumb: thumb) + thumb / 2, y: inset + thumb / 2)
+        return CGRect(x: centre.x - size / 2, y: centre.y - size / 2, width: size, height: size)
     }
 }

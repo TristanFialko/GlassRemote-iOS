@@ -67,7 +67,7 @@ struct PlayerPage: View {
             await artwork.resolve(sessionTitle: sessionTitle, subtitle: media.subtitle)
         }
         // Adaptive theme: this page only reports its artwork; the shared palette decides the colours.
-        .onChange(of: poster) { ThemeStore.shared.submitArtwork($0, for: .player) }
+        .onChange(of: poster) { _, art in ThemeStore.shared.submitArtwork(art, for: .player) }
         .onAppear { ThemeStore.shared.submitArtwork(poster, for: .player) }
     }
 

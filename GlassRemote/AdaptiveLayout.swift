@@ -126,18 +126,6 @@ enum ScrubGeometry {
     static func sheenCentre(progress: CGFloat) -> CGFloat { 0.12 + min(max(progress, 0), 1) * 0.76 }
 }
 
-// MARK: - Glass support
-
-enum GlassSupport {
-    /// True when the system renders native Liquid Glass (built with the iOS 26 SDK, running on iOS 26).
-    static var isNative: Bool {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) { return true }
-        #endif
-        return false
-    }
-}
-
 // MARK: - Remote page, landscape
 
 /// Marks the Remote page's pad (trackpad / D-pad, or the Samsung panel) for `RemoteLandscapeLayout`.

@@ -193,7 +193,6 @@ struct SamsungKeyRow: View {
 
 private struct SymbolReplace: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 17.0, *) { content.contentTransition(.symbolEffect(.replace)) }
-        else { content }
+        content.contentTransition(.symbolEffect(.replace))
     }
 }

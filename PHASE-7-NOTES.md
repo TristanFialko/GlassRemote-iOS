@@ -131,3 +131,16 @@ Phase-7.2 is left as it was. PRs #2, #3 and #4 are tracking PRs and stay unmerge
 - ios-build.yml: a concurrency group cancels a superseded run on the same branch; the results report step now also runs for Phase-9* branches, so compiler and test errors reach the tracking PR.
 - project.yml: deployment target iOS 26.0.
 
+
+### §0 Native Liquid Glass and refraction
+- Native only: GlassStyle's surface, bar and lens modifiers, `glassMorph` and `GlassGroup` call `glassEffect`, `glassEffectID` and `GlassEffectContainer` directly. The material fallbacks (`.ultraThinMaterial`, `.thinMaterial`, gradient rims), `GlassSupport.isNative`, the pre-iOS 26 `LensSpecular` and every `#if compiler(>=6.2)` / `#available` guard are removed (the remaining iOS 17 and 18 checks in SamsungRemotePanel, GlassVolumeSlider, DiscoverPage and DiscoverLayout became unconditional). `onChange` uses the iOS 17 two-parameter form throughout.
+- Refraction investigation:
+  - Native glass already lenses its backdrop at the rim. Over the app's smooth gradient canvas that bending is close to invisible, because a displaced smooth gradient looks like the same gradient. That is why the earlier builds read as having no refraction.
+  - A SwiftUI `layerEffect` samples only the layer it is applied to, never what is behind a view, so a shader on the glass element itself cannot refract the backdrop.
+  - What ships: `DesignSystem/Refraction.metal` (`glassRefraction`) plus `DesignSystem/Refraction.swift` (`refractiveLens`, `RefractionStyle`, `RefractionPolicy`, `RefractionGeometry`). The shader is applied to the content directly beneath a glass element and bends only the pixels inside that element's rounded shape: gentle interior magnification, an outward-bending rim band and a small per-channel spread on the rim. Pixels outside the shape are returned untouched, so there is no rectangular bound. The lens rectangle is animatable, so it tracks the springing bubble frame by frame.
+  - Where it runs: the scrub selector bubble (page dock, Mouse / D-pad, segmented controls) bends the labels it covers; the volume thumb, now native clear glass, bends the fill edge, glyph and readout under it.
+  - Where it does not: cards, sheets, bars over scrolling content and large panels keep native glass alone; a layer shader across a page would rasterise the page every frame.
+  - Off, with native glass unchanged, under Reduce Motion (system or the in-app preference), Increase Contrast, Reduce Transparency, or for lenses under 12 pt.
+  - Tests: Phase9GlassTests covers untouched pixels outside the shape (including the rounded corner), the fixed centre, magnification, rim bending, the declared sample-offset bound, the accessibility fallbacks, degenerate lenses, radius clamping and the volume thumb's lens rectangle.
+  - Needs a device check: whether the strength reads well in each theme, and frame rate while scrubbing the dock and the volume slider.
+- CI: a new "Ensure Metal toolchain" step runs `xcodebuild -downloadComponent MetalToolchain` when the runner's Xcode 26 lacks the Metal compiler.

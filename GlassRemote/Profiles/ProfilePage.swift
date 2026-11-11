@@ -48,7 +48,7 @@ struct ProfilePage: View {
         }
         .sheet(item: $editor) { target in ProfileEditorSheet(target: target) }
         .onAppear { consumePendingRoute() }
-        .onChange(of: navigator.pendingProfileRoute) { _ in consumePendingRoute() }
+        .onChange(of: navigator.pendingProfileRoute) { _, _ in consumePendingRoute() }
     }
 
     /// Opens a sub-page requested from another tab (Phase 8: settings moved out of the Remote menu).

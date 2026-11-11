@@ -63,18 +63,14 @@ enum DiscoverHeroLayout {
     }
 }
 
-/// Native card-to-detail zoom (iOS 18 matchedTransitionSource / navigationTransition). The card the user
-/// tapped expands into the detail page and collapses back into it. Earlier systems keep the standard sheet.
+/// Native card-to-detail zoom (matchedTransitionSource / navigationTransition). The card the user
+/// tapped expands into the detail page and collapses back into it.
 struct DetailZoomSource: ViewModifier {
     let id: String
     let namespace: Namespace.ID
 
     func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
-            content.matchedTransitionSource(id: id, in: namespace)
-        } else {
-            content
-        }
+        content.matchedTransitionSource(id: id, in: namespace)
     }
 }
 
@@ -83,7 +79,7 @@ struct DetailZoomDestination: ViewModifier {
     let namespace: Namespace.ID
 
     func body(content: Content) -> some View {
-        if #available(iOS 18.0, *), let id {
+        if let id {
             content.navigationTransition(.zoom(sourceID: id, in: namespace))
         } else {
             content
