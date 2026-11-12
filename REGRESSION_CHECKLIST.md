@@ -1,13 +1,13 @@
 # Glass Remote – regression and hardware test checklist
 
 ## Must still work (existing behaviour)
-- [ ] Connects to 192.168.1.70:5555 without a new ADB authorisation prompt (same key)
+- [ ] Connects to the saved box address (the field starts at 192.168.1.70, the author's box; port 5555) without a new ADB authorisation prompt (same key) **(hardware)**
 - [ ] Mouse moves at the same speed; tap clicks; drag works
 - [ ] Two-finger scroll vertical and horizontal; no stray click when lifting
 - [ ] White cursor still shown on the TV
 - [ ] D-pad Up/Down/Left/Right/Select; Back; Home (there is no Android Menu key any more)
-- [ ] Volume up/down/mute with the Samsung route off: nothing is sent, the slider is disabled and reads "Unavailable" (there is no ADB volume path)
-- [ ] Each of the nine apps launches, in the original order
+- [ ] The Android Remote has no separate volume up/down buttons; volume lives only in the volume row (see "Remediation: volume" below)
+- [ ] Each of the nine curated apps still comes first, in the original order, and launches (discovered apps and Settings follow them; see "Remediation: apps") **(hardware)**
 - [ ] Haptics on buttons, tap, launch
 - [ ] Background → foreground recovers the session; kill ADB and see automatic reconnect
 - [ ] Keyboard helper still reports running (Connection → Status)
@@ -125,3 +125,30 @@
 - [ ] Samsung landscape: Back, Home, Ch +, Ch − on the left rail; Rewind, Play/Pause, Fast forward, Mute on the right; the link banner floats over the disabled pad.
 - [ ] Apps key on the left rail opens the folder beside it, over the pad; rotating with the folder open keeps it open.
 - [ ] Rotating mid-touch: mouse movement, a touch-and-hold drag and a held D-pad key behave as before and stop on lift; nothing keeps repeating; two-finger scroll and two-finger Back still work afterwards.
+
+## Remediation (Phase-9-remediation; unit tests only, not run on hardware unless stated; items marked (hardware) need the real box/TV/soundbar)
+Volume
+- [ ] (hardware) Volume goes to Soundbar through the TV box (default): up/down/mute send ADB keyevents 24/25/164; the soundbar moves and the TV's own speakers do not. The slider shows no number.
+- [ ] (hardware) A full sweep sends at most 20 presses; dragging to 0 from an unknown level sends one full-range decrease; dragging up only sends the distance moved; rapid drags never queue more than one full range.
+- [ ] (hardware) Soundbar through the Samsung TV: KEY_VOLUP/DOWN/MUTE; note which speakers move. With the link off the row says "Samsung TV is off"; with it enabled but unpaired/unreachable, "Samsung TV not connected". Nothing is sent to other speakers.
+- [ ] (hardware) TV speakers: absolute 0-100 with read-back over UPnP. With UPnP unreachable the row says "TV volume link not answering" and Samsung remote keys are NOT sent as a fallback.
+- [ ] Remote and Now Playing show the same slider position at all times; a device reading never moves the thumb mid-drag; the position is reset only when the route changes.
+Samsung address
+- [ ] Fresh install: no Samsung address is pre-filled and the link is off until one is entered or scanned. Upgrade: the saved address (or the pairing token's TV) is restored and the link stays on. The Android box field still starts at 192.168.1.70.
+- [ ] (hardware) Changing the Samsung address moves both the remote socket and the volume link; the old TV's token is not sent to the new address.
+Gestures
+- [ ] (hardware) Holding OK sends one Enter only (long-press is not implemented).
+- [ ] (hardware) Holding a D-pad arrow, then pulling down Control Center / receiving a call / switching page / opening Now Playing / backgrounding, stops the repeat and unlights the key; held arrows stop after 30 s.
+- [ ] (hardware) A held trackpad mouse button is released on the same interruptions. Two-finger scroll only acts on the Remote trackpad, not on other pages.
+Status and errors
+- [ ] (hardware) Header shows degraded (naming D-pad / trackpad / Back, Home and volume) when a helper is down; Reconnect restores it. A refused ADB key shows the "Allow USB debugging?" guidance.
+- [ ] (hardware) Failed Back/Home, app launch, text entry and launcher restart show a reason in the status line.
+Keyboard
+- [ ] (hardware) With the keyboard helper stopped: arrows/OK say "Virtual keyboard unavailable · reconnect to restore navigation" (no ADB arrow fallback); Back/Home still work; Live typing holds text and says "helper not running".
+- [ ] "Remember sent text" off clears the list and records nothing; on keeps the last 8; swipe-delete and Clear history work.
+Apps
+- [ ] (hardware) The folder shows the curated nine, then discovered TV apps (Leanback preferred, system packages filtered, no artwork), then the Android TV Settings tile, which opens Settings. If the scan fails, the status says "app scan failed" (or "app list unavailable on this box" when no launch activities are reported) and the curated nine and Settings still launch.
+Discover / Nuvio / add-ons
+- [ ] Tapping an episode (or resuming) opens the stream picker on that episode.
+- [ ] An add-on with its Keychain link missing shows "Link missing"; "Add the link again" restores it; removal (including swipe) asks first.
+- [ ] Continue Watching refreshes on return from a title and on foreground (at most once a minute); there is no pull-to-refresh (deliberate).

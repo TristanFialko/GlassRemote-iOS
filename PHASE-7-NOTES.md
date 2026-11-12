@@ -1,5 +1,7 @@
 # Phase 7 notes (research, decisions, limitations)
 
+> **Historical notes.** Parts are superseded by the Phase-9 remediation (see `README.md` and `audit/REMEDIATION_CHECKPOINT.md`): the volume routes and scales described here (Android ADB range read from `cmd media_session`, Samsung key-only fallback to the TV box, a TV-speakers key fallback) were replaced by three explicit outputs with no cross-route fallback; the Samsung TV no longer has a built-in address; the Apps folder is no longer a fixed nine (discovered apps are added); `NowPlayingSheet` no longer exists; OK no longer auto-repeats.
+
 Branch: Phase-7 (from phase-6-ui-nuvio-rebuild at adc2ec0). PR #2 is tracking-only and must not be merged.
 
 ## What this branch adds
