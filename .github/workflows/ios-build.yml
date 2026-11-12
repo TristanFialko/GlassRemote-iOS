@@ -30,37 +30,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select iPhone simulator and start booting it
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The first simulator boot on a fresh runner takes about five minutes uncontended and is
-          # this job's critical path, so it starts before anything else. Everything up to the test
-          # step is shorter than the boot; the test step waits for it to finish.
-          SELECTED="$(xcrun simctl list devices available --json | python3 -c '
-          import json, sys
-          data = json.load(sys.stdin)["devices"]
-          def version(key):
-              return [int(p) if p.isdigit() else 0 for p in key.rsplit("-", 2)[-2:]]
-          # Newest iOS runtime first, then the first available iPhone in it.
-          for runtime in sorted((k for k in data if ".iOS-" in k), key=version, reverse=True):
-              for device in data[runtime]:
-                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
-                      print(device["udid"], device["name"], runtime.rsplit(".", 1)[-1], sep="\t")
-                      raise SystemExit
-          raise SystemExit("No available iPhone simulator found.")
-          ')"
-          UDID="${SELECTED%%$'\t'*}"
-          echo "Simulator (udid | name | runtime): ${SELECTED//$'\t'/ | }"
-          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
-          # An explicit id plus arch avoids xcodebuild's "multiple matching destinations" lookup (each
-          # device is listed as arm64 and x86_64), and both simulator steps use this exact device so
-          # the tests run what build-for-testing produced.
-          echo "SIMULATOR_DESTINATION=platform=iOS Simulator,id=$UDID,arch=arm64" >> "$GITHUB_ENV"
-          echo "SIMULATOR_BOOT_STARTED=$(date +%s)" >> "$GITHUB_ENV"
-          # CoreSimulatorService owns the boot, so it carries on after this step ends.
-          nohup xcrun simctl boot "$UDID" > "$RUNNER_TEMP/simulator-boot.log" 2>&1 &
-
       - name: Show Xcode version and capture it for cache keys
         id: toolchain
         shell: bash
@@ -90,6 +59,38 @@ jobs:
             brew install xcodegen
           fi
           xcodegen --version
+
+      - name: Select iPhone simulator and start booting it
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The first simulator boot on a fresh runner takes about five minutes and is this job's
+          # critical path, so it starts as early as possible. It runs only after the Metal and
+          # XcodeGen checks: those mount Xcode components the same way the boot does and stalled
+          # for 3-4 minutes when the boot was already in flight. The test step waits for the boot.
+          SELECTED="$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          def version(key):
+              return [int(p) if p.isdigit() else 0 for p in key.rsplit("-", 2)[-2:]]
+          # Newest iOS runtime first, then the first available iPhone in it.
+          for runtime in sorted((k for k in data if ".iOS-" in k), key=version, reverse=True):
+              for device in data[runtime]:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      print(device["udid"], device["name"], runtime.rsplit(".", 1)[-1], sep="\t")
+                      raise SystemExit
+          raise SystemExit("No available iPhone simulator found.")
+          ')"
+          UDID="${SELECTED%%$'\t'*}"
+          echo "Simulator (udid | name | runtime): ${SELECTED//$'\t'/ | }"
+          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
+          # An explicit id plus arch avoids xcodebuild's "multiple matching destinations" lookup (each
+          # device is listed as arm64 and x86_64), and both simulator steps use this exact device so
+          # the tests run what build-for-testing produced.
+          echo "SIMULATOR_DESTINATION=platform=iOS Simulator,id=$UDID,arch=arm64" >> "$GITHUB_ENV"
+          echo "SIMULATOR_BOOT_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+          # CoreSimulatorService owns the boot, so it carries on after this step ends.
+          nohup xcrun simctl boot "$UDID" > "$RUNNER_TEMP/simulator-boot.log" 2>&1 &
 
       - name: Generate Xcode project
         shell: bash
