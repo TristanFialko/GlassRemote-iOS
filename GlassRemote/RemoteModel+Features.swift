@@ -148,14 +148,27 @@ extension RemoteModel {
 
     /// Short reason for the volume row when nothing can be sent.
     var volumeUnavailableReason: String {
-        VolumeRoutePolicy.unavailableReason(output: volumeOutput, samsungEnabled: tvVolumeEnabled)
+        VolumeRoutePolicy.unavailableReason(output: volumeOutput, samsungEnabled: tvVolumeEnabled,
+                                            remoteReady: samsungRemoteReady)
     }
+
+    /// Which output the volume rows move, shown on every row (never only in settings).
+    var volumeOutputLabel: String { volumeOutput.shortLabel }
 
     /// The output changed: drop the assumed key position and, on the absolute route, read the real level.
     func volumeRouteChanged() {
         volumePendingSteps = 0
         volumeStateReset()
+        volumeStateRoute = volumeCommandRoute
         if volumeCommandRoute == .absolute { volumeLink.refresh() }
+    }
+
+    /// A connection observation (Samsung socket, UPnP link) changed. The assumed key position is
+    /// dropped only when that actually changed the active route; an unrelated device coming or going
+    /// must not make the next slider touch jump.
+    func volumeRouteMayHaveChanged() {
+        guard VolumeStatePolicy.shouldReset(stateRoute: volumeStateRoute, currentRoute: volumeCommandRoute) else { return }
+        volumeRouteChanged()
     }
 
     func reportVolumeUnavailable() {
@@ -178,7 +191,7 @@ extension RemoteModel {
         volumeLink.onAvailabilityChanged = { [weak self] available in
             guard let self else { return }
             self.volumeLinkReady = available
-            self.volumeStateReset()
+            self.volumeRouteMayHaveChanged()
             if !available { self.tvVolumeFraction = nil }
         }
         volumeLink.onMute = { [weak self] muted in
@@ -281,6 +294,19 @@ extension RemoteModel {
     func publishVolumeReading(_ fraction: Double) {
         volumeReadingSerial &+= 1
         volumeReading = VolumeReadingEvent(fraction: fraction, serial: volumeReadingSerial)
+        // Only a real read-back moves the shared slider, and never while the user owns it.
+        if let shown = volumeSync.reading(fraction, showing: volumeSliderFraction) {
+            volumeSliderFraction = shown
+        }
+    }
+
+    /// The user moved a volume row (drag or VoiceOver). Both rows show `volumeSliderFraction`, so
+    /// this is the only way a slider value becomes a command.
+    func userMovedVolumeSlider(to fraction: Double) {
+        let previous = volumeSliderFraction
+        let clamped = min(max(fraction, 0), 1)
+        volumeSliderFraction = clamped
+        setVolumeFraction(clamped, previous: previous)
     }
 
     // MARK: - Slider -> volume mapping
@@ -307,14 +333,15 @@ extension RemoteModel {
         volumeLevelsInUse = 0
     }
 
-    /// Maps the 0...1 slider to key presses. The slider is relative (the app cannot read the
-    /// soundbar's real level), so the first time it reaches either end the full range is
-    /// pressed once: the soundbar clamps at its true limit, after which slider and soundbar
-    /// agree exactly at that end and every later move is an exact press count.
-    func setVolumeFraction(_ fraction: Double) {
+    /// Maps the 0...1 slider to key presses. The slider is relative on key routes (the soundbar's
+    /// level cannot be read), so its position is an estimate (`VolumeStepPlan`): reaching 0 from an
+    /// unknown position presses the full range down once so the estimate becomes exact at that end,
+    /// and going up only ever sends the distance the thumb moved.
+    func setVolumeFraction(_ fraction: Double, previous: Double? = nil) {
         lastUserVolumeInput = Date()
         volumeSync.userChanged()
         if !volumeDragActive { scheduleVolumeReconcile() }   // VoiceOver increments settle too
+        volumeRouteMayHaveChanged()
         // Absolute (0...100) only when the chosen output is the TV speakers and UPnP answers
         // (VolumeOutput.swift). The slider's full travel is then exactly that output's range.
         if volumeCommandRoute == .absolute {
@@ -333,24 +360,23 @@ extension RemoteModel {
         let target = scale.step(forFraction: fraction)
 
         if volumeLevelsInUse != levels {
-            // Range changed: rescale the assumed position, and stop trusting it.
+            // Range changed: rescale the assumed position, and stop trusting it. A first use starts
+            // from where the thumb was before this move, not from a fixed 50 %.
             if volumeLevelsInUse > 0 {
                 volumeAssumedLevel = Int((Double(volumeAssumedLevel) / Double(volumeLevelsInUse) * Double(levels)).rounded())
             } else {
-                volumeAssumedLevel = levels / 2   // slider starts at 50 %
+                volumeAssumedLevel = VolumeStepPlan.seed(fraction: previous ?? volumeSliderFraction, levels: levels)
             }
             volumeLevelsInUse = levels
             volumeLevelKnown = false
         }
 
-        var delta = target - volumeAssumedLevel
-        if !volumeLevelKnown {
-            if target >= levels { delta = levels; volumeLevelKnown = true }
-            else if target <= 0 { delta = -levels; volumeLevelKnown = true }
-        }
-        guard delta != 0 else { return }
+        let plan = VolumeStepPlan.plan(target: target, assumed: volumeAssumedLevel, levels: levels,
+                                       levelKnown: volumeLevelKnown)
+        volumeLevelKnown = plan.levelKnown
+        guard plan.delta != 0 else { return }
         volumeAssumedLevel = target
-        volumePendingSteps += delta
+        volumePendingSteps = VolumeStepPlan.clampPending(volumePendingSteps + plan.delta, levels: levels)
         drainVolumeSteps()
     }
 
@@ -417,9 +443,39 @@ extension RemoteModel {
         }
     }
 
+    /// The address changed (typed, scanned or restored): after a short pause for typing, move BOTH
+    /// the remote socket and the UPnP volume link to the new TV, so they never point at different
+    /// TVs. The pairing token stays bound to the TV that issued it (SamsungPairingPolicy).
+    func scheduleSamsungHostChange() {
+        samsungHostChangeTask?.cancel()
+        samsungHostChangeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.applySamsungHostChange()
+        }
+    }
+
+    func applySamsungHostChange() {
+        samsungHostChangeTask?.cancel()
+        samsungHostChangeTask = nil
+        GRLog.note("samsung", "TV address changed; reconnecting the remote and the volume link")
+        tv.stop(report: false)
+        volumeLink.stop()
+        volumeRouteMayHaveChanged()
+        if tvVolumeEnabled, !SamsungHostDefaults.normalized(samsungHost).isEmpty {
+            volumeLink.start(host: samsungHost)
+            volumeLink.refresh()
+            tv.connect(host: samsungHost, userInitiated: true)
+        } else {
+            applyTVSettings()
+        }
+    }
+
     /// Reconnects ONLY the remote WebSocket (explicit: may ask for approval again). The UPnP
-    /// volume link keeps running untouched.
+    /// volume link keeps running untouched, unless an address change is pending (then both move).
     func reconnectTV() {
+        // A pending address change moves both links; doing only the socket here would split them.
+        if samsungHostChangeTask != nil { applySamsungHostChange(); return }
         guard tvVolumeEnabled, !samsungHost.trimmingCharacters(in: .whitespaces).isEmpty else { applyTVSettings(); return }
         tv.connect(host: samsungHost, userInitiated: true)
     }
@@ -466,9 +522,13 @@ extension RemoteModel {
         Task {
             guard let adb else { status = "Restart failed · not connected"; return }
             status = "Restarting Glass Launcher…"
-            let command = "am force-stop com.glasslauncher; am start -a android.intent.action.MAIN -c android.intent.category.HOME -n com.glasslauncher/.MainActivity"
-            _ = try? await runShell(adb, ["sh", "-c", command])
-            status = "Glass Launcher restarted"
+            let command = "am force-stop com.glasslauncher; am start -W -a android.intent.action.MAIN -c android.intent.category.HOME -n com.glasslauncher/.MainActivity 2>&1; echo \"__exit=$?\""
+            let output = (try? await runShell(adb, ["sh", "-c", command])) ?? ""
+            // Audit BUG-016: report success only when Android says the activity started.
+            status = LauncherRestartOutcome.started(output: output)
+                ? "Glass Launcher restarted"
+                : "Glass Launcher did not restart · \(LauncherRestartOutcome.reason(output: output))"
+            GRLog.note("launcher", "restart outcome started=\(LauncherRestartOutcome.started(output: output))")
         }
     }
 

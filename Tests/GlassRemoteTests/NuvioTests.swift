@@ -121,6 +121,12 @@ final class NuvioLinkTests: XCTestCase {
         XCTAssertFalse(RemoteModel.intentAccepted("Error: Activity not started\nGLASSREMOTE_INTENT_EXIT:0"))
         XCTAssertFalse(RemoteModel.intentAccepted("Permission Denial: not exported\nGLASSREMOTE_INTENT_EXIT:0"))
         XCTAssertFalse(RemoteModel.intentAccepted(""))
+        // BUG-017: the echoed link is never judged; a search for "terror" was misread as a failure.
+        XCTAssertTrue(RemoteModel.intentAccepted(
+            "Starting: Intent { act=android.intent.action.VIEW dat=nuvio://search?q=terror pkg=com.nuvio.app }\nGLASSREMOTE_INTENT_EXIT:0"))
+        XCTAssertFalse(RemoteModel.intentAccepted(
+            "Starting: Intent { act=android.intent.action.VIEW dat=nuvio://search?q=x }\nError type 3\nError: Activity class does not exist.\nGLASSREMOTE_INTENT_EXIT:0"))
+        XCTAssertFalse(RemoteModel.intentAccepted("Starting: Intent { dat=nuvio://search?q=x }\nGLASSREMOTE_INTENT_EXIT:1"))
     }
 }
 

@@ -45,3 +45,30 @@ struct AppIconImage: View {
         .scaledToFit()
     }
 }
+
+/// Tile artwork for an app without bundled art (discovered TV apps, Android TV Settings):
+/// an SF Symbol when given, otherwise the name's first letter.
+struct GenericAppIcon: View {
+    let name: String
+    var symbol: String?
+
+    var body: some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            ZStack {
+                LinearGradient(colors: [Color.ink.opacity(0.22), Color.ink.opacity(0.08)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                if let symbol {
+                    Image(systemName: symbol)
+                        .font(.system(size: side * 0.42, weight: .semibold))
+                } else {
+                    Text(String(name.prefix(1)).uppercased())
+                        .font(.system(size: side * 0.46, weight: .semibold, design: .rounded))
+                }
+            }
+            .foregroundStyle(Color.inkAlpha(0.86))
+            .frame(width: geo.size.width, height: geo.size.height)
+        }
+        .accessibilityHidden(true)
+    }
+}

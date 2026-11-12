@@ -112,8 +112,8 @@ struct ConnectionSheet: View {
                             }
                         }
                         Text(remote.volumeStatus).font(.footnote).textSelection(.enabled)
-                        Stepper("Soundbar max volume: \(remote.tvVolumeMax)", value: $remote.tvVolumeMax, in: 5...200)
-                        Text("Set this to the highest number your soundbar shows. The slider spans this whole range, so full slider = soundbar maximum.")
+                        Stepper("Soundbar max volume (Samsung keys route): \(remote.tvVolumeMax)", value: $remote.tvVolumeMax, in: 5...200)
+                        Text("Only for \"Soundbar, through the Samsung TV\": set this to the highest number your soundbar shows, so a full slider sweep spans it. The default box route always uses 20 presses per sweep.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Text("Volume goes to one output only. Through the TV box (the Phase 7.2 route) the box passes its volume keys to the soundbar over HDMI-CEC. Through the Samsung TV its remote keys reach the TV's active output. TV speakers uses the TV's own level (UPnP) for an exact 0–100 slider. When the chosen route is down volume is shown as unavailable; it is never sent to other speakers instead. The app connects to the Samsung TV automatically and retries if it is unreachable.")

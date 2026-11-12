@@ -57,12 +57,18 @@ struct TwoFingerScroll: UIViewRepresentable {
 
         coordinator.trackView = view
         view.recognizer = recognizer
+        recognizer.isEnabled = context.environment.remoteSurfaceActive
         return view
     }
 
     func updateUIView(_ uiView: AnchorView, context: Context) {
         context.coordinator.onScroll = onScroll
         context.coordinator.onTap = onTwoFingerTap
+        // Audit BUG-006: the recogniser sits on the root hosting view, so it must stop while the
+        // Remote surface is hidden (another page, Now Playing, the Apps folder). Disabling it also
+        // cancels a gesture in progress.
+        let active = context.environment.remoteSurfaceActive
+        if uiView.recognizer?.isEnabled != active { uiView.recognizer?.isEnabled = active }
     }
 
     static func dismantleUIView(_ uiView: AnchorView, coordinator: Coordinator) {

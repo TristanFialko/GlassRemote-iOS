@@ -10,6 +10,7 @@ extension RemoteModel {
             mouseStream = input
             pendingMoveDX = 0; pendingMoveDY = 0; mouseButtonsHeld = 0
             mouseReady = true
+            clearStaleMouseButtonOnTV()
             status = "Mouse ready · TV helper already running"
             return
         }
@@ -125,6 +126,28 @@ extension RemoteModel {
                 return
             }
         }
+    }
+
+    /// One left click (VoiceOver's activate on the trackpad): press and release, queued in order.
+    func mouseClick() {
+        mouseButton(1)
+        mouseButton(0)
+    }
+
+    /// Audit BUG-008: a drag the phone lost track of (the app left the foreground, the touch was
+    /// cancelled) must not leave the TV's virtual mouse button down. Sends nothing unless a button
+    /// is actually held, so leaving the app stays silent otherwise.
+    func releaseHeldMouseButton(reason: String) {
+        guard mouseReady, mouseButtonsHeld != 0 else { return }
+        GRLog.note("mouse", "releasing held button: \(reason)")
+        reportQueue.enqueue { [weak self] in await self?.sendButtonReport(0) }
+    }
+
+    /// After (re)attaching to a helper that outlived the phone's connection, clear any button an
+    /// earlier session left down: a button-up with no motion moves nothing on the TV.
+    func clearStaleMouseButtonOnTV() {
+        guard mouseReady else { return }
+        reportQueue.enqueue { [weak self] in await self?.sendButtonReport(0) }
     }
 
     private func sendButtonReport(_ buttons: Int) async {

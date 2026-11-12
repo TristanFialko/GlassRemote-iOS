@@ -161,7 +161,9 @@ struct GlassDpad: View {
         let isLit = lit == .ok
         let pebble = size * Metrics.pebble
         let light = theme.isLight
-        return RepeatKey(hitShape: Circle(),
+        // OK never auto-repeats (audit BUG-009): holding it must not become a stream of Enter presses.
+        // A true long-press needs key-down/key-up in the UHID keyboard helper, which it does not have.
+        return RepeatKey(hitShape: Circle(), repeats: false,
                          onFire: { onKey(DpadKey.ok.rawValue) },
                          onPressChange: { setLit(.ok, $0) }) {
             ZStack {

@@ -88,6 +88,11 @@ struct RemoteView: View {
     /// True while a finger is on the pad. GestureState resets on lift and on cancellation, so the pad's
     /// ownership session always closes (see RemoteInputGuard).
     @GestureState private var padTouching = false
+    /// True while a finger is on the mouse trackpad; resets on lift AND on a system cancellation,
+    /// which is the only signal SwiftUI gives when `onEnded` never arrives (audit BUG-008).
+    @GestureState private var mouseTouching = false
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.remoteSurfaceActive) private var remoteSurfaceActive
     private var lastPoint: CGPoint? {
         get { pointerBox.last }
         nonmutating set { pointerBox.last = newValue }
@@ -105,8 +110,6 @@ struct RemoteView: View {
     @State private var pendingPower: PowerAction?
     @State private var didAutoConnect = false
     @State private var screenshotItem: ScreenshotItem?
-    @State private var volumeSliderValue: Double = 0.5
-    @State private var externalVolumeEcho: Double?
 
     @Environment(\.layoutContext) private var layoutContext
 
@@ -457,6 +460,9 @@ struct RemoteView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Trackpad")
             .accessibilityHint(RemoteSurfaceHints.androidTrackpad)
+            // Audit A11Y-001: VoiceOver cannot drag a pointer, so the pad offers its actions directly.
+            // Kept in its own modifier so this long chain stays within the type checker's budget.
+            .modifier(TrackpadAccessibilityActions(remote: remote))
             .background {
                 TwoFingerScroll(
                     state: scrollState,
@@ -466,8 +472,10 @@ struct RemoteView: View {
                         remote.key("BACK")
                     }
                 )
+                .environment(\.remoteSurfaceActive, remoteSurfaceActive && !folder.isVisible)
             }
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .updating($mouseTouching) { _, state, _ in state = true }
                 .onChanged { value in
                     let box = pointerBox
                     if box.start == nil {
@@ -542,6 +550,21 @@ struct RemoteView: View {
                     resetPointer()
                 })
             .onChange(of: folder.isVisible) { _, _ in cancelPointer() }
+            .onChange(of: mouseTouching) { _, touching in
+                // A normal lift also resets the state; give `onEnded` a moment, then clean up a touch
+                // the system took away (no end ever came): release any held button, no cursor jump.
+                guard !touching, let started = pointerBox.start else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: InputCancellation.lostEndGrace)
+                    if pointerBox.start == started { cancelPointer() }
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { cancelPointer() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .glassRemoteCancelTouches)) { _ in
+                cancelPointer()
+            }
             .onDisappear { cancelPointer() }
     }
 
@@ -621,7 +644,7 @@ struct RemoteView: View {
         case .apps:
             RemoteClusterKey(symbol: key.symbol, label: key.title, prominent: folder.highlightsSource,
                              height: height) { openFolder() }
-                .accessibilityValue(RemoteLayoutPolicy.appCountLabel(remote.apps.count))
+                .accessibilityValue(RemoteLayoutPolicy.appCountLabel(remote.launcherApps.count))
                 .accessibilityHint(key.hint)
                 .accessibilityFocused($appsControlFocused)
                 .onGeometryChange(for: CGRect.self) { proxy in proxy.frame(in: .global) } action: { frame in
@@ -647,25 +670,14 @@ struct RemoteView: View {
     }
 
     private func volumeBar(thickness: CGFloat) -> some View {
-        GlassVolumeSlider(value: $volumeSliderValue, scale: remote.volumeScale, thickness: thickness,
+        // One shared position (RemoteModel.volumeSliderFraction) with Now Playing's row, so the two
+        // rows can never disagree; readings reach it only through VolumeSync in the model.
+        GlassVolumeSlider(value: Binding(get: { remote.volumeSliderFraction },
+                                         set: { remote.userMovedVolumeSlider(to: $0) }),
+                          scale: remote.volumeScale, thickness: thickness,
                           onDragChange: { remote.volumeDragChanged($0) },
-                          unavailableReason: remote.volumeUnavailableReason)
-            .onChange(of: volumeSliderValue) { _, newValue in
-                // A value we just applied from the TV's own reading must not be sent back to it.
-                if let echo = externalVolumeEcho, abs(newValue - echo) < 0.0001 {
-                    externalVolumeEcho = nil
-                    return
-                }
-                remote.setVolumeFraction(newValue)
-            }
-            // Continuation §C2: every device reading (Samsung UPnP only, v5 §5) goes through
-            // VolumeSync, so it never fights a finger and the settled value is shown after a drag.
-            .onChange(of: remote.volumeReading) { _, event in
-                guard let event,
-                      let shown = remote.sliderValue(forReading: event.fraction, showing: volumeSliderValue) else { return }
-                externalVolumeEcho = shown
-                volumeSliderValue = shown
-            }
+                          unavailableReason: remote.volumeUnavailableReason,
+                          outputLabel: remote.volumeOutputLabel)
             .onAppear { remote.refreshDeviceVolume() }
     }
 }

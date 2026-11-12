@@ -326,7 +326,7 @@ enum PlayerSessionPhase: Equatable {
         switch self {
         case .disconnected: return "Connect to your TV box to see what's playing."
         case .connecting: return "Connecting to your TV box…"
-        default: return "Start something in Nuvio and it appears here."
+        default: return "Play something in any app on the TV and it appears here."
         }
     }
 }
@@ -429,5 +429,49 @@ enum PlayerBackdropPolicy {
     /// Contrast of the page's ink over a wash colour.
     static func inkContrast(over tone: NowPlayingPalette.Tone, light: Bool) -> Double {
         ColorMath.contrast(light ? lightInkLuminance : darkInkLuminance, tone.luminance)
+    }
+}
+
+/// Opacity of Now Playing's secondary text (times, captions, the subtitle line, the idle hint) over
+/// the artwork wash (audit A11Y-002, pure, unit tested). The wash guarantees 4.5:1 only for full ink;
+/// at the old 0.5–0.6 the secondary text fell to about 2.5–2.9:1 on the brightest allowed wash. 0.8
+/// keeps a visible hierarchy under the title while staying far more legible; Increase Contrast uses
+/// full ink, which the wash's own legibility band guarantees.
+enum PlayerTextContrast {
+    static let standard: Double = 0.8
+    static let increased: Double = 1.0
+
+    static func secondary(increased isIncreased: Bool) -> Double {
+        isIncreased ? increased : standard
+    }
+}
+
+/// A readable name for an app the curated list does not know (audit UX-014, pure, unit tested).
+/// The last package component alone gave labels like "one", "gms" or "debug".
+enum PlayerAppName {
+    static let known: [String: String] = [
+        "com.stremio.one": "Stremio",
+        "com.stremio.tv": "Stremio",
+        "com.google.android.youtube.tvmusic": "YouTube Music",
+        "com.google.android.gms": "Google Cast",
+        "com.google.android.apps.mediashell": "Google Cast",
+        "com.plexapp.android": "Plex",
+        "org.videolan.vlc": "VLC",
+        "org.xbmc.kodi": "Kodi",
+        "com.apple.android.music": "Apple Music",
+        "com.amazon.amazonvideo.livingroom": "Prime Video",
+    ]
+    static let genericParts: Set<String> = ["android", "app", "tv", "one", "debug", "release", "mobile", "atv", "leanback", "com", "org", "net"]
+
+    static func name(forPackage package: String) -> String {
+        let trimmed = package.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let known = known[trimmed] { return known }
+        if trimmed.hasPrefix("com.nuvio.") { return "Nuvio" }
+        let parts = trimmed.split(separator: ".").map(String.init)
+        // The most specific part that is not a generic suffix ("com.stremio.one" -> "stremio").
+        guard let part = parts.reversed().first(where: { !genericParts.contains($0.lowercased()) && !$0.isEmpty }) else {
+            return parts.last ?? ""
+        }
+        return part.prefix(1).uppercased() + part.dropFirst()
     }
 }

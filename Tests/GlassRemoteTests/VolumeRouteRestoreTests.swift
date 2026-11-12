@@ -57,11 +57,14 @@ final class VolumeRouteRestoreTests: XCTestCase {
                                                remoteReady: true, upnpReady: true), .unavailable)
     }
 
-    func testTVSpeakersUseTheExactLevelThenTheTVsKeys() {
+    /// Remediation BUG-003: TV speakers is the TV's own (UPnP) level only. The TV's remote keys reach
+    /// its active output (possibly an ARC soundbar), so a UPnP outage is unavailable, never keys.
+    func testTVSpeakersUseOnlyTheExactLevel() {
         XCTAssertEqual(VolumeRoutePolicy.route(output: .tvSpeakers, boxConnected: false, samsungEnabled: true,
                                                remoteReady: true, upnpReady: true), .absolute)
         XCTAssertEqual(VolumeRoutePolicy.route(output: .tvSpeakers, boxConnected: true, samsungEnabled: true,
-                                               remoteReady: true, upnpReady: false), .tvKeys)
+                                               remoteReady: true, upnpReady: false), .unavailable,
+                       "no silent switch to the TV's remote keys")
         XCTAssertEqual(VolumeRoutePolicy.route(output: .tvSpeakers, boxConnected: true, samsungEnabled: true,
                                                remoteReady: false, upnpReady: false), .unavailable,
                        "never the box for TV speakers")

@@ -78,6 +78,8 @@ final class ProfileStore: ObservableObject {
         settings.themeID = active.settings.themeID
         settings.ambientID = active.settings.ambientID
         settings.posterOrientation = active.settings.posterOrientation
+        // Audit A11Y-006: a new profile keeps reduced motion on rather than switching it off.
+        settings.reduceInterfaceMotion = active.settings.reduceInterfaceMotion
         let profile = UserProfile(name: name, tint: nextTint(), settings: settings)
         profiles.append(profile)
         save()

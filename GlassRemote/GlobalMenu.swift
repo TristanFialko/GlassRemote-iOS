@@ -69,15 +69,20 @@ struct RemoteStatusMenu: View {
     var pillStyle: RemoteLayoutPolicy.PillStyle = .full
     let onScreenshot: () -> Void
 
-    private var boxOnline: Bool { remote.connected && !remote.requiresUserReconnect }
+    // Audit UX-001: a box whose input helpers are down still offers Reconnect.
+    private var boxOnline: Bool { remote.linkState == .connected }
     private var samsungOn: Bool { remote.tvVolumeEnabled }
     private var samsungConnected: Bool { remote.samsungState == .connected }
 
     var body: some View {
         Menu {
             if !entries(.device).isEmpty {
-                Section("Device") {
+                Section {
                     ForEach(entries(.device), id: \.self) { entry in view(for: entry) }
+                } header: {
+                    Text("Device")
+                } footer: {
+                    if let guidance = remote.readiness.guidance { Text(guidance) }
                 }
             }
             Section("Samsung TV") {
@@ -141,6 +146,7 @@ struct RemoteStatusPill: View {
         }
         switch remote.linkState {
         case .reconnectNeeded: return ("Reconnect needed", .orange)
+        case .degraded: return ("Connected · input not ready", .yellow)
         case .connected: return ("Connected", .green)
         case .connecting: return ("Connecting…", .yellow)
         case .offline: return ("Offline", .orange)
