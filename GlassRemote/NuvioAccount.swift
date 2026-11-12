@@ -301,6 +301,9 @@ struct NuvioSession: Codable, Equatable {
 actor NuvioSessionManager {
     static let shared = NuvioSessionManager()
     private var refreshing: Task<NuvioSession, Error>?
+    /// Bumped by sign-out. A refresh that started under an older generation never saves or clears
+    /// tokens, so a late response can't bring a signed-out session back.
+    private(set) var generation = 0
 
     func accessToken(backend: NuvioBackend, session: URLSession = .shared) async throws -> String {
         guard let current = NuvioSession.load() else { throw NuvioError.sessionExpired }
@@ -313,24 +316,48 @@ actor NuvioSessionManager {
         return try await refresh(current, backend: backend, session: session).accessToken
     }
 
+    /// After an HTTP 401: refresh once, unless another caller already replaced the rejected token.
+    func refreshAfterRejection(of rejected: String, backend: NuvioBackend, session: URLSession = .shared) async throws -> String {
+        guard let current = NuvioSession.load() else { throw NuvioError.sessionExpired }
+        if current.accessToken != rejected { return current.accessToken }
+        return try await refresh(current, backend: backend, session: session).accessToken
+    }
+
+    /// Sign-out: cancels the refresh in flight and makes any late result a no-op, then clears the session.
+    func invalidate() {
+        generation += 1
+        refreshing?.cancel()
+        refreshing = nil
+        NuvioSession.clear()
+    }
+
+    nonisolated static func mayCommit(started: Int, current: Int, cancelled: Bool) -> Bool {
+        started == current && !cancelled
+    }
+
     private func refresh(_ current: NuvioSession, backend: NuvioBackend, session: URLSession) async throws -> NuvioSession {
         if let refreshing { return try await refreshing.value }
+        let started = generation
         let task = Task<NuvioSession, Error> {
             let data: Data
             do {
                 data = try await NuvioHTTP.send(backend: backend, path: "/auth/v1/token?grant_type=refresh_token",
                                                 json: ["refresh_token": current.refreshToken], bearer: nil, session: session)
             } catch NuvioError.rejected(let code) where [400, 401, 403].contains(code) {
-                NuvioSession.clear()
+                // Only the session this refresh belongs to is cleared (a newer sign-in is left alone).
+                if Self.mayCommit(started: started, current: self.generation, cancelled: Task.isCancelled) { NuvioSession.clear() }
                 throw NuvioError.sessionExpired
             }
             let t = try NuvioParsers.tokens(data)
+            guard Self.mayCommit(started: started, current: self.generation, cancelled: Task.isCancelled) else {
+                throw CancellationError()
+            }
             let next = NuvioSession(accessToken: t.accessToken, refreshToken: t.refreshToken, expiresAt: Date().addingTimeInterval(Double(t.expiresIn)))
             next.save()                       // the new single-use refresh token is stored before anything else runs
             return next
         }
         refreshing = task
-        defer { refreshing = nil }
+        defer { if generation == started { refreshing = nil } }
         return try await task.value
     }
 }
@@ -391,6 +418,11 @@ final class NuvioAccount: ObservableObject {
     @Published private(set) var items: [NuvioWatchItem] = []
 
     private var linkTask: Task<Void, Never>?
+    /// Bumped by sign-out; a library refresh from an older session drops its results (BUG-013).
+    private(set) var sessionGeneration = 0
+    /// When the library was last asked for, so foreground refreshes are rate-limited (UX-009).
+    private var lastRefreshAt: Date?
+    nonisolated static let autoRefreshInterval: TimeInterval = 60
     private static let maxPollAttempts = 120
     private static let maxConsecutivePollFailures = 3
     private static let resolveLimit = 40
@@ -470,6 +502,8 @@ final class NuvioAccount: ObservableObject {
                                             json: ["code": deviceCode, "device_nonce": nonce], bearer: nil)
         let tokens: NuvioTokens
         do { tokens = try NuvioParsers.tokens(data) } catch { throw NuvioError.linkFailed }
+        // Sign-out (or Cancel) while the exchange was in flight: don't store the new session.
+        try Task.checkCancellation()
         NuvioSession(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken,
                      expiresAt: Date().addingTimeInterval(Double(tokens.expiresIn))).save()
         linkPhase = .idle
@@ -481,9 +515,13 @@ final class NuvioAccount: ObservableObject {
 
     func signOut() async {
         linkTask?.cancel(); linkTask = nil
+        sessionGeneration += 1
+        lastRefreshAt = nil
         let token = NuvioSession.load()?.accessToken
         NuvioSession.clear()
         items = []; libraryPhase = .idle; linkPhase = .idle; state = .signedOut
+        // Cancels a token refresh in flight so it can't save tokens again after the clear above.
+        await NuvioSessionManager.shared.invalidate()
         // Best effort, THIS session only (scope=local), so Nuvio on the TV and phone stay signed in.
         if let token, let backend = try? await NuvioBackendResolver.shared.backend() {
             _ = try? await NuvioHTTP.send(backend: backend, path: "/auth/v1/logout?scope=local", json: [:], bearer: token)
@@ -492,25 +530,54 @@ final class NuvioAccount: ObservableObject {
 
     // MARK: Pull watch progress
 
+    /// Foreground / return-from-TV refresh: signed in, not already loading, and at most once a minute.
+    nonisolated static func shouldAutoRefresh(signedIn: Bool, loading: Bool, lastRefresh: Date?, now: Date,
+                                              minInterval: TimeInterval = autoRefreshInterval) -> Bool {
+        guard signedIn, !loading else { return false }
+        guard let lastRefresh else { return true }
+        return now.timeIntervalSince(lastRefresh) >= minInterval
+    }
+
+    func refreshIfStale() async {
+        guard Self.shouldAutoRefresh(signedIn: state == .signedIn, loading: libraryPhase == .loading,
+                                     lastRefresh: lastRefreshAt, now: Date()) else { return }
+        await refresh()
+    }
+
+    /// After a successful handoff the next foreground or page return refreshes regardless of the rate limit.
+    func markStale() { lastRefreshAt = nil }
+
     func refresh() async {
         guard NuvioSession.load() != nil else { return }
         if libraryPhase == .loading { return }
+        let generation = sessionGeneration
+        lastRefreshAt = Date()
         libraryPhase = .loading
         do {
             let backend = try await NuvioBackendResolver.shared.backend()
-            let token = try await withAuthRetry(backend: backend)
-            let profile = await profileID(backend: backend, token: token)
-            let data = try await NuvioHTTP.rpc("sync_pull_watch_progress", ["p_profile_id": profile], backend: backend, bearer: token)
+            var token = try await withAuthRetry(backend: backend)
+            guard generation == sessionGeneration else { return }
+            let profileResult = try await profileID(backend: backend, token: token)
+            guard generation == sessionGeneration else { return }
+            let profile = profileResult.0
+            token = profileResult.1
+            let (data, _) = try await authorizedRPC("sync_pull_watch_progress", ["p_profile_id": profile], backend: backend, token: token)
+            guard generation == sessionGeneration else { return }
             let latest = Array(NuvioWatchAggregator.latestPerTitle(try NuvioParsers.progress(data)).prefix(Self.resolveLimit))
-            items = await Self.resolve(latest)
+            let resolved = await Self.resolve(latest)
+            guard generation == sessionGeneration else { return }
+            items = resolved
             libraryPhase = .loaded
             state = .signedIn
         } catch NuvioError.sessionExpired {
+            guard generation == sessionGeneration else { return }
             NuvioSession.clear()
             items = []; libraryPhase = .idle; state = .expired
         } catch is CancellationError {
+            guard generation == sessionGeneration else { return }
             libraryPhase = .idle
         } catch {
+            guard generation == sessionGeneration else { return }
             libraryPhase = .failed((error as? LocalizedError)?.errorDescription ?? "Couldn't load your Nuvio progress.")
         }
     }
@@ -519,9 +586,33 @@ final class NuvioAccount: ObservableObject {
         try await NuvioSessionManager.shared.accessToken(backend: backend)
     }
 
-    private func profileID(backend: NuvioBackend, token: String) async -> Int {
-        guard let data = try? await NuvioHTTP.rpc("sync_pull_profiles", [:], backend: backend, bearer: token) else { return 1 }
-        return NuvioParsers.profileID(data)
+    /// An authenticated RPC. On HTTP 401 the token is refreshed once (serialised by the session manager)
+    /// and the call is retried once; a second 401 is reported, never looped. Returns the token used.
+    private func authorizedRPC(_ name: String, _ params: [String: Any], backend: NuvioBackend,
+                               token: String) async throws -> (Data, String) {
+        do {
+            let data = try await NuvioHTTP.rpc(name, params, backend: backend, bearer: token)
+            return (data, token)
+        } catch NuvioError.rejected(let code) where code == 401 {
+            let fresh = try await NuvioSessionManager.shared.refreshAfterRejection(of: token, backend: backend)
+            let data = try await NuvioHTTP.rpc(name, params, backend: backend, bearer: fresh)
+            return (data, fresh)
+        }
+    }
+
+    /// Falls back to profile 1 when the profile list can't be read, but an expired session or
+    /// cancellation still ends the refresh.
+    private func profileID(backend: NuvioBackend, token: String) async throws -> (Int, String) {
+        do {
+            let (data, used) = try await authorizedRPC("sync_pull_profiles", [:], backend: backend, token: token)
+            return (NuvioParsers.profileID(data), used)
+        } catch NuvioError.sessionExpired {
+            throw NuvioError.sessionExpired
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return (1, token)
+        }
     }
 
     /// Names, posters and landscape artwork come from Cinemeta (progress rows carry only ids).

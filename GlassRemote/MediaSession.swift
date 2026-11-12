@@ -123,7 +123,13 @@ enum MediaParser {
                 continue
             }
             let state = fields.state
+            // Audit BUG-011: fast-forwarding, rewinding, connecting and skipping are moments inside a
+            // session, not its end; keep the last good sample instead of flashing "Nothing playing".
+            if MediaSessionAge.transientStates.contains(state) { unreadable = true; continue }
             guard [2, 3, 6].contains(state) else { continue }
+            // Audit UX-007: a paused session nobody has touched for a long time belongs to an app the
+            // user left; it no longer holds the mini-player. A recent pause is kept.
+            if MediaSessionAge.isAbandonedPause(state: state, updatedMs: fields.updated, uptimeMs: uptimeMs) { continue }
 
             var position = fields.position
             let speed = fields.speed
@@ -193,5 +199,20 @@ enum MediaParser {
         return (0..<m.numberOfRanges).map { i in
             m.range(at: i).location == NSNotFound ? "" : ns.substring(with: m.range(at: i))
         }
+    }
+}
+
+/// Session-age rules for Now Playing (pure, unit tested).
+enum MediaSessionAge {
+    /// PlaybackState values that happen inside a session: 4 fast-forwarding, 5 rewinding,
+    /// 8 connecting, 9 skipping to previous, 10 skipping to next, 11 skipping to a queue item.
+    static let transientStates: Set<Int> = [4, 5, 8, 9, 10, 11]
+
+    /// A pause older than this (by the box's own clock) is treated as an app the user left.
+    static let abandonedPauseMs: Int64 = 30 * 60 * 1000
+
+    static func isAbandonedPause(state: Int, updatedMs: Int64, uptimeMs: Int64?) -> Bool {
+        guard state == 2, let uptimeMs, updatedMs > 0, uptimeMs > updatedMs else { return false }
+        return uptimeMs - updatedMs > abandonedPauseMs
     }
 }

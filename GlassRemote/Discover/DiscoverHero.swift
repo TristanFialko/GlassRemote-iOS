@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Discover's cinematic hero: a full-bleed backdrop filling the top of the page (under the status bar and the
 /// floating search bar). It fades into the page canvas and carries the featured title (logo when the
@@ -9,7 +10,7 @@ import SwiftUI
 /// snaps back as the next title fades in); opening is tap-only (a drag never opens), see HeroSwipePolicy. Pulling down stretches the
 /// artwork and scrolling gives it a light parallax (one geometry read, no continuous animation).
 /// Auto-advance is a single sleeping task that restarts on every change, stops off screen and in the
-/// background, and is off with Reduce Motion. The next backdrop is pre-loaded so a change never waits.
+/// background, and is off with Reduce Motion or VoiceOver. The next backdrop is pre-loaded so a change never waits.
 struct DiscoverHero: View {
     static let space = "discoverScroll"
 
@@ -26,6 +27,7 @@ struct DiscoverHero: View {
     var bleed: HorizontalBleed = .zero
 
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.glassTheme) private var theme
     /// Horizontal finger travel while a hero swipe is in progress; springs back on lift or cancellation.
@@ -34,7 +36,7 @@ struct DiscoverHero: View {
 
     private var reduceMotion: Bool { systemReduceMotion || MotionPreference.reduced }
     private var current: MediaTitle? { titles.first { $0.id == selection } ?? titles.first }
-    private var timerKey: String { "\(current?.id ?? "-")|\(scenePhase == .active)|\(titles.count)" }
+    private var timerKey: String { "\(current?.id ?? "-")|\(scenePhase == .active)|\(titles.count)|\(voiceOverEnabled)" }
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -248,10 +250,21 @@ struct DiscoverHero: View {
            let url = DiscoverHeroLayout.artwork(for: titles[(i + 1) % titles.count]).primary {
             _ = await ArtworkCache.shared.image(for: url)
         }
-        guard !reduceMotion, scenePhase == .active else { return }
+        guard HeroAutoAdvancePolicy.allowed(reduceMotion: reduceMotion, voiceOver: voiceOverRunning,
+                                            active: scenePhase == .active) else { return }
         try? await Task.sleep(nanoseconds: 9_000_000_000)
-        guard !Task.isCancelled else { return }
+        // VoiceOver may have started during the wait; the focused title must not change under it.
+        guard !Task.isCancelled, !voiceOverRunning else { return }
         advance(by: 1)
+    }
+
+    private var voiceOverRunning: Bool { voiceOverEnabled || UIAccessibility.isVoiceOverRunning }
+}
+
+/// A11Y-003: the hero only rotates by itself when nobody is reading it with VoiceOver and motion is on.
+enum HeroAutoAdvancePolicy {
+    static func allowed(reduceMotion: Bool, voiceOver: Bool, active: Bool) -> Bool {
+        !reduceMotion && !voiceOver && active
     }
 }
 

@@ -44,8 +44,13 @@ enum MediaCommand: String {
 extension RemoteModel {
     /// Sends a transport command, then confirms play/pause against the session.
     func sendMedia(_ command: MediaCommand) {
-        guard connected else { status = "Not connected"; return }
+        guard connected else {
+            status = "Not connected"
+            lastMediaFailure = .notConnected()
+            return
+        }
         guard mediaCommandTask == nil else { return }   // one command at a time; ignore double taps
+        lastMediaFailure = nil
         mediaCommandTask = Task { [weak self] in
             await self?.runMedia(command)
             self?.mediaCommandTask = nil
@@ -82,6 +87,7 @@ extension RemoteModel {
         }
         GRLog.note("media", "\(command.rawValue) NOT accepted (state \(media.state))")
         status = "The player didn't accept \(command.rawValue)"
+        lastMediaFailure = .notAccepted(command)
     }
 
     /// Reads the position again and reports what the key really did. Nothing is shown as "done"

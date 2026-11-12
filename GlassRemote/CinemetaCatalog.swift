@@ -110,9 +110,29 @@ enum CinemetaCatalog {
     static func search(_ query: String, session: URLSession = .shared) async throws -> [MediaTitle] {
         guard let movieURL = searchURL(kind: .movie, query: query),
               let seriesURL = searchURL(kind: .series, query: query) else { return [] }
-        async let movies = fetch(movieURL, session: session)
-        async let series = fetch(seriesURL, session: session)
-        return parse(try await movies, kind: .movie) + parse(try await series, kind: .series)
+        async let movies = searchSide(movieURL, kind: .movie, session: session)
+        async let series = searchSide(seriesURL, kind: .series, session: session)
+        let m = await movies
+        let s = await series
+        return try mergeSearch(movies: m, series: s)
+    }
+
+    private static func searchSide(_ url: URL, kind: MediaTitle.Kind, session: URLSession) async -> Result<[MediaTitle], Error> {
+        do {
+            return .success(parse(try await fetch(url, session: session), kind: kind))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// One failed request keeps the other's titles; only both failing is an error (BUG-018).
+    static func mergeSearch(movies: Result<[MediaTitle], Error>, series: Result<[MediaTitle], Error>) throws -> [MediaTitle] {
+        switch (movies, series) {
+        case let (.success(m), .success(s)): return m + s
+        case let (.success(m), .failure): return m
+        case let (.failure, .success(s)): return s
+        case let (.failure(error), .failure): throw error
+        }
     }
 
     // MARK: Browse (Cinemeta catalogues: "top" = popular, "imdbRating" = top rated)
@@ -148,6 +168,12 @@ enum CinemetaCatalog {
 enum RecentSearches {
     static let key = "glassRemote.recentSearches.v1"
     static let limit = 8
+
+    /// What can save a search. Live results while typing never do, so half-typed words ("matr")
+    /// don't fill the list (UX-010).
+    enum Trigger { case liveResults, submit, openedResult }
+
+    static func remembers(_ trigger: Trigger) -> Bool { trigger != .liveResults }
 
     static func adding(_ list: [String], _ query: String) -> [String] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -228,6 +254,15 @@ final class DiscoverModel: ObservableObject {
     var isSearching: Bool { query.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 }
 
     func useRecent(_ text: String) { query = text; queryChanged() }
+
+    /// Saves the current query as a recent search when the trigger is an explicit one.
+    func rememberSearch(_ trigger: RecentSearches.Trigger) {
+        guard RecentSearches.remembers(trigger), isSearching else { return }
+        let updated = RecentSearches.adding(recents, query)
+        guard updated != recents else { return }
+        recents = updated
+        UserDefaults.standard.set(recents, forKey: RecentSearches.key)
+    }
     func clearRecents() { recents = []; UserDefaults.standard.removeObject(forKey: RecentSearches.key) }
 
     /// Search suggestions while typing: remembered searches that contain the text.
@@ -296,10 +331,6 @@ final class DiscoverModel: ObservableObject {
             guard !Task.isCancelled, text == query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             cache.store(found, for: text)
             apply(found, for: text)
-            if !found.isEmpty {
-                recents = RecentSearches.adding(recents, text)
-                UserDefaults.standard.set(recents, forKey: RecentSearches.key)
-            }
         } catch {
             guard !Task.isCancelled, (error as? URLError)?.code != .cancelled else { return }
             phase = .failed("Couldn't reach the catalogue. Check your internet connection.")

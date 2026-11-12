@@ -23,8 +23,12 @@ struct TitleDetailView: View {
     @StateObject private var model: TitleDetailModel
     @State private var season = 1
     @State private var result = ""
+    @State private var resultFailed = false
+    /// Only a handoff Android accepted offers "Continue on the TV" (BUG-022).
     @State private var handedOff = false
     @State private var showStreams = false
+    /// The episode the picker opens on: the tapped one, or the one being resumed (BUG-012).
+    @State private var pickerEpisode: Int?
     @State private var opened: MediaTitle?
     /// Continuation §F3: how a title opened from this page is presented, chosen while nothing is open.
     @State private var nestedStyle: DetailPresentation = .sheet
@@ -81,7 +85,7 @@ struct TitleDetailView: View {
         .animation(motion, value: model.phase)
         .sheet(isPresented: $showStreams) {
             StreamPickerSheet(title: title, episodes: model.detail?.episodes ?? [], initialSeason: season,
-                              onHandoff: { _ in handedOff = true })
+                              initialEpisode: pickerEpisode, onHandoff: { handoffFinished($0) })
                 .environmentObject(remote)
         }
         .sheet(item: openedBinding(.sheet)) { other in openedPage(other) }
@@ -233,6 +237,7 @@ struct TitleDetailView: View {
                 // Open in Nuvio too, so Play works (and reports what happened) even without add-ons.
                 Button {
                     Haptics.soft()
+                    pickerEpisode = EpisodeSelection.resume(season: season, watching: libraryItem?.episode)
                     showStreams = true
                 } label: {
                     Label("Play", systemImage: "play.fill").scaledFont(16, .semibold)
@@ -261,11 +266,7 @@ struct TitleDetailView: View {
                 }
 
                 Button {
-                    Task {
-                        let message = await remote.openInNuvio(title)
-                        handedOff = true
-                        result = message
-                    }
+                    Task { handoffFinished(await remote.openInNuvioResult(title)) }
                 } label: {
                     Label("Nuvio", systemImage: "arrow.up.forward.app").scaledFont(15, .semibold)
                         .padding(.horizontal, 18).frame(height: 52)
@@ -301,9 +302,16 @@ struct TitleDetailView: View {
                 .accessibilityHint("Closes this page and opens the Remote, to pick a stream in Nuvio on the TV.")
             }
             if !result.isEmpty {
-                Text(result).scaledFont(12).foregroundStyle(Color.inkAlpha(0.7))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .transition(.opacity)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if resultFailed {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color.orange)
+                            .accessibilityHidden(true)
+                    }
+                    Text(result).foregroundStyle(Color.inkAlpha(0.7))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .scaledFont(12)
+                .transition(.opacity)
             }
         }
         .multilineTextAlignment(.leading)
@@ -332,11 +340,12 @@ struct TitleDetailView: View {
                     .transition(.opacity)
                 }
                 if title.kind == .series, !detail.episodes.isEmpty {
-                    DetailSection(title: "Episodes", subtitle: "Tap an episode to find streams for its season") {
+                    DetailSection(title: "Episodes", subtitle: "Tap an episode to find its streams") {
                         DetailEpisodeList(episodes: detail.episodes, seasons: detail.seasons, season: $season,
                                           currentSeason: libraryItem?.episode?.season,
                                           currentEpisode: libraryItem?.episode?.episode) { episode in
                             season = episode.season
+                            pickerEpisode = episode.number
                             Haptics.soft()
                             showStreams = true
                         }
@@ -445,6 +454,15 @@ struct TitleDetailView: View {
 
     private func close() {
         if let onClose { onClose() } else { dismiss() }
+    }
+
+    /// The latest handoff decides whether "Continue on the TV" is offered; a failure is shown inline.
+    private func handoffFinished(_ outcome: HandoffResult) {
+        handedOff = outcome.succeeded
+        resultFailed = !outcome.succeeded
+        result = outcome.message
+        // Watch progress changes on the TV; the next return to Discover refreshes Continue Watching.
+        if outcome.succeeded { NuvioAccount.shared.markStale() }
     }
 
     /// The season being watched when the catalogue lists it, otherwise the first season.

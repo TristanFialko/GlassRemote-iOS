@@ -10,11 +10,11 @@ struct KeyboardSheet: View {
     @State private var text = ""
     @State private var lastSent = ""        // what live typing has already forwarded to the TV
     @State private var liveDeliveryFailed = false   // virtual keyboard refused the last keystroke
-    @State private var history: [String] = KeyboardSheet.loadHistory()
+    /// A late write failure already rolled `lastSent` back; later failures were queued after it.
+    @State private var liveRolledBack = false
+    @State private var history: [String] = KeyboardHistory.load()
+    @State private var remembersHistory = KeyboardHistory.remembers()
     @FocusState private var focused: Bool
-
-    private static let historyKey = "glassRemote.textHistory"
-    private static let historyLimit = 8
 
     var body: some View {
         NavigationStack {
@@ -62,7 +62,7 @@ struct KeyboardSheet: View {
                     }
                 } footer: {
                     if remote.liveTyping && liveDeliveryFailed {
-                        Text("Live typing is on, but the TV keyboard isn't ready (\(remote.connected ? "helper not running" : "not connected")). Typed text is held and will be sent once it's ready.")
+                        Text("Live typing is on, but the TV keyboard isn't ready (\(remote.connected ? "helper not running" : "not connected")). Typed text is held and sent with your next edit once it's ready.")
                             .foregroundStyle(.orange)
                     } else {
                         Text(remote.liveTyping
@@ -71,22 +71,33 @@ struct KeyboardSheet: View {
                     }
                 }
 
-                if !history.isEmpty {
-                    Section("Recent") {
-                        ForEach(history, id: \.self) { item in
-                            Button { text = item } label: {
-                                Text(item).lineLimit(1).foregroundStyle(.primary)
-                            }
+                Section {
+                    Toggle("Remember sent text", isOn: $remembersHistory)
+                        .onChange(of: remembersHistory) { _, on in
+                            KeyboardHistory.setRemembers(on)
+                            if !on { history = [] }
                         }
-                        .onDelete { offsets in
-                            history.remove(atOffsets: offsets)
-                            Self.saveHistory(history)
-                        }
-                        Button("Clear history", role: .destructive) {
-                            history = []
-                            Self.saveHistory(history)
+                    ForEach(history, id: \.self) { item in
+                        Button { text = item } label: {
+                            Text(item).lineLimit(1).foregroundStyle(.primary)
                         }
                     }
+                    .onDelete { offsets in
+                        history.remove(atOffsets: offsets)
+                        KeyboardHistory.save(history)
+                    }
+                    if !history.isEmpty {
+                        Button("Clear history", role: .destructive) {
+                            history = []
+                            KeyboardHistory.save(history)
+                        }
+                    }
+                } header: {
+                    Text("Recent")
+                } footer: {
+                    Text(remembersHistory
+                         ? "The last \(KeyboardHistory.limit) texts you Send are kept on this iPhone. Turn this off before typing passwords."
+                         : "Sent text isn't kept. Live typing is never kept.")
                 }
             }
             .scrollContentBackground(.hidden)
@@ -102,43 +113,104 @@ struct KeyboardSheet: View {
         .themedSheet()
     }
 
-    /// Forwards the difference between what the TV has received and the field's new contents.
+    /// Forwards the difference between what the TV has received and the field's new contents, in
+    /// steps the keyboard accepts whole (BUG-019: long pastes are split, never cut off).
     /// Delivery failure never touches the Live typing toggle (that is the user's choice). On failure
-    /// `lastSent` stays put, so the next edit retries the whole undelivered difference.
+    /// `lastSent` stays at what was delivered, so the next edit retries the undelivered difference.
     private func syncLive(_ newValue: String) {
         guard remote.liveTyping else { lastSent = newValue; liveDeliveryFailed = false; return }
-        guard newValue != lastSent else { return }
-        let plan = LiveTypingDiff.plan(from: lastSent, to: newValue)
-        if remote.typeLive(plan.added, backspaces: plan.backspaces) {
-            lastSent = newValue
-            liveDeliveryFailed = false
-        } else {
-            liveDeliveryFailed = true
+        var sent = lastSent
+        var steps = 0
+        while sent != newValue, steps < LiveTypingDiff.maxStepsPerEdit {
+            steps += 1
+            let step = LiveTypingDiff.step(from: sent, to: newValue)
+            let baseline = sent
+            let accepted = remote.typeLive(step.added, backspaces: step.backspaces) {
+                liveWriteFailed(baseline: baseline)
+            }
+            guard accepted else {
+                lastSent = sent
+                liveDeliveryFailed = true
+                return
+            }
+            // The last step reaches the field's contents (as the single-write path always did).
+            sent = step.partial ? step.delivered : newValue
         }
+        lastSent = sent
+        liveDeliveryFailed = false
+        liveRolledBack = false
+    }
+
+    /// BUG-020: a write the keyboard accepted but could not deliver. The TV never got it, so the
+    /// next edit re-sends from `baseline`. Only the first failure rolls back: anything queued after it
+    /// was built on top of it.
+    private func liveWriteFailed(baseline: String) {
+        if !liveRolledBack {
+            lastSent = baseline
+            liveRolledBack = true
+        }
+        liveDeliveryFailed = true
     }
 
     private func send() {
         if remote.liveTyping {
             remote.key("OK")        // Enter
             lastSent = ""
+            liveRolledBack = true   // failures from before Enter must not roll the new line back
             text = ""
             return
         }
         guard !text.isEmpty else { return }
         remote.sendText(text)
-        history.removeAll { $0 == text }
-        history.insert(text, at: 0)
-        history = Array(history.prefix(Self.historyLimit))
-        Self.saveHistory(history)
+        history = KeyboardHistory.recording(text, in: history)
+        KeyboardHistory.save(history)
         text = ""
     }
+}
 
-    private static func loadHistory() -> [String] {
-        UserDefaults.standard.stringArray(forKey: historyKey) ?? []
+/// Recent sent texts (SEC-002). Kept only on this iPhone and only while "Remember sent text" is on;
+/// turning it off deletes what was stored. Live typing is never recorded.
+enum KeyboardHistory {
+    static let itemsKey = "glassRemote.textHistory"
+    static let rememberKey = "glassRemote.rememberTextHistory"
+    static let limit = 8
+
+    /// On by default, as before the toggle existed.
+    static func remembers(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: rememberKey) as? Bool ?? true
     }
 
-    private static func saveHistory(_ items: [String]) {
-        UserDefaults.standard.set(items, forKey: historyKey)
+    static func setRemembers(_ on: Bool, _ defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: rememberKey)
+        if !on { defaults.removeObject(forKey: itemsKey) }
+    }
+
+    static func load(_ defaults: UserDefaults = .standard) -> [String] {
+        remembers(defaults) ? (defaults.stringArray(forKey: itemsKey) ?? []) : []
+    }
+
+    static func save(_ items: [String], _ defaults: UserDefaults = .standard) {
+        if remembers(defaults), !items.isEmpty {
+            defaults.set(items, forKey: itemsKey)
+        } else {
+            defaults.removeObject(forKey: itemsKey)
+        }
+    }
+
+    /// Most recent first, no duplicates, at most `limit`. Empty when remembering is off.
+    static func recording(_ text: String, in items: [String], remembering: Bool = KeyboardHistory.remembers()) -> [String] {
+        guard remembering else { return [] }
+        var result = items.filter { $0 != text }
+        result.insert(text, at: 0)
+        return Array(result.prefix(limit))
+    }
+}
+
+extension RemoteModel {
+    /// `typeLive` that also reports a write that fails after the keyboard accepted it (BUG-020).
+    func typeLive(_ text: String, backspaces: Int, onUndelivered: @escaping @MainActor () -> Void) -> Bool {
+        guard connected else { return false }
+        return keyboard.type(text, backspaces: backspaces, onWriteFailure: onUndelivered)
     }
 }
 
@@ -149,5 +221,43 @@ enum LiveTypingDiff {
         let removed = lastSent.dropFirst(common.count)
         let backspaces = removed.filter { VirtualKeyboard.hid(for: $0) != nil }.count
         return (backspaces, String(newValue.dropFirst(common.count)))
+    }
+
+    /// One keyboard write's worth of an edit. `delivered` is what the TV holds once it lands.
+    struct Step: Equatable {
+        let backspaces: Int
+        let added: String
+        let delivered: String
+        /// More steps are needed to reach the field's contents.
+        let partial: Bool
+    }
+
+    /// Bounds one edit to 50 writes (20 000 characters); the rest follows with the next edit.
+    static let maxStepsPerEdit = 50
+
+    /// The next write towards `newValue`, never more than `limit` backspaces or characters, so
+    /// `VirtualKeyboard.type` never cuts anything off. Deletions go first.
+    static func step(from lastSent: String, to newValue: String,
+                     limit: Int = VirtualKeyboard.liveTypingLimit) -> Step {
+        let cap = max(limit, 1)
+        let common = newValue.commonPrefix(with: lastSent)
+        let diff = Self.plan(from: lastSent, to: newValue)
+        if diff.backspaces > cap {
+            // Delete `limit` typeable characters from the end; untypeable ones never reached the TV.
+            var kept = Substring(lastSent)
+            var remaining = kept.count
+            var deleted = 0
+            while remaining > common.count, let last = kept.last {
+                let typeable = VirtualKeyboard.hid(for: last) != nil
+                if typeable && deleted == cap { break }
+                if typeable { deleted += 1 }
+                kept.removeLast()
+                remaining -= 1
+            }
+            return Step(backspaces: deleted, added: "", delivered: String(kept), partial: true)
+        }
+        let added = String(diff.added.prefix(cap))
+        let partial = diff.added.count > cap
+        return Step(backspaces: diff.backspaces, added: added, delivered: common + added, partial: partial)
     }
 }
