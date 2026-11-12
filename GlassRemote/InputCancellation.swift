@@ -49,3 +49,24 @@ enum TrackpadAccessibility {
     /// Pointer travel per "Move pointer" action, in helper units (about one list row on the TV).
     static let nudge = 40
 }
+
+/// The mouse trackpad's VoiceOver actions (audit A11Y-001): click, Back, scroll and pointer nudges.
+struct TrackpadAccessibilityActions: ViewModifier {
+    let remote: RemoteModel
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityAction { remote.mouseClick() }
+            .accessibilityAction(.escape) { remote.key("BACK") }
+            .accessibilityAction(named: "Back") { remote.key("BACK") }
+            .accessibilityAction(named: "Scroll up") { scroll(TrackpadAccessibility.scrollNotches) }
+            .accessibilityAction(named: "Scroll down") { scroll(-TrackpadAccessibility.scrollNotches) }
+            .accessibilityAction(named: "Move pointer left") { move(dx: -TrackpadAccessibility.nudge, dy: 0) }
+            .accessibilityAction(named: "Move pointer right") { move(dx: TrackpadAccessibility.nudge, dy: 0) }
+            .accessibilityAction(named: "Move pointer up") { move(dx: 0, dy: -TrackpadAccessibility.nudge) }
+            .accessibilityAction(named: "Move pointer down") { move(dx: 0, dy: TrackpadAccessibility.nudge) }
+    }
+
+    private func scroll(_ notches: Int) { remote.mouse(wheel: notches, hscroll: 0) }
+    private func move(dx: Int, dy: Int) { remote.mouseMove(dx: dx, dy: dy) }
+}

@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import GlassRemote
 
 /// Audit remediation, Priority B (gesture cancellation). SwiftUI touch cancellation itself can only
