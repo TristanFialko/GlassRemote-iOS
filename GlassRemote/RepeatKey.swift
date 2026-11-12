@@ -34,6 +34,7 @@ struct RepeatKey<Content: View, HitShape: Shape>: View {
         var cancelled = false
         var repeating = false
         var touchID = 0
+        var gate = HeldTouchGate()
         var task: Task<Void, Never>?
     }
 
@@ -55,6 +56,7 @@ struct RepeatKey<Content: View, HitShape: Shape>: View {
                 DragGesture(minimumDistance: 0)
                     .updating($touching) { _, state, _ in state = true }
                     .onChanged { value in
+                        guard box.gate.touched() else { return }
                         if !box.began {
                             box.began = true
                             box.cancelled = false
@@ -76,12 +78,14 @@ struct RepeatKey<Content: View, HitShape: Shape>: View {
                         if box.began && !box.cancelled && !box.repeating { fire() }
                         box.began = false
                         box.repeating = false
+                        box.gate.lifted()
                         setPressed(false)
                     }
             )
             .onChange(of: touching) { _, isTouching in
                 // The gesture state reset. A normal end also resets it, so give `onEnded` a moment;
                 // if the same touch is still open afterwards, the system cancelled it.
+                if !isTouching { box.gate.lifted() }
                 guard !isTouching, box.began else { return }
                 let id = box.touchID
                 let box = self.box
@@ -109,6 +113,7 @@ struct RepeatKey<Content: View, HitShape: Shape>: View {
         box.cancelled = box.began
         box.began = false
         box.repeating = false
+        box.gate.cancelled()
         setPressed(false)
     }
 
