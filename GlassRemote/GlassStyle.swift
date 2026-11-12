@@ -136,6 +136,12 @@ enum ScrubSelectorRole {
 /// Glass (iOS 26) refracts and lights itself; before iOS 26 the material bubble gets drawn light: a rim
 /// highlight that follows its position, a faint chromatic fringe and a sheen. `axis: .vertical` stands
 /// the whole control on end for the landscape page rail; touch rules are identical on both axes.
+///
+/// Phase 9 recovery §2: `commitOnRelease` (the page dock) keeps the moving bubble but commits only on
+/// release: while the finger is down the bubble and the highlighted icon follow it and nothing is
+/// navigated; lifting commits the segment under the bubble's centre (even the current one, which the
+/// dock uses to close the full player), and lifting well away from the bar cancels
+/// (`ScrubGeometry.releaseCommits`). The refraction is clipped to the bar (`ScrubGeometry.boundedLens`).
 struct GlassScrubSelector<Value: Hashable, Label: View>: View {
     let values: [Value]
     @Binding var selection: Value
@@ -145,6 +151,8 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
     var haptic: Bool = true
     var role: ScrubSelectorRole = .control
     var axis: Axis = .horizontal
+    /// Release-to-commit instead of live selection (see the type's documentation).
+    var commitOnRelease: Bool = false
     @ViewBuilder var label: (Value, Bool) -> Label
 
     @Environment(\.glassTheme) private var theme
@@ -160,6 +168,8 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
         var location: CGFloat
         var time: Date
         var speed: CGFloat = 0
+        /// Release-to-commit only: the segment currently under the bubble's centre.
+        var hover: Int = -1
     }
 
     private var vertical: Bool { axis == .vertical }
@@ -175,16 +185,21 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
             let offset: CGFloat = drag?.offset ?? rest
             let dragging: Bool = drag != nil
             let stretch: CGFloat = reduceMotion ? 1 : ScrubGeometry.stretch(speed: drag?.speed ?? 0)
-            let grow: CGFloat = dragging && !reduceMotion ? 1.10 : 1
-            let along: CGFloat = grow * stretch
-            let across: CGFloat = grow / stretch.squareRoot()
+            let scale = ScrubGeometry.lensScale(dragging: dragging, speed: drag?.speed ?? 0, reduceMotion: reduceMotion)
+            let along: CGFloat = scale.along
+            let across: CGFloat = scale.across
             let lensSize: CGSize = vertical ? CGSize(width: thickness - inset * 2, height: seg)
                                             : CGSize(width: seg, height: thickness - inset * 2)
             let lensOffset: CGSize = vertical ? CGSize(width: 0, height: offset) : CGSize(width: offset, height: 0)
             let lens = LensFrame(size: lensSize, offset: lensOffset,
                                  scaleX: vertical ? across : along, scaleY: vertical ? along : across)
-            let lensRect: CGRect = lens.rect(centre: vertical ? CGPoint(x: thickness / 2, y: offset + seg / 2)
-                                                              : CGPoint(x: offset + seg / 2, y: thickness / 2))
+            let bar = CGRect(x: 0, y: 0, width: vertical ? thickness : length, height: vertical ? length : thickness)
+            let lensRect: CGRect = ScrubGeometry.boundedLens(
+                ScrubGeometry.lensRect(offset: offset, segment: seg, thickness: thickness, inset: inset,
+                                       vertical: vertical, along: along, across: across),
+                in: bar)
+            // Release-to-commit: the icon under the moving bubble is highlighted; the committed one otherwise.
+            let highlighted: Int = commitOnRelease ? (drag.map { $0.hover >= 0 ? $0.hover : index } ?? index) : index
             let progress: CGFloat = ScrubGeometry.progress(offset: offset, inset: inset, length: length, segment: seg)
             let scrim: Color = role == .dock ? theme.dockScrim : theme.controlScrim
             let outline: Color = role == .dock ? theme.dockEdge : theme.controlEdge
@@ -219,7 +234,7 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
 
                 // Labels sit above the glass container (native glass sampling them drew ghost copies). Phase 9:
                 // the bubble bends only the labels it covers, through the bounded refraction lens.
-                labels(index: index, thickness: thickness, seg: seg)
+                labels(highlighted: highlighted, selected: index, thickness: thickness, seg: seg)
                     .refractiveLens(lensRect, cornerRadius: .infinity, style: .selector)
             }
             .modifier(LensMotion(offset: offset, dragging: dragging, stretch: stretch))
@@ -240,17 +255,34 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
                             let onSelected = p >= rest && p <= rest + seg
                             let start = onSelected ? rest : ScrubGeometry.clamp(p - seg / 2, inset: inset, length: length, segment: seg)
                             state = Drag(grab: p - start, offset: start, location: p, time: now)
+                            state.hover = index
                         }
                         state.offset = ScrubGeometry.clamp(p - state.grab, inset: inset, length: length, segment: seg)
                         state.location = p
                         state.time = now
-                        drag = state
-                        if abs(state.speed) > 1 { relaxStretch(after: now) }
-                        // Selection follows the bubble's centre: it flips as the bubble crosses a midpoint.
                         let i = ScrubGeometry.index(forOffset: state.offset, inset: inset, segment: seg, count: count)
-                        if i < values.count, values[i] != selection { choose(values[i]) }
+                        if commitOnRelease {
+                            // The bubble and highlight follow the finger; nothing is committed until release.
+                            if i != state.hover {
+                                state.hover = i
+                                if haptic { Haptics.soft() }
+                            }
+                            drag = state
+                        } else {
+                            drag = state
+                            // Selection follows the bubble's centre: it flips as the bubble crosses a midpoint.
+                            if i < values.count, values[i] != selection { choose(values[i]) }
+                        }
+                        if abs(state.speed) > 1 { relaxStretch(after: now) }
                     }
-                    .onEnded { _ in drag = nil }
+                    .onEnded { value in
+                        guard commitOnRelease, let ended = drag else { drag = nil; return }
+                        drag = nil
+                        let cross: CGFloat = vertical ? value.location.x : value.location.y
+                        guard ScrubGeometry.releaseCommits(cross: cross, thickness: thickness) else { return }
+                        let i = ScrubGeometry.index(forOffset: ended.offset, inset: inset, segment: seg, count: count)
+                        if i < values.count { commit(values[i]) }
+                    }
             )
         }
         .frame(width: vertical ? height : nil, height: vertical ? nil : height)
@@ -258,15 +290,15 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
         .background { PagerExclusionZone() }
     }
 
-    private func labels(index: Int, thickness: CGFloat, seg: CGFloat) -> some View {
+    private func labels(highlighted: Int, selected: Int, thickness: CGFloat, seg: CGFloat) -> some View {
         let stack: AnyLayout = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
         return stack {
             ForEach(Array(values.enumerated()), id: \.offset) { offset, value in
-                label(value, offset == index)
+                label(value, offset == highlighted)
                     .frame(width: vertical ? thickness : seg, height: vertical ? seg : thickness)
                     .accessibilityElement(children: .combine)
-                    .accessibilityAddTraits(offset == index ? [.isButton, .isSelected] : .isButton)
-                    .accessibilityAction { choose(value) }
+                    .accessibilityAddTraits(offset == selected ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityAction { commitOnRelease ? commit(value) : choose(value) }
             }
         }
         .padding(vertical ? Edge.Set.vertical : Edge.Set.horizontal, inset)
@@ -288,6 +320,12 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
         if haptic { Haptics.soft() }
         selection = value
     }
+
+    /// Release-to-commit: always reports the value, even the current one, so the owner decides what a
+    /// repeat means (the dock closes the full player over the page that is already selected).
+    private func commit(_ value: Value) {
+        selection = value
+    }
 }
 
 /// Where the scrub selector's bubble is, shared by every layer that has to sit exactly on it.
@@ -296,13 +334,6 @@ private struct LensFrame {
     var offset: CGSize
     var scaleX: CGFloat
     var scaleY: CGFloat
-
-    /// The bubble's on-screen rectangle (scale applied about its centre), for the refraction lens.
-    func rect(centre: CGPoint) -> CGRect {
-        let w = size.width * scaleX
-        let h = size.height * scaleY
-        return CGRect(x: centre.x - w / 2, y: centre.y - h / 2, width: w, height: h)
-    }
 }
 
 private extension View {

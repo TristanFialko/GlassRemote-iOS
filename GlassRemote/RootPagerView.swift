@@ -299,12 +299,15 @@ enum PagerGesturePolicy {
 
 // MARK: - Dock
 
-/// v5 §2: a thinner, icon-only Liquid Glass bar (Apple Music style). Three full-height buttons, each
-/// filling its share of the bar, so every target is comfortably larger than 44 pt. A button commits on
-/// release (a press that slides off cancels), there is no sliding lens and no refraction over the icons,
-/// so they stay crisp. The selected icon takes the theme accent when it is legible on the dock
-/// (`DockStyle`), otherwise full dock ink; the others are muted dock ink. In landscape the same dock
-/// runs vertically as the page rail (`axis: .vertical`).
+/// Phase 9 recovery §2: the icon-only Liquid Glass dock with its moving glass bubble back. It is the
+/// shared `GlassScrubSelector` in its dock role: a clear glass bubble that follows the finger, the
+/// sliding rim sheen (`DockSheen`), and refraction confined to the bubble and clipped to the bar. It
+/// commits on release (`commitOnRelease`): dragging moves the bubble and highlights the icon under it
+/// without navigating; lifting goes to that page through `navigator.go` (the page that is already
+/// selected closes the full player), and lifting well away from the bar cancels. The bubble itself is
+/// never filled with the accent; the selected icon takes the theme accent when it is legible on the
+/// dock (`DockStyle`), otherwise full dock ink, and the others are muted dock ink. In landscape the
+/// same dock runs vertically as the page rail (`axis: .vertical`). Reduce Motion keeps the bubble rigid.
 struct PageDock: View {
     var axis: Axis = .horizontal
     @EnvironmentObject private var navigator: PageNavigator
@@ -312,26 +315,24 @@ struct PageDock: View {
 
     var body: some View {
         let vertical = axis == .vertical
-        let layout = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
-        let selectedInk = DockStyle.selectedInk(theme)
-        layout {
-            ForEach(AppPage.allCases) { item in
-                let selected = item == navigator.page && !navigator.playerPresented
-                Button { navigator.go(item) } label: {
-                    DockIcon(item: item, selected: selected, vertical: vertical)
-                        .foregroundStyle(selected ? selectedInk : theme.dockInkInactive)
-                        .frame(minWidth: DockMetrics.minimumTouchTarget, maxWidth: .infinity,
-                               minHeight: DockMetrics.minimumTouchTarget, maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(DockButtonStyle())
+        let playerPresented = navigator.playerPresented
+        GlassScrubSelector(
+            values: AppPage.allCases,
+            selection: Binding(get: { navigator.page }, set: { navigator.go($0) }),
+            height: vertical ? DockMetrics.railWidth : DockMetrics.height,
+            inset: vertical ? DockMetrics.railInset : DockMetrics.itemInset,
+            haptic: false, // navigator.go gives the single tick on commit
+            role: .dock,
+            axis: axis,
+            commitOnRelease: true
+        ) { item, highlighted in
+            let selected = DockStyle.showsSelection(highlighted: highlighted, playerPresented: playerPresented)
+            DockIcon(item: item, selected: selected, vertical: vertical)
+                .foregroundStyle(DockStyle.iconInk(selected: selected, theme: theme))
+                .frame(minWidth: DockMetrics.minimumTouchTarget, maxWidth: .infinity,
+                       minHeight: DockMetrics.minimumTouchTarget, maxHeight: .infinity)
                 .accessibilityLabel(item.title)
-                .accessibilityAddTraits(selected ? [.isSelected] : [])
-            }
         }
-        .padding(vertical ? .vertical : .horizontal, vertical ? DockMetrics.railInset : DockMetrics.itemInset)
-        .frame(width: vertical ? DockMetrics.railWidth : nil, height: vertical ? nil : DockMetrics.height)
-        .glassBar(Capsule(), interactive: false)
         .animation(TabSwitchPolicy.animation, value: navigator.page)
         .animation(TabSwitchPolicy.animation, value: navigator.playerPresented)
         .accessibilityElement(children: .contain)

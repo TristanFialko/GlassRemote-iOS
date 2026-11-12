@@ -91,10 +91,11 @@ enum MiniPlayerPolicy {
     }
 }
 
-/// v5 §2 / §9: the dock's selected state. Apple Music colour behaviour: the selected icon takes the
-/// theme accent, the others stay muted ink, and nothing refracts over the icons. When an accent would
-/// be too faint on the dock (WCAG 1.4.11, 3:1 for UI components) the selected icon falls back to
-/// full-strength dock ink, so the state is readable in every theme and in light and dark.
+/// v5 §2 / §9, Phase 9 recovery §2: the dock's selected state. The selected icon takes the theme
+/// accent, the others stay muted ink; the glass bubble above it stays clear (it is never filled with
+/// the accent) and its bounded refraction bends only what it covers. When an accent would be too faint
+/// on the dock (WCAG 1.4.11, 3:1 for UI components) the selected icon falls back to full-strength dock
+/// ink, so the state is readable in every theme and in light and dark.
 enum DockStyle {
     static let minimumContrast: Double = 3.0
 
@@ -112,7 +113,18 @@ enum DockStyle {
         return usesAccent(accentLuminance: luminance, light: theme.isLight) ? theme.accent : theme.dockInk
     }
 
-    /// Pressed items dim slightly; nothing scales or refracts, so icons stay crisp.
+    /// Ink for one dock icon.
+    static func iconInk(selected: Bool, theme: GlassTheme) -> Color {
+        selected ? selectedInk(theme) : theme.dockInkInactive
+    }
+
+    /// The icon under the bubble (resting, or following the finger) is the selected one, except while
+    /// the full player covers the pages: then no page is marked selected.
+    static func showsSelection(highlighted: Bool, playerPresented: Bool) -> Bool {
+        highlighted && !playerPresented
+    }
+
+    /// Pressed buttons that share the dock's look (the mini-player) dim slightly instead of scaling.
     static let pressedOpacity: Double = 0.55
 }
 
