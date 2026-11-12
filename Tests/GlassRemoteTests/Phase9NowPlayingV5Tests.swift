@@ -84,15 +84,26 @@ final class Phase9NowPlayingV5Tests: XCTestCase {
         XCTAssertLessThanOrEqual(PlayerLayoutPolicy.timelineHeight, 6, "thin timeline")
     }
 
-    func testFallbackBackgroundIsOneRestrainedFullScreenWash() {
-        for adaptive in [true, false] {
-            let opacity = PlayerBackdropPolicy.fallbackOpacity(adaptive: adaptive)
-            XCTAssertGreaterThan(opacity.top, opacity.bottom, "light from the top, calm under the controls")
-            XCTAssertLessThanOrEqual(opacity.top, 0.4, "restrained: ink stays legible")
-            XCTAssertGreaterThan(opacity.bottom, 0, "continuous to the bottom edge")
+    func testFallbackBackgroundIsOneDeliberateFullScreenWash() {
+        let grey = NowPlayingPalette.Tone(r: 0.92, g: 0.92, b: 0.92)
+        let teal = NowPlayingPalette.Tone(r: 0.1, g: 0.6, b: 0.6)
+        for light in [false, true] {
+            for accent in [grey, teal] {
+                let palette = NowPlayingPalette.fallback(accent: accent, secondary: nil, light: light)
+                let colours = PlayerBackdropPolicy.meshColors(palette, light: light)
+                XCTAssertEqual(colours.count, 9, "one mesh across the whole screen, not a small glow")
+                let spread = [palette.accent, palette.support].map { palette.base.distance(to: $0) }.max() ?? 0
+                XCTAssertGreaterThan(spread, 0.02, "a wash, not one flat colour")
+                for tone in colours {
+                    XCTAssertGreaterThanOrEqual(PlayerBackdropPolicy.inkContrast(over: tone, light: light),
+                                                PlayerBackdropPolicy.minimumContrast, "restrained: ink stays legible")
+                }
+                if !light {
+                    XCTAssertLessThanOrEqual(palette.foot.luminance, palette.base.luminance + 0.001,
+                                             "calm under the controls")
+                }
+            }
         }
-        XCTAssertGreaterThan(PlayerBackdropPolicy.fallbackOpacity(adaptive: true).top,
-                             PlayerBackdropPolicy.fallbackOpacity(adaptive: false).top)
     }
 
     /// Source guard: no radial glow and no live blur on the page, and the clock can pause.
