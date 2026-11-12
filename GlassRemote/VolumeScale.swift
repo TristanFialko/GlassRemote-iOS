@@ -12,16 +12,19 @@ import Foundation
 //   mute.
 // - Samsung over its remote socket only (no readable level): one KEY_VOLUP / KEY_VOLDOWN per step of
 //   the soundbar's own scale (`tvVolumeMax`, 5…200, set in Connection settings).
-// - Android TV: never used for volume (v5 §5). With no Samsung route the scale is `.unavailable`:
-//   nothing is sent, the slider is disabled and says the soundbar is unavailable. There is no ADB
-//   keyevent, HID consumer usage or Android read-back for volume any more.
+// - Soundbar through the TV box (restored from Phase 7.2): the box's own volume keys over ADB
+//   (`input keyevent 24/25/164`), which the box forwards to the soundbar over HDMI-CEC. One key per
+//   step of the soundbar's scale (`tvVolumeMax`). The soundbar's level cannot be read back.
+// - With no usable route the scale is `.unavailable`: nothing is sent and the slider is disabled.
 
 /// One target's real volume range.
 struct VolumeScale: Equatable, Sendable {
     enum Route: Equatable, Sendable {
         case samsungAbsolute
         case samsungKeys
-        /// v5 §5: no Samsung route. Nothing is sent and the slider is disabled.
+        /// The TV box's volume keys over ADB, forwarded to the soundbar by HDMI-CEC (Phase 7.2 route).
+        case boxKeys
+        /// No usable route. Nothing is sent and the slider is disabled.
         case unavailable
     }
 
@@ -39,11 +42,19 @@ struct VolumeScale: Equatable, Sendable {
         VolumeScale(route: .samsungKeys, lo: 0, hi: Swift.max(levels, 1))
     }
 
-    /// v5 §5: the Samsung link is off or not ready. Android TV volume is never a fallback.
+    static func boxKeys(max levels: Int) -> VolumeScale {
+        VolumeScale(route: .boxKeys, lo: 0, hi: Swift.max(levels, 1))
+    }
+
+    /// The chosen route is not connected.
     static let unavailable = VolumeScale(route: .unavailable, lo: 0, hi: 100)
 
     /// False only for `.unavailable`: the slider is disabled and no command is sent.
     var isAvailable: Bool { route != .unavailable }
+
+    /// True only when the output's real level is read back. Key routes are relative: the slider
+    /// position is where the keys were sent, not a reading, so no level number is shown for them.
+    var readsLevel: Bool { route == .samsungAbsolute }
 
     /// Raw steps between 0 % and 100 %.
     var steps: Int { max(hi - lo, 1) }
@@ -177,8 +188,8 @@ enum VolumeReadout {
     }
 }
 
-/// v5 §5: Samsung is the only volume source. These app key names are volume commands: they go to the
-/// Samsung TV or are not sent at all, never to the Android box (no ADB keyevent, no HID usage).
+/// The app key names that are volume commands. Wherever they come from they follow the chosen volume
+/// output (VolumeRoutePolicy) or are not sent at all; never HID.
 enum VolumeKeyPolicy {
     static let keys: Set<String> = ["VOLUME_UP", "VOLUME_DOWN", "MUTE"]
     static func isVolumeKey(_ name: String) -> Bool { keys.contains(name) }

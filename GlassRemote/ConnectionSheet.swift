@@ -72,7 +72,13 @@ struct ConnectionSheet: View {
                 }
 
                 Section("Volume") {
-                    Toggle("Route volume through Samsung TV", isOn: $remote.tvVolumeEnabled)
+                    Picker("Volume goes to", selection: $remote.volumeOutput) {
+                        ForEach(VolumeOutput.allCases) { output in
+                            Text(output.label).tag(output)
+                        }
+                    }
+                    Text(remote.volumeRouteSummary).font(.footnote).foregroundStyle(.secondary)
+                    Toggle("Samsung TV link", isOn: $remote.tvVolumeEnabled)
                     if remote.tvVolumeEnabled {
                         TextField("Samsung TV IP address", text: $remote.samsungHost)
                             .keyboardType(.numbersAndPunctuation)
@@ -110,7 +116,7 @@ struct ConnectionSheet: View {
                         Text("Set this to the highest number your soundbar shows. The slider spans this whole range, so full slider = soundbar maximum.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    Text("Volume goes only to the Samsung TV: its UPnP level when it answers, otherwise its remote keys. When this is off, or the TV cannot be reached, volume is shown as unavailable; it is never sent to the Android box. The app connects to the Samsung TV automatically and retries if it is unreachable.")
+                    Text("Volume goes to one output only. Through the TV box (the Phase 7.2 route) the box passes its volume keys to the soundbar over HDMI-CEC. Through the Samsung TV its remote keys reach the TV's active output. TV speakers uses the TV's own level (UPnP) for an exact 0–100 slider. When the chosen route is down volume is shown as unavailable; it is never sent to other speakers instead. The app connects to the Samsung TV automatically and retries if it is unreachable.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 

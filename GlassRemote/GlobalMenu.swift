@@ -112,7 +112,7 @@ struct RemoteStatusMenu: View {
                 }
             } label: { Label("TV keys", systemImage: "tv") }
         case .routeVolume:
-            Toggle(isOn: $remote.tvVolumeEnabled) { Label("Volume through Samsung TV", systemImage: "speaker.wave.2") }
+            Toggle(isOn: $remote.tvVolumeEnabled) { Label("Samsung TV link", systemImage: "tv") }
         case .setUpSamsung:
             Button { navigator.openProfile(.connections) } label: { Label("Set up Samsung TV", systemImage: "tv.badge.wifi") }
         case .screenshot:

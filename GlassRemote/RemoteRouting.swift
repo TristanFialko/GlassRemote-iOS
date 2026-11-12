@@ -25,9 +25,9 @@ enum RemoteCommandKind { case navigation, media, volume, power, source, channel,
 /// device other than the selected one: when the selected device is down the result is `nil` and
 /// the UI shows its connection state instead of silently controlling the other TV.
 ///
-/// - Android TV target: navigation, media and power go to the box. Volume goes to the Samsung
-///   TV only (v5 §5: never the Android box; nil while the Samsung link is down). TV-only kinds are
-///   not available.
+/// - Android TV target: navigation, media and power go to the box. TV-only kinds are not available.
+///   The `.volume` kind is not used by the app: volume and mute follow "Volume goes to"
+///   (VolumeOutput.swift), whichever device is selected.
 /// - Samsung TV target: everything goes to the TV (nil when the TV link is down).
 enum RemoteRouting {
     static func device(for kind: RemoteCommandKind, target: RemoteTarget,

@@ -21,7 +21,7 @@ final class VirtualKeyboard {
         "OK": .key(0x28),                       // Enter
         "BACK": .consumer(0x224),               // AC Back
         "HOME": .consumer(0x223)                // AC Home
-        // v5 §5: no volume or mute usages. Volume is Samsung-only and never reaches the Android box.
+        // No volume or mute usages: the box route sends ADB keyevents, as Phase 7.2 did (VolumeOutput.swift).
     ]
 
     /// Buttons actually routed through the virtual keyboard. The rest stay on the

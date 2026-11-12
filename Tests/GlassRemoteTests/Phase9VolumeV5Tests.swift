@@ -1,25 +1,10 @@
 import XCTest
 @testable import GlassRemote
 
-/// v5 §5: Samsung is the only volume source. The Android TV volume path is gone, the unavailable
+/// v5 §5 slider and key policy. (The "Samsung-only volume" rule was reversed when the Phase 7.2 box
+/// route was restored: VolumeRouteRestoreTests.) The unavailable
 /// state is explicit, and the thin slider keeps a full touch target with rate-limited haptics.
 final class Phase9VolumeV5Tests: XCTestCase {
-
-    // MARK: Routing: never the Android box
-
-    func testVolumeNeverRoutesToTheAndroidBox() {
-        for target in [RemoteTarget.android, .samsung] {
-            for androidUp in [false, true] {
-                for samsungUp in [false, true] {
-                    let device = RemoteRouting.device(for: .volume, target: target,
-                                                      androidConnected: androidUp, samsungRemoteReady: samsungUp)
-                    let label = "target \(target) android \(androidUp) samsung \(samsungUp)"
-                    XCTAssertNotEqual(device, .android, label)
-                    if samsungUp { XCTAssertEqual(device, .samsung, label) } else { XCTAssertNil(device, label) }
-                }
-            }
-        }
-    }
 
     func testVolumeKeyPolicyCoversEveryVolumeCommand() {
         XCTAssertEqual(VolumeKeyPolicy.keys, ["VOLUME_UP", "VOLUME_DOWN", "MUTE"])
@@ -47,14 +32,15 @@ final class Phase9VolumeV5Tests: XCTestCase {
         XCTAssertNotEqual(VolumeScale.samsungKeys(max: 100), VolumeScale.unavailable)
     }
 
-    /// Source guard: the ADB volume keycodes, HID volume usages and Android read-back must not return.
+    /// Source guard: HID volume usages and the Android read-back stay gone (Phase 7.2 never routed
+    /// volume through HID; its ADB keycodes now live only in VolumeOutput.swift).
     func testNoAndroidVolumeCodeRemains() throws {
         let repo = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let files = ["GlassRemote/RemoteModel.swift", "GlassRemote/RemoteModel+Features.swift",
                      "GlassRemote/VolumeScale.swift", "GlassRemote/VirtualKeyboard.swift",
                      "GlassRemote/RemoteRouting.swift", "GlassRemote/RemoteView.swift"]
-        let banned = ["\"VOLUME_UP\": \"24\"", "\"VOLUME_DOWN\": \"25\"", "\"MUTE\": \"164\"",
+        let banned = [
                       "AndroidVolumeReading", "refreshAndroidVolume", "androidKeys",
                       ".consumer(0xE9)", ".consumer(0xEA)", ".consumer(0xE2)"]
         var checked = 0

@@ -103,15 +103,60 @@ enum PlayerLayoutPolicy {
 
     // MARK: v5 §3 (Now Playing, Apple Music style)
 
-    /// Portrait side margin of the Now Playing group: the artwork runs nearly edge to edge.
-    static let nowPlayingMargin: CGFloat = 26
+    /// Portrait side margin of the controls (the title artwork itself runs edge to edge).
+    static let nowPlayingMargin: CGFloat = 28
     static let artworkCornerRadius: CGFloat = 14
     /// Thin, display-only timeline.
-    static let timelineHeight: CGFloat = 5
+    static let timelineHeight: CGFloat = 6
     /// Transport row: plain glyphs, the play glyph largest; every glyph keeps a full touch target.
-    static let transportHeight: CGFloat = 64
-    static let playGlyph: CGFloat = 42
-    static let secondaryGlyph: CGFloat = 28
+    static let transportHeight: CGFloat = 68
+    static let playGlyph: CGFloat = 46
+    /// The transport sits a little inside the timeline's ends, as in Apple Music.
+    static let transportInset: CGFloat = 12
+    static let secondaryGlyph: CGFloat = 32
+    /// Title and artist line share one size, as in Apple Music; the second line is only lighter.
+    static let titleSize: CGFloat = 20
+    /// The grabber at the top of the sheet.
+    static let grabberSize = CGSize(width: 38, height: 5)
+    /// Portrait: room between the volume row and the dock.
+    static let portraitBottomGap: CGFloat = 10
+
+    // MARK: Gap fixes (Apple Music references)
+
+    /// Portrait title artwork reaches this far below the artwork region, behind the title, where it
+    /// has already faded out.
+    static let bleedOverlap: CGFloat = 64
+    /// The artwork is fully opaque down to this share of its height, then fades to nothing.
+    static let bleedFadeStart: CGFloat = 0.62
+
+    /// Portrait title artwork: the full page width (the side margins are given back), from the top
+    /// of the screen (`topInset` is the status bar's safe area) to `bleedOverlap` below the region.
+    static func portraitBleed(region: CGSize, margin: CGFloat, topInset: CGFloat) -> CGSize {
+        guard region.width > 0, region.height > 0 else { return .zero }
+        return CGSize(width: region.width + 2 * max(margin, 0),
+                      height: region.height + max(topInset, 0) + bleedOverlap)
+    }
+
+    /// Portrait without title artwork: the card keeps clear of the grabber above it and of the
+    /// title below it.
+    static func portraitCardRegion(region: CGSize) -> CGSize {
+        CGSize(width: max(region.width, 0), height: max(region.height - 2 * portraitCardInset, 0))
+    }
+    static let portraitCardInset: CGFloat = 28
+
+    /// Landscape: the grabber sits above the artwork card.
+    static let landscapeTopInset: CGFloat = 10
+    /// Landscape: the least room between the rows of the control column.
+    static let landscapeMinRowGap: CGFloat = 8
+    /// Landscape: what the column's rows need at their natural sizes (title, timeline, transport,
+    /// volume and the least gaps), so a short artwork card never squeezes them.
+    static let landscapeMinColumnHeight: CGFloat = 236
+
+    /// Landscape: the control column is as tall as the artwork card, so the title lines up with the
+    /// card's top edge and the volume row with its bottom edge.
+    static func landscapeColumnHeight(artSide: CGFloat) -> CGFloat {
+        max(artSide, landscapeMinColumnHeight)
+    }
     /// The artwork eases back to this scale while paused, as Apple Music does.
     static let pausedArtworkScale: CGFloat = 0.9
 
@@ -149,6 +194,24 @@ enum PlayerTitlePolicy {
             parts.append(trimmed)
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// The small caption centred under the timeline (where Apple Music shows "Mixing" or the audio
+/// format): the last seek the TV confirmed, else the session state when it is not simply playing.
+enum PlayerCaptionPolicy {
+    static func caption(phase: PlayerSessionPhase, seek: String?) -> String {
+        if let seek, !seek.isEmpty { return seek }
+        switch phase {
+        case .playing: return ""
+        case .paused, .buffering, .stale: return phase.label
+        case .disconnected, .connecting, .idle: return ""
+        }
+    }
+
+    /// "+10 s" / "−10 s": the jump the TV's session confirmed.
+    static func seekText(seconds: Double) -> String {
+        "\(seconds < 0 ? "−" : "+")\(Int(abs(seconds).rounded())) s"
     }
 }
 
@@ -303,39 +366,29 @@ enum PlayerTransition {
 
 // MARK: - Background
 
-/// Phase 9 §A2: the full-screen background made from the artwork. A tiny wash of the art (no live
-/// blur), enlarged to cover the window, under a scrim strong enough to keep the page's ink legible over
-/// the brightest (dark themes) or darkest (light themes) part of the picture.
+/// Phase 9 §A2, refined: the full-screen background is a wash of the artwork's prominent colours
+/// (NowPlayingPalette.swift), not a copy of the picture. Legibility is built into the colours
+/// themselves: every tone is clamped into a luminance band where the page's ink keeps at least
+/// 4.5:1, so no scrim is needed over bright, dark or highly saturated artwork.
 enum PlayerBackdropPolicy {
-    /// The wash is drawn slightly larger than the window so its soft edges never show.
-    static let enlargement: CGFloat = 1.18
-    static let darkFloor = 0.32
-    static let lightFloor = 0.30
-    static let ceiling = 0.86
-    /// Background luminance the scrim brings the art to: white ink keeps about 5:1 over it.
-    static let darkTarget = 0.16
-    /// Light themes: dark ink keeps about 5:1.
-    static let lightTarget = 0.24
-    /// Extra shade towards the bottom of the screen, where the controls sit.
-    static let footShade = 0.12
-    /// v5 §3: without artwork, one continuous full-screen wash of the theme accent (top, bottom),
-    /// stronger when the theme is Adaptive, never a small radial glow.
-    static func fallbackOpacity(adaptive: Bool) -> (top: Double, bottom: Double) {
-        adaptive ? (0.34, 0.10) : (0.16, 0.04)
-    }
+    /// Dark themes: white ink keeps about 5:1 over the wash's fields...
+    static let darkMaxLuminance = 0.16
+    /// ...and at least 4.5:1 over its brightest glow.
+    static let darkGlowLuminance = 0.18
+    /// Under the controls the base is deepened to at most this.
+    static let darkFootLuminance = 0.05
+    /// Black artwork still gives a coloured, not an empty, background.
+    static let darkMinLuminance = 0.012
+    static let darkMaxSaturation = 0.9
+    /// Light themes: pale enough for dark ink (about 7.8:1 at the floor), never glaring white.
+    static let lightMinLuminance = 0.42
+    static let lightFootLuminance = 0.62
+    static let lightMaxLuminance = 0.86
+    static let lightMaxSaturation = 0.42
     /// `Color.ink`: white on dark themes, 8 % grey on light ones.
     static let darkInkLuminance = 1.0
     static let lightInkLuminance = ColorMath.luminance(r: 0.08, g: 0.08, b: 0.08)
-
-    /// Luminance of a wash: mean, brightest tenth (`peak`) and darkest tenth (`low`).
-    struct Profile: Equatable {
-        var mean: Double
-        var peak: Double
-        var low: Double
-
-        /// Nothing could be measured: assume the worst in both directions.
-        static let unknown = Profile(mean: 0.5, peak: 1, low: 0)
-    }
+    static let minimumContrast = 4.5
 
     /// sRGB transfer (encoded 0...1 to linear luminance) and its inverse.
     static func linear(_ c: Double) -> Double {
@@ -348,72 +401,33 @@ enum PlayerBackdropPolicy {
         return v <= 0.03928 / 12.92 ? v * 12.92 : 1.055 * pow(v, 1 / 2.4) - 0.055
     }
 
-    /// Scrim opacity: black over the art on dark themes, white on light ones. The scrim blends in
-    /// encoded sRGB, as the compositor does, so this is the exact blend for a grey.
-    static func scrimOpacity(profile: Profile, light: Bool) -> Double {
-        if light {
-            let g = encoded(profile.low)
-            let goal = encoded(lightTarget)
-            let needed = g >= goal ? 0 : (goal - g) / max(1 - g, 0.0001)
-            return min(max(needed, lightFloor), ceiling)
-        }
-        let g = encoded(profile.peak)
-        let goal = encoded(darkTarget)
-        let needed = g <= goal ? 0 : 1 - goal / g
-        return min(max(needed, darkFloor), ceiling)
+    /// 3 x 3 mesh control points. The outer points stay on the canvas edges so the wash always covers
+    /// it; the inner ones lean by `lean` (0...1, from the accent's hue) so each artwork's wash has its
+    /// own shape.
+    static func meshPoints(lean: Double) -> [SIMD2<Float>] {
+        let l = Float(lean.isFinite ? min(max(lean, 0), 1) : 0.5)
+        return [
+            SIMD2<Float>(0, 0), SIMD2<Float>(0.5, 0), SIMD2<Float>(1, 0),
+            SIMD2<Float>(0, 0.38 + 0.12 * l), SIMD2<Float>(0.36 + 0.28 * l, 0.44), SIMD2<Float>(1, 0.5 - 0.12 * l),
+            SIMD2<Float>(0, 1), SIMD2<Float>(0.5, 1), SIMD2<Float>(1, 1),
+        ]
     }
 
-    /// Luminance under the ink once the scrim is applied over art of `luminance`.
-    static func effectiveLuminance(luminance: Double, scrim: Double, light: Bool) -> Double {
-        let g = encoded(luminance)
-        let s = min(max(scrim, 0), 1)
-        return linear(light ? g + (1 - g) * s : g * (1 - s))
+    /// The mesh's nine colours, row by row: the accent glows at the top, the base fills the middle and
+    /// the foot sits under the controls. Mixed colours are clamped again on light themes (a mix of two
+    /// pale colours can be darker than either); on dark themes a mix is never brighter than its parts.
+    static func meshColors(_ p: NowPlayingPalette, light: Bool) -> [NowPlayingPalette.Tone] {
+        let tones = [
+            p.accent, p.base.mixed(with: p.accent, 0.45), p.support,
+            p.base, p.base.mixed(with: p.support, 0.35), p.base.mixed(with: p.accent, 0.2),
+            p.foot, p.base.mixed(with: p.foot, 0.6), p.foot,
+        ]
+        guard light else { return tones }
+        return tones.map { NowPlayingPalette.adjust($0, light: true, role: .field) }
     }
 
-    /// The wash's frame on the canvas: uniformly scaled to cover it, upper part kept in frame (the same
-    /// crop as Discover's hero artwork).
-    static func cropRect(image: CGSize, canvas: CGSize) -> CGRect {
-        HeroArtworkPolicy.fillRect(image: image, region: canvas, focal: HeroArtworkPolicy.focal(forImage: image))
-    }
-
-    /// Profile of 8-bit premultiplied RGBA pixels; fully transparent pixels are ignored.
-    static func profile(rgba pixels: [UInt8]) -> Profile {
-        var values: [Double] = []
-        values.reserveCapacity(pixels.count / 4)
-        var i = 0
-        while i + 3 < pixels.count {
-            let alpha = Double(pixels[i + 3]) / 255
-            if alpha > 0.01 {
-                let r = min(Double(pixels[i]) / 255 / alpha, 1)
-                let g = min(Double(pixels[i + 1]) / 255 / alpha, 1)
-                let b = min(Double(pixels[i + 2]) / 255 / alpha, 1)
-                values.append(ColorMath.luminance(r: r, g: g, b: b))
-            }
-            i += 4
-        }
-        guard !values.isEmpty else { return .unknown }
-        values.sort()
-        let mean = values.reduce(0, +) / Double(values.count)
-        let last = values.count - 1
-        let peakIndex = min(max(Int((Double(last) * 0.9).rounded()), 0), last)
-        let lowIndex = min(max(Int((Double(last) * 0.1).rounded()), 0), last)
-        return Profile(mean: mean, peak: values[peakIndex], low: values[lowIndex])
-    }
-
-    /// Profile of an image (the wash is 24 px wide, so this reads a few hundred pixels).
-    static func profile(of image: UIImage) -> Profile {
-        guard let cg = image.cgImage else { return .unknown }
-        let width = max(min(cg.width, 48), 1)
-        let height = max(min(cg.height, 72), 1)
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
-                                          bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
-            context.interpolationQuality = .medium
-            context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
-        }
-        return drawn ? profile(rgba: pixels) : .unknown
+    /// Contrast of the page's ink over a wash colour.
+    static func inkContrast(over tone: NowPlayingPalette.Tone, light: Bool) -> Double {
+        ColorMath.contrast(light ? lightInkLuminance : darkInkLuminance, tone.luminance)
     }
 }

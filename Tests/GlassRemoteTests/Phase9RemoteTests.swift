@@ -31,37 +31,28 @@ final class Phase9RemoteTests: XCTestCase {
 
     func testLandscapePadNeverDropsBelowItsMinimum() {
         for width in [454, 520, 568, 620, 700, 760, 844, 932, 1100] as [CGFloat] {
-            let c = RemoteLayoutPolicy.columnWidths(for: width)
-            let pad = width - c.leading - c.trailing - RemoteLayoutPolicy.stageColumnSpacing * 2
+            let pad = RemoteLayoutPolicy.landscapePadWidth(stageWidth: width)
             XCTAssertGreaterThanOrEqual(pad + 0.001, RemoteLayoutPolicy.landscapePadMinWidth, "width \(width)")
-            XCTAssertLessThanOrEqual(c.leading + c.trailing, width * 0.6 + 0.001, "width \(width)")
-            XCTAssertGreaterThan(c.leading, 0)
-            XCTAssertGreaterThan(c.trailing, 0)
+            // Phase 9 gap fix: the rails leave the pad far more than the old 40 % floor.
+            XCTAssertGreaterThanOrEqual(pad, width * 0.6, "width \(width)")
         }
     }
 
     func testAndroidAndSamsungPadsShareOneFrame() {
-        for height in [300, 340, 380] as [CGFloat] {
-            // Android: header, mode and the Apps card on the left; navigation on the right; volume in the deck.
-            let android = RemoteStageLayout.frames(width: 812, height: height,
-                                                   leading: [96, 40, 58], leadingBottom: [false, false, true],
-                                                   trailing: [114], trailingBottom: [false],
-                                                   hasPad: true, spacing: 10, columnSpacing: 14,
-                                                   reservesColumns: true, deck: true)
-            // Samsung: header and its navigation row; transport and the TV group; volume in the deck.
-            let samsung = RemoteStageLayout.frames(width: 812, height: height,
-                                                   leading: [96, 52], leadingBottom: [false, true],
-                                                   trailing: [52, 52], trailingBottom: [false, true],
-                                                   hasPad: true, spacing: 10, columnSpacing: 14,
-                                                   reservesColumns: true, deck: true)
+        for height in [340, 350, 380] as [CGFloat] {
+            // Android: Back, Home, Apps on the left; Search, Keyboard, Sources on the right.
+            let android = RemoteStageLayout.frames(width: 812, height: height, topTrailingWidth: 160,
+                                                   leading: [176], trailing: [176],
+                                                   spacing: 10, columnSpacing: 14)
+            // Samsung: navigation and channel on the left; transport and mute on the right.
+            let samsung = RemoteStageLayout.frames(width: 812, height: height, topTrailingWidth: 160,
+                                                   leading: [114, 114], trailing: [176, 52],
+                                                   spacing: 10, columnSpacing: 14)
             XCTAssertEqual(android.pad, samsung.pad, "height \(height)")
             XCTAssertEqual(android.deck, samsung.deck, "height \(height)")
-            // A sparse stage (one empty column) keeps the same pad when columns are reserved.
-            let sparse = RemoteStageLayout.frames(width: 812, height: height,
-                                                  leading: [96], leadingBottom: [false],
-                                                  trailing: [], trailingBottom: [],
-                                                  hasPad: true, spacing: 10, columnSpacing: 14,
-                                                  reservesColumns: true, deck: true)
+            // A sparse stage (one empty rail) keeps the same pad: both rails are always reserved.
+            let sparse = RemoteStageLayout.frames(width: 812, height: height, leading: [114], trailing: [],
+                                                  spacing: 10, columnSpacing: 14)
             XCTAssertEqual(sparse.pad, android.pad)
             XCTAssertEqual(RemoteStageLayout.padRect(width: 812, height: height), android.pad)
         }
@@ -75,18 +66,9 @@ final class Phase9RemoteTests: XCTestCase {
         XCTAssertEqual(RemoteLayoutPolicy.pillStyle(width: 149), .compact)
     }
 
-    func testLauncherCardShowsOnlyThePreviewsThatFit() {
-        XCTAssertLessThan(RemoteLayoutPolicy.launcherCardRequiredWidth(previews: 0),
-                          RemoteLayoutPolicy.launcherCardRequiredWidth(previews: 1))
-        XCTAssertEqual(RemoteLayoutPolicy.launcherPreviewCount(cardWidth: 280), 3)
-        let three = RemoteLayoutPolicy.launcherCardRequiredWidth(previews: 3)
-        XCTAssertEqual(RemoteLayoutPolicy.launcherPreviewCount(cardWidth: three), 3)
-        XCTAssertEqual(RemoteLayoutPolicy.launcherPreviewCount(cardWidth: three - 1), 2)
-        XCTAssertEqual(RemoteLayoutPolicy.launcherPreviewCount(cardWidth: 40), 0)
-        for width: CGFloat in stride(from: 60, through: 300, by: 10) {
-            let n = RemoteLayoutPolicy.launcherPreviewCount(cardWidth: width)
-            XCTAssertLessThanOrEqual(RemoteLayoutPolicy.launcherCardRequiredWidth(previews: n), max(width, 82))
-        }
+    // Phase 9 gap fix: the landscape launcher card (and its preview-count rule) became the Apps key on
+    // the leading rail; the count is still the Apps control's VoiceOver value.
+    func testAppsCountLabel() {
         XCTAssertEqual(RemoteLayoutPolicy.appCountLabel(0), "No apps")
         XCTAssertEqual(RemoteLayoutPolicy.appCountLabel(1), "1 app")
         XCTAssertEqual(RemoteLayoutPolicy.appCountLabel(9), "9 apps")
