@@ -70,17 +70,20 @@ final class RemoteModel: ObservableObject {
     let volumeLink = SamsungVolumeLink()
     /// Last time the user touched the slider; TV readings are not pushed onto it right after.
     var lastUserVolumeInput = Date.distantPast
-    // The Samsung TV link (keys, power, and volume when "Volume goes to" picks the TV). On by default.
-    @Published var tvVolumeEnabled: Bool = {
-        let d = UserDefaults.standard
-        return d.object(forKey: "glassRemote.tvVolumeEnabled") == nil ? true : d.bool(forKey: "glassRemote.tvVolumeEnabled")
-    }() {
+    // The Samsung TV link (keys, power, and volume when "Volume goes to" picks the TV). Off until a
+    // TV address is known (SamsungHostDefaults), so a fresh install never contacts an arbitrary TV.
+    @Published var tvVolumeEnabled: Bool = SamsungHostDefaults.restoredLinkEnabled(
+        stored: UserDefaults.standard.object(forKey: "glassRemote.tvVolumeEnabled") as? Bool,
+        host: SamsungHostDefaults.restoredHost(
+            saved: UserDefaults.standard.string(forKey: "glassRemote.samsungHost"),
+            tokenHost: UserDefaults.standard.string(forKey: SamsungTokenStore.tokenHostKey))
+    ) {
         didSet {
             UserDefaults.standard.set(tvVolumeEnabled, forKey: "glassRemote.tvVolumeEnabled")
             applyTVSettings()
         }
     }
-    static let defaultSamsungHost = "192.168.1.166"
+    static let legacyDefaultSamsungHost = "192.168.1.166"
     @Published var samsungHost: String = {
         let saved = (UserDefaults.standard.string(forKey: "glassRemote.samsungHost") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
