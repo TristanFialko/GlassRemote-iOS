@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Now Playing (v5 §3), laid out like the Apple Music player. Independent of the Remote page: it only
 /// reads `remote.media` (the shared, read-only `dumpsys media_session` poll) and sends transport
@@ -105,13 +106,13 @@ struct PlayerPage: View {
                         bleedArtwork(scene: scene, size: bleed)
                             .offset(y: -top)
                             .id(scene.key)                       // artwork and metadata change together
-                            .transition(.opacity)
+                            .transition(artworkTransition(settlingFrom: 1.04))
                     } else {
                         let frame = PlayerLayoutPolicy.nowPlayingArtwork(kind: .appIcon,
                                                                          region: PlayerLayoutPolicy.portraitCardRegion(region: region.size))
                         artworkCard(scene: scene, size: frame)
                             .id(scene.key)
-                            .transition(.opacity)
+                            .transition(artworkTransition(settlingFrom: 0.94))
                             .frame(width: region.size.width, height: region.size.height)
                     }
                 }
@@ -135,7 +136,7 @@ struct PlayerPage: View {
             ZStack {
                 artworkCard(scene: scene, size: frame)
                     .id(scene.key)
-                    .transition(.opacity)
+                    .transition(artworkTransition(settlingFrom: 0.94))
             }
             // The region hugs the card's own width, so the gap to the column is the same for a
             // 4:5 poster as for a square card.
@@ -156,7 +157,7 @@ struct PlayerPage: View {
             ZStack(alignment: .leading) {
                 titleBlock(app: scene.app, media: scene.media)
                     .id(scene.key)
-                    .transition(.opacity)
+                    .transition(metadataTransition)
             }
             if spread { Spacer(minLength: PlayerLayoutPolicy.landscapeMinRowGap) }
             statusBlock(scene: scene)
@@ -173,6 +174,19 @@ struct PlayerPage: View {
 
     // MARK: Artwork
 
+    private var motionReduced: Bool { reduceMotion || MotionPreference.reduced }
+
+    /// New artwork cross-fades in while settling from `scale` to its size; with reduced motion it
+    /// only fades.
+    private func artworkTransition(settlingFrom scale: CGFloat) -> AnyTransition {
+        motionReduced ? .opacity : .opacity.combined(with: .scale(scale: scale))
+    }
+
+    /// The new title rises a few points as it fades in; the old one simply fades.
+    private var metadataTransition: AnyTransition {
+        motionReduced ? .opacity : .asymmetric(insertion: .opacity.combined(with: .offset(y: 6)), removal: .opacity)
+    }
+
     private func artworkLabel(_ kind: PlayerArtworkKind) -> String {
         switch kind {
         case .poster: return "Poster"
@@ -184,13 +198,18 @@ struct PlayerPage: View {
     /// Portrait title artwork: edge to edge, under the status bar, filled and centre-cropped (never
     /// stretched), with its lower part fading into the backdrop made from the same picture.
     private func bleedArtwork(scene: PlayerScene, size: CGSize) -> some View {
-        ZStack {
+        let paused = scene.media.isActive && !scene.media.isPlaying
+        return ZStack {
             if let art = scene.art {
                 CachedArtwork(url: art, contentMode: .fill) { Color.clear }
             }
         }
         .frame(width: size.width, height: size.height)
         .clipped()
+        // The edge-to-edge artwork cannot ease back like the card, so pausing dims it slightly instead.
+        .brightness(paused ? -0.06 : 0)
+        .saturation(paused ? 0.88 : 1)
+        .animation(Motion.adaptive(Motion.settle), value: paused)
         .mask {
             LinearGradient(stops: [.init(color: .black, location: 0),
                                    .init(color: .black, location: PlayerLayoutPolicy.bleedFadeStart),
@@ -227,12 +246,15 @@ struct PlayerPage: View {
         .accessibilityLabel(artworkLabel(scene.kind))
     }
 
-    /// The no-artwork card: a soft wash of the theme accent with the app's own artwork (or a symbol).
+    /// The no-artwork card: the same palette as the no-artwork background (theme accents, or
+    /// GlassRemote's deep blue for neutral themes), a little lighter, with the app's own artwork.
     private func fallbackArt(app: TVApp?, media: MediaState, side: CGFloat) -> some View {
-        ZStack {
-            LinearGradient(colors: [theme.accent.opacity(0.55), theme.accent.opacity(0.22)],
+        let palette = NowPlayingPalette.fallback(accent: NowPlayingPalette.Tone(theme.accent),
+                                                 secondary: NowPlayingPalette.Tone(theme.accent2), light: theme.isLight)
+        return ZStack {
+            LinearGradient(colors: [palette.accent.color, palette.support.color],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
-            Color.ink.opacity(0.04)
+            Color.white.opacity(theme.isLight ? 0.18 : 0.07)
             if let app {
                 Image(app.asset == "nuvio" ? "nuvio_nowplaying" : "\(app.asset)_dark")
                     .resizable().scaledToFit()
@@ -285,9 +307,9 @@ struct PlayerPage: View {
         let interval = PlayerTimeline.refreshInterval(isPlaying: media.state == 3)
         let paused = PlayerTimeline.isPaused(sceneActive: scenePhase == .active, presented: navigator.playerPresented)
         return TimelineView(.animation(minimumInterval: interval, paused: paused)) { context in
-            statusContent(media: media, controls: controls,
-                          phase: PlayerSessionPhase.resolve(media: media, connected: connected, connecting: connecting, now: context.date),
-                          now: context.date)
+            let phase = PlayerSessionPhase.resolve(media: media, connected: connected, connecting: connecting, now: context.date)
+            statusContent(media: media, controls: controls, phase: phase, now: context.date)
+                .animation(Motion.adaptive(Motion.fade), value: phase.showsSession)
         }
     }
 
@@ -298,11 +320,13 @@ struct PlayerPage: View {
             let total: TimeInterval? = (controls.progress ? media.durationMs : nil).map { Double($0) / 1000 }
             timeline(position: position, total: total,
                      caption: PlayerCaptionPolicy.caption(phase: phase, seek: seekNote(now: now)))
+                .transition(.opacity)
         } else {
             Text(phase.hint)
                 .scaledFont(15)
                 .foregroundStyle(Color.inkAlpha(0.58))
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.opacity)
         }
     }
 
@@ -318,6 +342,8 @@ struct PlayerPage: View {
                     Capsule(style: .continuous).fill(Color.inkAlpha(0.2))
                     Capsule(style: .continuous).fill(Color.inkAlpha(0.85)).frame(width: geo.size.width * fraction)
                 }
+                // Glides between clock ticks; nothing to animate while there is no real duration.
+                .animation(fraction > 0 ? Motion.unlessReduced(Motion.settle, reduceMotion: reduceMotion) : nil, value: fraction)
             }
             .frame(height: PlayerLayoutPolicy.timelineHeight)
             ZStack {
@@ -333,9 +359,12 @@ struct PlayerPage: View {
                         .scaledFont(12, .semibold)
                         .foregroundStyle(Color.inkAlpha(0.6))
                         .lineLimit(1)
+                        .contentTransition(.opacity)
                         .padding(.horizontal, 52)
+                        .transition(.opacity)
                 }
             }
+            .animation(Motion.adaptive(Motion.fade), value: caption)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
@@ -390,17 +419,24 @@ struct PlayerPage: View {
     private func playButton(media: MediaState, enabled: Bool, busy: Bool) -> some View {
         Button { remote.sendMedia(PlayerControls.playPauseCommand(for: media)) } label: {
             ZStack {
-                if busy { ProgressView().tint(Color.ink) }
-                else {
+                if busy {
+                    ProgressView().tint(Color.ink)
+                        .transition(.opacity)
+                } else {
                     Image(systemName: media.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: PlayerLayoutPolicy.playGlyph, weight: .semibold))
                         .contentTransition(.symbolEffect(.replace))
+                        .transition(.opacity)
                 }
             }
+            // Play and pause morph into each other when the session's state changes (from a press
+            // or from the TV); the spinner fades in and out.
+            .animation(Motion.unlessReduced(Motion.snappy, reduceMotion: reduceMotion), value: media.isPlaying)
+            .animation(Motion.adaptive(Motion.fade), value: busy)
             .frame(maxWidth: .infinity).frame(height: PlayerLayoutPolicy.transportHeight)
             .contentShape(Rectangle())
         }
-        .buttonStyle(PressStyle())
+        .buttonStyle(TransportPressStyle(disc: PlayerLayoutPolicy.transportHeight))
         .disabled(!enabled)
         .controlDisabled(!(enabled || busy))
         .accessibilityLabel(media.isPlaying ? "Pause" : "Play")
@@ -412,9 +448,35 @@ struct PlayerPage: View {
                 .frame(maxWidth: .infinity).frame(height: PlayerLayoutPolicy.transportHeight)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(PressStyle())
+        .buttonStyle(TransportPressStyle(disc: PlayerLayoutPolicy.transportHeight - 10))
         .disabled(!enabled).controlDisabled(!enabled)
         .accessibilityLabel(label)
+    }
+}
+
+/// Transport press, as in Apple Music: the glyph dips and a soft disc blooms behind it, then both
+/// spring back on release. With reduced motion only the disc and the dim remain. The press gives the
+/// soft haptic, as `PressStyle` does.
+private struct TransportPressStyle: ButtonStyle {
+    var disc: CGFloat
+
+    func makeBody(configuration: Configuration) -> some View {
+        let pressed = configuration.isPressed
+        let reduced = UIAccessibility.isReduceMotionEnabled || MotionPreference.reduced
+        return configuration.label
+            .scaleEffect(pressed && !reduced ? 0.86 : 1)
+            .opacity(pressed ? 0.8 : 1)
+            .background {
+                Circle()
+                    .fill(Color.inkAlpha(0.12))
+                    .frame(width: disc, height: disc)
+                    .scaleEffect(pressed || reduced ? 1 : 0.6)
+                    .opacity(pressed ? 1 : 0)
+            }
+            .animation(Motion.adaptive(pressed ? Motion.press : Motion.pressBounce), value: pressed)
+            .onChange(of: pressed) { _, isPressed in
+                if isPressed { Haptics.soft() }
+            }
     }
 }
 
@@ -428,10 +490,11 @@ private struct PlayerScene {
     let key: String
 }
 
-/// The volume row (v5 §3), drawn like Apple Music's: a quiet speaker, a thin neutral track, a loud
-/// speaker. It is not a separate volume system: the same slider, the same Samsung target, mapping,
-/// commands and feedback as the Remote page, so TV readings never fight a finger and a value shown
-/// from a reading is never sent back.
+/// The volume row (v5 §3), drawn like Apple Music's: a mute disc, a thin neutral track, and a level
+/// only when the output reports one (a loud speaker otherwise). It is not a separate volume system:
+/// the same slider, the same route, mapping, commands and feedback as the Remote page, so readings
+/// never fight a finger and a value shown from a reading is never sent back. With no route it stays
+/// in place, dimmed, with the model's short reason.
 private struct PlayerVolumeBar: View {
     @EnvironmentObject private var remote: RemoteModel
     @State private var value: Double = 0.5
@@ -440,7 +503,9 @@ private struct PlayerVolumeBar: View {
     var body: some View {
         GlassVolumeSlider(value: $value, scale: remote.volumeScale, thickness: ThinVolumeMetrics.minimumTouchTarget,
                           appearance: .nowPlaying,
-                          onDragChange: { remote.volumeDragChanged($0) })
+                          onDragChange: { remote.volumeDragChanged($0) },
+                          unavailableReason: remote.volumeUnavailableReason,
+                          onMute: { remote.volume("MUTE") })
             .onChange(of: value) { _, newValue in
                 if let echo = externalEcho, abs(newValue - echo) < 0.0001 { externalEcho = nil; return }
                 remote.setVolumeFraction(newValue)
