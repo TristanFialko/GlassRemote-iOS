@@ -21,14 +21,35 @@ final class Phase9RecoveryNowPlayingTests: XCTestCase {
 
     func testAndroid14NamedStateIsParsed() {
         let output = dump(state: "PlaybackState {state=PLAYING(3), position=60000, buffered position=90000, speed=1.0, updated=12345000, actions=823, custom actions=[], active item id=-1, error=null}")
-        guard case .session(let media) = MediaParser.read(output) else { return XCTFail("Android 14 session was not read") }
+        // MediaState is Equatable and includes sampledAt, so both reads use one fixed sample time.
+        // Letting each call default to its own Date() made otherwise identical results unequal.
+        let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
+        guard case .session(let media) = MediaParser.read(output, now: fixedNow) else { return XCTFail("Android 14 session was not read") }
         XCTAssertEqual(media.package, "com.nuvio.tv")
         XCTAssertEqual(media.state, 3)
         XCTAssertTrue(media.isPlaying)
         XCTAssertEqual(media.positionMs, 60670, "buffered position must never be read as the position")
         XCTAssertTrue(media.canPlayPause)
         XCTAssertEqual(media.title, "Movie Name")
-        XCTAssertEqual(MediaParser.parse(output), media)
+        XCTAssertEqual(media.sampledAt, fixedNow, "the sample carries the read time it was given")
+        XCTAssertEqual(MediaParser.parse(output, now: fixedNow), media, "parse and read agree on the same output and time")
+    }
+
+    func testEachReadIsStampedWithTheTimeItWasGiven() {
+        let output = dump(state: "PlaybackState {state=PLAYING(3), position=60000, buffered position=90000, speed=1.0, updated=12345000, actions=823, custom actions=[], active item id=-1, error=null}")
+        let first = Date(timeIntervalSince1970: 1_800_000_000)
+        let later = first.addingTimeInterval(5)
+        guard let a = MediaParser.parse(output, now: first), let b = MediaParser.parse(output, now: later) else {
+            return XCTFail("Android 14 session was not read")
+        }
+        XCTAssertEqual(a.sampledAt, first)
+        XCTAssertEqual(b.sampledAt, later)
+        XCTAssertNotEqual(a, b, "samples taken at different times are different samples")
+        var restamped = b
+        restamped.sampledAt = first
+        XCTAssertEqual(restamped, a, "apart from the sample time, the same output parses identically")
+        XCTAssertEqual(a.position(at: first.addingTimeInterval(2)), 62.67, accuracy: 0.001,
+                       "a playing sample extrapolates from its own sample time")
     }
 
     func testPausedAndBufferingInBothShapes() {
