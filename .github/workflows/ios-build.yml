@@ -16,6 +16,8 @@ jobs:
     runs-on: macos-26   # Xcode 26 SDK is required for native Liquid Glass (glassEffect)
     permissions:
       contents: read
+      # Read-only: lets the timing step list this job's step durations.
+      actions: read
       # Only used by the final report step, which comments on the open PR for this branch.
       pull-requests: write
       issues: write
@@ -24,6 +26,14 @@ jobs:
 
       - name: Show Xcode version
         run: xcodebuild -version
+
+      - name: Capture toolchain version for cache keys
+        id: toolchain
+        shell: bash
+        run: |
+          XCODE_ID="$(xcodebuild -version | tr '\n' ' ' | sed -E 's/[^A-Za-z0-9.]+/-/g; s/^-+|-+$//g')"
+          echo "Xcode cache id: $XCODE_ID"
+          echo "xcode=$XCODE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Ensure Metal toolchain
         # Phase 9 compiles a Metal shader (GlassRemote/DesignSystem/Refraction.metal). Xcode 26 ships the
@@ -39,7 +49,7 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Install Android NDK
+      - name: Install Android command-line tools
         shell: bash
         run: |
           set -euo pipefail
@@ -58,7 +68,63 @@ jobs:
             echo "sdkmanager licence acceptance failed with exit code $LICENSE_STATUS"
             exit "$LICENSE_STATUS"
           fi
-          sdkmanager --sdk_root="$SDK_ROOT" "ndk;27.2.12479018"
+
+      - name: Restore Android NDK cache
+        id: ndk-cache
+        # Optimisation only: any cache problem falls back to a clean sdkmanager install below.
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: /opt/homebrew/share/android-commandlinetools/ndk/27.2.12479018
+          key: android-ndk-27.2.12479018-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: Install Android NDK
+        id: ndk
+        shell: bash
+        env:
+          NDK_CACHE_HIT: ${{ steps.ndk-cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/homebrew/share/android-commandlinetools}"
+          NDK_ROOT="$SDK_ROOT/ndk/27.2.12479018"
+          # A restored NDK is used only if it is exactly the pinned revision and both helper
+          # compilers run. Anything else is discarded and reinstalled cleanly by sdkmanager.
+          ndk_is_valid() {
+            [ -f "$NDK_ROOT/source.properties" ] || return 1
+            grep -Eq '^Pkg\.Revision[[:space:]]*=[[:space:]]*27\.2\.12479018[[:space:]]*$' \
+              "$NDK_ROOT/source.properties" || return 1
+            local triple cc
+            for triple in armv7a-linux-androideabi23 aarch64-linux-android23; do
+              cc="$(find "$NDK_ROOT/toolchains/llvm/prebuilt" -type f -name "${triple}-clang" -print -quit 2>/dev/null)"
+              [ -n "$cc" ] || return 1
+              "$cc" --version >/dev/null 2>&1 || return 1
+            done
+          }
+          if [ "${NDK_CACHE_HIT:-}" = "true" ] && ndk_is_valid; then
+            echo "Using cached Android NDK 27.2.12479018"
+            echo "save-cache=false" >> "$GITHUB_OUTPUT"
+          else
+            if [ -e "$NDK_ROOT" ]; then
+              echo "Discarding a restored NDK that failed validation"
+              rm -rf "$NDK_ROOT"
+            fi
+            sdkmanager --sdk_root="$SDK_ROOT" "ndk;27.2.12479018"
+            if ndk_is_valid; then
+              echo "save-cache=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning title=Android NDK cache::Fresh NDK did not pass cache validation, so it will not be cached."
+              echo "save-cache=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Save Android NDK cache
+        # Saved straight after a clean install, before any helper is compiled.
+        if: steps.ndk.outputs.save-cache == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: /opt/homebrew/share/android-commandlinetools/ndk/27.2.12479018
+          key: android-ndk-27.2.12479018-${{ runner.os }}-${{ runner.arch }}-v1
 
       - name: Compile ARM32 UHID keyboard helper
         shell: bash
@@ -126,12 +192,37 @@ jobs:
           mkdir -p build/ci-logs
           xcodegen generate 2>&1 | tee build/ci-logs/xcodegen.log
 
+      - name: Restore Swift package cache
+        id: spm-cache
+        # Only SwiftPM's bare git mirrors are cached. Checkouts are recreated from the pinned
+        # revision on every run, so the SwiftADB patch below always applies to pristine sources.
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/SourcePackages/repositories
+            ~/Library/Caches/org.swift.swiftpm/repositories
+          key: spm-repos-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode }}-${{ hashFiles('project.yml', '**/Package.resolved') }}
+          restore-keys: |
+            spm-repos-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode }}-
+
       - name: Resolve Swift packages
         run: |
           xcodebuild -resolvePackageDependencies \
             -project GlassRemote.xcodeproj \
             -scheme GlassRemote \
             -derivedDataPath build
+
+      - name: Save Swift package cache
+        # Saved straight after resolution, before the SwiftADB checkout is patched.
+        if: steps.spm-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/SourcePackages/repositories
+            ~/Library/Caches/org.swift.swiftpm/repositories
+          key: ${{ steps.spm-cache.outputs.cache-primary-key }}
 
       - name: Record resolved SwiftADB commit
         shell: bash
@@ -185,28 +276,42 @@ jobs:
               print(f"Patched {path}")
           PY
 
-      - name: Build for iPhone simulator
+      - name: Select iPhone simulator
+        shell: bash
+        run: |
+          DEVICE="$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [0-9A-Za-z ]+' | sed 's/ *$//')"
+          if [ -z "$DEVICE" ]; then
+            echo "No available iPhone simulator found."
+            exit 1
+          fi
+          echo "Testing on: $DEVICE"
+          # Both simulator steps use this exact destination, so the tests run the products
+          # that build-for-testing produced.
+          echo "SIMULATOR_DESTINATION=platform=iOS Simulator,name=$DEVICE" >> "$GITHUB_ENV"
+
+      - name: Build for testing on iPhone simulator
         shell: bash
         run: |
           set -o pipefail
           mkdir -p build/ci-logs
-          xcodebuild -project GlassRemote.xcodeproj \
+          xcodebuild build-for-testing -project GlassRemote.xcodeproj \
             -scheme GlassRemote \
-            -sdk iphonesimulator \
+            -destination "$SIMULATOR_DESTINATION" \
             -configuration Debug \
             -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build/ci-logs/simulator-build.log
+            -showBuildTimingSummary \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci-logs/simulator-build.log
 
       - name: Run unit tests
         shell: bash
         run: |
-          DEVICE="$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [0-9A-Za-z ]+' | sed 's/ *$//')"
-          echo "Testing on: $DEVICE"
+          echo "Testing on: $SIMULATOR_DESTINATION"
           set -o pipefail
           mkdir -p build/ci-logs
-          xcodebuild test -project GlassRemote.xcodeproj \
+          xcodebuild test-without-building -project GlassRemote.xcodeproj \
             -scheme GlassRemote \
-            -destination "platform=iOS Simulator,name=$DEVICE" \
+            -destination "$SIMULATOR_DESTINATION" \
+            -configuration Debug \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci-logs/unit-tests.log
 
@@ -220,6 +325,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -configuration Release \
             -derivedDataPath build \
+            -showBuildTimingSummary \
             CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build/ci-logs/device-build.log
 
       - name: Bundle and verify helpers
@@ -320,6 +426,85 @@ jobs:
           name: glassremote-build-logs
           path: build
           if-no-files-found: ignore
+
+      - name: Record CI timing
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Diagnostics only: records each step's duration plus Xcode's build timing summaries,
+          # so future runs show where CI time goes. Never fails the job.
+          set +e +o pipefail
+          jobs_json="$RUNNER_TEMP/ci-jobs.json"
+          timing="$RUNNER_TEMP/ci-timing.md"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/${GITHUB_RUN_ATTEMPT:-1}/jobs?per_page=100" \
+            > "$jobs_json" 2>/dev/null
+          python3 - "$jobs_json" > "$timing" <<'PY'
+          import json, os, sys
+          from datetime import datetime, timezone
+
+          def parse(ts):
+              if not ts:
+                  return None
+              try:
+                  return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+              except ValueError:
+                  return None
+
+          def fmt(seconds):
+              seconds = int(round(seconds))
+              return f"{seconds // 60}m {seconds % 60:02d}s"
+
+          print("### CI step durations")
+          print()
+          try:
+              with open(sys.argv[1]) as handle:
+                  jobs = json.load(handle).get("jobs", [])
+          except Exception:
+              jobs = []
+          job_name = os.environ.get("GITHUB_JOB", "build")
+          job = next((j for j in jobs if j.get("name") == job_name), jobs[0] if jobs else None)
+          if not job:
+              print("Step timings unavailable (this job could not be read from the Actions API).")
+              sys.exit(0)
+          rows = []
+          for step in job.get("steps", []):
+              start, end = parse(step.get("started_at")), parse(step.get("completed_at"))
+              if start and end and step.get("conclusion") != "skipped":
+                  rows.append((step.get("name", "?"), (end - start).total_seconds(), step.get("conclusion") or step.get("status")))
+          job_start = parse(job.get("started_at"))
+          if job_start:
+              print(f"Job elapsed so far: **{fmt((datetime.now(timezone.utc) - job_start).total_seconds())}**")
+              print()
+          print("| Step | Duration | Result |")
+          print("| --- | ---: | --- |")
+          for name, seconds, result in rows:
+              print(f"| {name} | {fmt(seconds)} | {result} |")
+          slowest = sorted(rows, key=lambda row: row[1], reverse=True)[:5]
+          if slowest:
+              print()
+              print("Slowest steps: " + ", ".join(f"{name} ({fmt(seconds)})" for name, seconds, _ in slowest))
+          PY
+          for log in build/ci-logs/simulator-build.log build/ci-logs/device-build.log; do
+            [ -s "$log" ] || continue
+            section="$(awk '/Build Timing Summary/ {found=1} found {print} found && /^\*\* .* \*\*/ {exit}' "$log" | head -n 80)"
+            {
+              echo
+              echo "#### Xcode build timing: $(basename "$log" .log)"
+              echo
+              if [ -n "$section" ]; then
+                echo '```'
+                printf '%s\n' "$section"
+                echo '```'
+              else
+                echo "No build timing summary in this log."
+              fi
+            } >> "$timing"
+          done
+          cat "$timing"
+          cat "$timing" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
 
       - name: Report results on the tracking pull request
         if: ${{ always() && (github.ref_name == 'phase-6-ui-nuvio-rebuild' || startsWith(github.ref_name, 'Phase-9')) }}
