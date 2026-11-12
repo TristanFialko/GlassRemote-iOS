@@ -29,6 +29,29 @@ enum InputCancellation {
     }
 }
 
+/// Keeps a cancelled key from restarting within the same touch (pure, unit tested). A touch that is
+/// cancelled while the finger stays down (repeat cap, page change) keeps delivering drag events; those
+/// must not begin a new press and repeat. The key may begin again only after the finger lifts.
+struct HeldTouchGate: Equatable {
+    private var fingerDown = false
+    private var blocked = false
+
+    /// A drag event of the current touch. Returns whether the key may (re)begin a press.
+    mutating func touched() -> Bool {
+        fingerDown = true
+        return !blocked
+    }
+
+    /// The key was cancelled; if the finger is still down, ignore the rest of this touch.
+    mutating func cancelled() { blocked = fingerDown }
+
+    /// The touch ended or its gesture state was reset.
+    mutating func lifted() {
+        fingerDown = false
+        blocked = false
+    }
+}
+
 private struct RemoteSurfaceActiveKey: EnvironmentKey {
     static let defaultValue = true
 }

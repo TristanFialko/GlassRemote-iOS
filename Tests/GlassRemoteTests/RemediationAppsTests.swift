@@ -31,6 +31,25 @@ final class RemediationAppDiscoveryTests: XCTestCase {
         XCTAssertEqual(AppCatalog.parseComponents("com.a.b/.Main\ncom.a.b/.Main\n"), ["com.a.b/.Main"])
     }
 
+    // An older `cmd package` without `query-activities` lists packages but no activities.
+    func testUnsupportedActivityQueryIsReportedNotCountedAsFound() {
+        let output = """
+        package:com.netflix.ninja
+        \(AppCatalog.leanbackMarker)
+        Unknown command: query-activities
+        \(AppCatalog.launcherMarker)
+        Unknown command: query-activities
+        """
+        let scan = AppCatalog.parseScan(output)
+        XCTAssertEqual(scan.packages, ["com.netflix.ninja"])
+        XCTAssertEqual(scan.leanback, [])
+        XCTAssertEqual(scan.launcher, [])
+        let status = AppCatalog.scanStatus(installedCount: 1, launchableCount: 0)
+        XCTAssertFalse(status.contains("apps found"))
+        XCTAssertTrue(status.contains("unavailable"))
+        XCTAssertEqual(AppCatalog.scanStatus(installedCount: 40, launchableCount: 12), "Connected · 40 apps found")
+    }
+
     func testScanSplitsPackagesLeanbackAndLauncherSections() {
         let output = """
         package:com.netflix.ninja

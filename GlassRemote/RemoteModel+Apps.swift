@@ -25,7 +25,7 @@ extension RemoteModel {
             }
             installed = scan.packages
             launchableApps = AppCatalog.resolve(leanback: scan.leanback, launcher: scan.launcher)
-            status = "Connected · \(installed.count) apps found"
+            status = AppCatalog.scanStatus(installedCount: installed.count, launchableCount: launchableApps.count)
             GRLog.note("apps", "\(launchableApps.count) launchable apps (\(scan.leanback.count) leanback activities)")
         } catch {
             // Components from an earlier scan may belong to a different box.
