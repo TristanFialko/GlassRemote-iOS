@@ -70,26 +70,33 @@ final class RemoteModel: ObservableObject {
     let volumeLink = SamsungVolumeLink()
     /// Last time the user touched the slider; TV readings are not pushed onto it right after.
     var lastUserVolumeInput = Date.distantPast
-    // The Samsung TV link (keys, power, and volume when "Volume goes to" picks the TV). On by default.
-    @Published var tvVolumeEnabled: Bool = {
-        let d = UserDefaults.standard
-        return d.object(forKey: "glassRemote.tvVolumeEnabled") == nil ? true : d.bool(forKey: "glassRemote.tvVolumeEnabled")
-    }() {
+    // The Samsung TV link (keys, power, and volume when "Volume goes to" picks the TV). Off until a
+    // TV address is known (SamsungHostDefaults), so a fresh install never contacts an arbitrary TV.
+    @Published var tvVolumeEnabled: Bool = SamsungHostDefaults.restoredLinkEnabled(
+        stored: UserDefaults.standard.object(forKey: "glassRemote.tvVolumeEnabled") as? Bool,
+        host: SamsungHostDefaults.restoredHost(
+            saved: UserDefaults.standard.string(forKey: "glassRemote.samsungHost"),
+            tokenHost: UserDefaults.standard.string(forKey: SamsungTokenStore.tokenHostKey))
+    ) {
         didSet {
             UserDefaults.standard.set(tvVolumeEnabled, forKey: "glassRemote.tvVolumeEnabled")
             applyTVSettings()
         }
     }
-    static let defaultSamsungHost = "192.168.1.166"
-    @Published var samsungHost: String = {
-        let saved = (UserDefaults.standard.string(forKey: "glassRemote.samsungHost") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return saved.isEmpty ? RemoteModel.defaultSamsungHost : saved
-    }() {
+    /// Empty until the user enters or scans a TV address (or a paired TV's address is recovered).
+    @Published var samsungHost: String = SamsungHostDefaults.restoredHost(
+        saved: UserDefaults.standard.string(forKey: "glassRemote.samsungHost"),
+        tokenHost: UserDefaults.standard.string(forKey: SamsungTokenStore.tokenHostKey)
+    ) {
         didSet {
             UserDefaults.standard.set(samsungHost, forKey: "glassRemote.samsungHost")
+            if SamsungHostDefaults.normalized(oldValue) != SamsungHostDefaults.normalized(samsungHost) {
+                scheduleSamsungHostChange()
+            }
         }
     }
+    /// Debounces typing in the address field before both Samsung links move to the new TV.
+    var samsungHostChangeTask: Task<Void, Never>?
 
     /// What the volume controls drive (Connection settings). Defaults to the Phase 7.2 soundbar route.
     @Published var volumeOutput: VolumeOutput = VolumeOutput.restored(
@@ -122,6 +129,11 @@ final class RemoteModel: ObservableObject {
     var volumeLevelKnown = false
     var volumePendingSteps = 0
     var volumeDrainTask: Task<Void, Never>?
+    /// The one slider position shown by every volume row (Remote page and Now Playing), so the rows
+    /// can never disagree about the assumed level. Readings move it only through `VolumeSync`.
+    @Published var volumeSliderFraction: Double = 0.5
+    /// The route the assumed key position above belongs to; it is reset only when this route changes.
+    var volumeStateRoute: VolumeCommandRoute?
     /// Every device reading, numbered, so the slider settles on it even when the value repeats.
     @Published var volumeReading: VolumeReadingEvent?
     var volumeReadingSerial = 0
@@ -240,7 +252,7 @@ final class RemoteModel: ObservableObject {
         tv.onSendFailed = { [weak self] name in self?.samsungSendFailed(name) }
         tv.onReadyChanged = { [weak self] ready in
             self?.samsungRemoteReady = ready
-            self?.volumeStateReset()
+            self?.volumeRouteMayHaveChanged()
         }
         // Connect to the Samsung TV on launch and keep it connected, independent of ADB.
         startTVSupervisor()

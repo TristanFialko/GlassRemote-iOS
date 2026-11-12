@@ -33,6 +33,9 @@ struct GlassVolumeSlider: View {
     var unavailableReason: String? = nil
     /// Now Playing: makes the leading speaker a mute button. Returns whether the command was sent.
     var onMute: (() -> Bool)? = nil
+    /// Which output this row moves (e.g. "Soundbar · box"). Shown on the row and spoken, so the
+    /// row never hides where volume goes.
+    var outputLabel: String? = nil
 
     enum Appearance: Equatable { case standard, nowPlaying }
 
@@ -69,7 +72,7 @@ struct GlassVolumeSlider: View {
                 trailing
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Volume")
+            .accessibilityLabel(outputLabel.map { "Volume, \($0)" } ?? "Volume")
             .accessibilityValue(accessibilityValueText)
             .accessibilityHint(available ? "Swipe up or down to change the volume"
                                          : "Choose where volume goes in Connection settings")
@@ -171,6 +174,9 @@ struct GlassVolumeSlider: View {
 
     private var fillStyle: AnyShapeStyle {
         guard available else { return AnyShapeStyle(Color.inkAlpha(0.28)) }
+        // A relative route's position is an estimate (the soundbar never reports its level): a muted
+        // fill, never the accent or the bright gradient that a read-back level gets.
+        if readout.isEstimate { return AnyShapeStyle(Color.inkAlpha(dragging ? 0.5 : 0.34)) }
         guard quiet else { return AnyShapeStyle(theme.accent) }
         // A soft gradient towards the level's end; brighter while held.
         return AnyShapeStyle(LinearGradient(colors: [Color.inkAlpha(dragging ? 0.82 : 0.66), Color.inkAlpha(dragging ? 1 : 0.92)],
@@ -200,20 +206,39 @@ struct GlassVolumeSlider: View {
     private var trailing: some View {
         switch readout {
         case .level(let shown):
-            Text(VolumeReadout.text(percent: shown))
-                .scaledFont(large ? 14 : 13, .semibold)
-                .monospacedDigit()
-                .contentTransition(.numericText(value: Double(shown)))
-                .foregroundStyle(Color.inkAlpha(0.7))
-                .lineLimit(1)
-                .fixedSize()
-                .frame(minWidth: quiet ? 38 : 40, alignment: .trailing)
-                .animation(Motion.unlessReduced(Motion.snappy, reduceMotion: reduceMotion), value: shown)
+            HStack(spacing: 5) {
+                if let outputLabel {
+                    Text(outputLabel)
+                        .scaledFont(quiet ? 11 : 12, .medium)
+                        .foregroundStyle(Color.inkAlpha(0.6))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                Text(VolumeReadout.text(percent: shown))
+                    .scaledFont(large ? 14 : 13, .semibold)
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: Double(shown)))
+                    .foregroundStyle(Color.inkAlpha(0.7))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(minWidth: quiet ? 38 : 40, alignment: .trailing)
+                    .animation(Motion.unlessReduced(Motion.snappy, reduceMotion: reduceMotion), value: shown)
+            }
         case .relative:
-            Image(systemName: "speaker.wave.3.fill")
-                .scaledFont(quiet ? 13 : (large ? 16 : 14), .semibold)
-                .foregroundStyle(Color.inkAlpha(0.6))
-                .frame(minWidth: quiet ? 24 : 40, alignment: .trailing)
+            if let outputLabel {
+                // No number: the level is not read back. The output name says where presses go.
+                Text(outputLabel)
+                    .scaledFont(quiet ? 11 : 12, .medium)
+                    .foregroundStyle(Color.inkAlpha(0.6))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: true, vertical: false)
+            } else {
+                Image(systemName: "speaker.wave.3.fill")
+                    .scaledFont(quiet ? 13 : (large ? 16 : 14), .semibold)
+                    .foregroundStyle(Color.inkAlpha(0.6))
+                    .frame(minWidth: quiet ? 24 : 40, alignment: .trailing)
+            }
         case .unavailable(let reason):
             Text(reason)
                 .scaledFont(quiet ? 12 : 13, .semibold)
@@ -227,7 +252,7 @@ struct GlassVolumeSlider: View {
     private var accessibilityValueText: String {
         switch readout {
         case .level(let shown): return VolumeReadout.accessibilityValue(percent: shown, floorIsMute: scale.floorIsMute)
-        case .relative: return "Level not reported, slider at \(percent) percent"
+        case .relative: return "Estimated position \(percent) percent. The level is not reported"
         case .unavailable(let reason): return "Unavailable, \(reason)"
         }
     }
@@ -281,6 +306,9 @@ enum VolumeRowReadout: Equatable {
         if case .unavailable = self { return false }
         return true
     }
+
+    /// Key routes: the position is the app's estimate, drawn muted so it never reads as a measured level.
+    var isEstimate: Bool { self == .relative }
 }
 
 /// The mute disc: dips on press and springs back. The haptic comes from the command, not the press.
