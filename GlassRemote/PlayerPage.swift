@@ -137,7 +137,9 @@ struct PlayerPage: View {
                     .id(scene.key)
                     .transition(.opacity)
             }
-            .frame(width: split.artSide, height: split.artSide)
+            // The region hugs the card's own width, so the gap to the column is the same for a
+            // 4:5 poster as for a square card.
+            .frame(width: frame.width, height: split.artSide)
             controlsColumn(scene: scene, spread: true)
                 .frame(width: split.column, height: PlayerLayoutPolicy.landscapeColumnHeight(artSide: split.artSide))
         }
@@ -382,6 +384,7 @@ struct PlayerPage: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: PlayerLayoutPolicy.transportHeight)
+        .padding(.horizontal, PlayerLayoutPolicy.transportInset)
     }
 
     private func playButton(media: MediaState, enabled: Bool, busy: Bool) -> some View {

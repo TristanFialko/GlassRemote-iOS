@@ -162,6 +162,38 @@ final class Phase9PlayerGapTests: XCTestCase {
         }
     }
 
+    /// The volume row as Now Playing draws it when a Samsung route is up (the page above has none).
+    @MainActor
+    func testRenderNowPlayingVolumeRow() async throws {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
+            throw XCTSkip("no window scene in this test host")
+        }
+        let folder = URL(fileURLWithPath: "/tmp/glassremote-snapshots", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let root = ZStack {
+            Color(red: 0.24, green: 0.05, blue: 0.08)
+            GlassVolumeSlider(value: .constant(0.55), scale: .samsungAbsolute(.standard),
+                              thickness: ThinVolumeMetrics.minimumTouchTarget, appearance: .nowPlaying)
+                .padding(.horizontal, PlayerLayoutPolicy.nowPlayingMargin)
+        }
+        .foregroundStyle(Color.ink)
+        .ignoresSafeArea()
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 72)
+        let host = UIHostingController(rootView: root)
+        window.rootViewController = host
+        window.isHidden = false
+        host.view.frame = window.bounds
+        host.view.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        try XCTUnwrap(image.pngData()).write(to: folder.appendingPathComponent("nowplaying-volume-row.png"))
+        window.isHidden = true
+        window.rootViewController = nil
+    }
+
     /// A stand-in poster (2:3): bold shapes on a red field, so cropping and the fade are easy to judge.
     private static func samplePoster() -> UIImage {
         let size = CGSize(width: 600, height: 900)
@@ -180,9 +212,6 @@ final class Phase9PlayerGapTests: XCTestCase {
             cg.fillEllipse(in: CGRect(x: 60, y: 120, width: 200, height: 200))
             UIColor(red: 0.96, green: 0.62, blue: 0.70, alpha: 1).setFill()
             cg.fillEllipse(in: CGRect(x: 190, y: 250, width: 240, height: 320))
-            UIColor(white: 1, alpha: 0.5).setStroke()
-            cg.setLineWidth(6)
-            cg.stroke(CGRect(x: 3, y: 3, width: size.width - 6, height: size.height - 6))
         }
     }
 }

@@ -111,6 +111,8 @@ enum PlayerLayoutPolicy {
     /// Transport row: plain glyphs, the play glyph largest; every glyph keeps a full touch target.
     static let transportHeight: CGFloat = 68
     static let playGlyph: CGFloat = 46
+    /// The transport sits a little inside the timeline's ends, as in Apple Music.
+    static let transportInset: CGFloat = 12
     static let secondaryGlyph: CGFloat = 32
     /// Title and artist line share one size, as in Apple Music; the second line is only lighter.
     static let titleSize: CGFloat = 20
@@ -368,8 +370,10 @@ enum PlayerTransition {
 /// blur), enlarged to cover the window, under a scrim strong enough to keep the page's ink legible over
 /// the brightest (dark themes) or darkest (light themes) part of the picture.
 enum PlayerBackdropPolicy {
-    /// The wash is drawn slightly larger than the window so its soft edges never show.
-    static let enlargement: CGFloat = 1.18
+    /// The wash is drawn much larger than the window: its soft edges never show, and only its broad
+    /// colour fields remain, so the background reads as one calm tone of the artwork (as Apple
+    /// Music's does) instead of a blurred copy of the picture.
+    static let enlargement: CGFloat = 2.0
     static let darkFloor = 0.32
     static let lightFloor = 0.30
     static let ceiling = 0.86
@@ -378,7 +382,7 @@ enum PlayerBackdropPolicy {
     /// Light themes: dark ink keeps about 5:1.
     static let lightTarget = 0.24
     /// Extra shade towards the bottom of the screen, where the controls sit.
-    static let footShade = 0.12
+    static let footShade = 0.36
     /// v5 §3: without artwork, one continuous full-screen wash of the theme accent (top, bottom),
     /// stronger when the theme is Adaptive, never a small radial glow.
     static func fallbackOpacity(adaptive: Bool) -> (top: Double, bottom: Double) {
