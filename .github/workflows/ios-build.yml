@@ -11,40 +11,308 @@ concurrency:
   group: ios-build-${{ github.ref }}
   cancel-in-progress: true
 
+# Two macOS jobs run in parallel on separate runners: `test` boots a simulator and runs the unit
+# tests; `device` compiles the Android helpers and the physical-iPhone Release build and packages
+# the IPA. Measured on one runner, the simulator boot and the two Xcode compiles are all CPU-bound
+# and starve each other (12-19 minutes); on separate runners each finishes uncontended. `report`
+# then gathers the timings and logs from both and posts the tracking-PR comment.
+env:
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  HOMEBREW_NO_ENV_HINTS: "1"
+
 jobs:
-  build:
+  test:
+    name: Simulator build and unit tests
     runs-on: macos-26   # Xcode 26 SDK is required for native Liquid Glass (glassEffect)
     permissions:
       contents: read
-      # Read-only: lets the timing step list this job's step durations.
-      actions: read
-      # Only used by the final report step, which comments on the open PR for this branch.
-      pull-requests: write
-      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version and capture it for cache keys
+        id: toolchain
+        shell: bash
+        run: |
+          xcodebuild -version
+          XCODE_ID="$(xcodebuild -version | tr '\n' ' ' | sed -E 's/[^A-Za-z0-9.]+/-/g; s/^-+|-+$//g')"
+          echo "xcode=$XCODE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure Metal toolchain
+        # Phase 9 compiles a Metal shader (GlassRemote/DesignSystem/Refraction.metal). Xcode 26 ships the
+        # Metal toolchain as a separate component, so fetch it when this runner image lacks it.
+        run: |
+          if xcrun metal -v >/dev/null 2>&1; then
+            echo "Metal toolchain present: $(xcrun metal -v 2>&1 | head -n 1)"
+          else
+            xcodebuild -downloadComponent MetalToolchain
+            xcrun metal -v 2>&1 | head -n 1
+          fi
+
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v xcodegen >/dev/null 2>&1; then
+            echo "XcodeGen already installed: $(command -v xcodegen)"
+          else
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Select iPhone simulator and start booting it
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The first simulator boot on a fresh runner takes about five minutes and is this job's
+          # critical path, so it starts as early as possible. It runs only after the Metal and
+          # XcodeGen checks: those mount Xcode components the same way the boot does and stalled
+          # for 3-4 minutes when the boot was already in flight. The test step waits for the boot.
+          SELECTED="$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          def version(key):
+              return [int(p) if p.isdigit() else 0 for p in key.rsplit("-", 2)[-2:]]
+          # Newest iOS runtime first, then the first available iPhone in it.
+          for runtime in sorted((k for k in data if ".iOS-" in k), key=version, reverse=True):
+              for device in data[runtime]:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      print(device["udid"], device["name"], runtime.rsplit(".", 1)[-1], sep="\t")
+                      raise SystemExit
+          raise SystemExit("No available iPhone simulator found.")
+          ')"
+          UDID="${SELECTED%%$'\t'*}"
+          echo "Simulator (udid | name | runtime): ${SELECTED//$'\t'/ | }"
+          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
+          # An explicit id plus arch avoids xcodebuild's "multiple matching destinations" lookup (each
+          # device is listed as arm64 and x86_64), and both simulator steps use this exact device so
+          # the tests run what build-for-testing produced.
+          echo "SIMULATOR_DESTINATION=platform=iOS Simulator,id=$UDID,arch=arm64" >> "$GITHUB_ENV"
+          echo "SIMULATOR_BOOT_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+          # CoreSimulatorService owns the boot, so it carries on after this step ends.
+          nohup xcrun simctl boot "$UDID" > "$RUNNER_TEMP/simulator-boot.log" 2>&1 &
+
+      - name: Generate Xcode project
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build/ci-logs
+          xcodegen generate 2>&1 | tee build/ci-logs/xcodegen.log
+
+      - name: Restore Swift package cache
+        id: spm-cache
+        # Only SwiftPM's bare git mirrors are cached. Checkouts are recreated from the pinned
+        # revision on every run, so the SwiftADB patch below always applies to pristine sources.
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/SourcePackages/repositories
+            ~/Library/Caches/org.swift.swiftpm/repositories
+          key: spm-repos-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode }}-${{ hashFiles('project.yml', '**/Package.resolved') }}
+          restore-keys: |
+            spm-repos-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode }}-
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project GlassRemote.xcodeproj \
+            -scheme GlassRemote \
+            -derivedDataPath build
+
+      - name: Save Swift package cache
+        # Saved straight after resolution, before the SwiftADB checkout is patched. The device job
+        # saves the same key; whichever finishes first wins and the other save is a harmless no-op.
+        if: steps.spm-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/SourcePackages/repositories
+            ~/Library/Caches/org.swift.swiftpm/repositories
+          key: ${{ steps.spm-cache.outputs.cache-primary-key }}
+
+      - name: Record resolved SwiftADB commit
+        shell: bash
+        run: |
+          RESOLVED="$(find . -name Package.resolved -not -path './build/SourcePackages/checkouts/*' -print -quit)"
+          echo "### Resolved Swift packages" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RESOLVED" >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "SwiftADB is pinned by revision in project.yml; change it there to move to a newer commit." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Patch SwiftADB iOS compatibility
+        shell: bash
+        run: |
+          find build -name AdbConnection.swift -print
+          chmod -R u+w build/SourcePackages/checkouts/SwiftADB
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("build/SourcePackages/checkouts/SwiftADB/Sources")
+          patches = {
+              root / "SwiftADB/AdbConnection.swift": (
+                  r"    private func getSecIdentity\(\) -> sec_identity_t\? \{.*?^    \}",
+                  """    private func getSecIdentity() -> sec_identity_t? {
+                  // Direct ADB TCP does not require a TLS client identity.
+                  return nil
+              }"""
+              ),
+              root / "SwiftADB/KeyPair+ADBKeyPair.swift": (
+                  r"        guard let identity = SecIdentityCreate\(nil, cert, privateKey\) else \{.*?^        return sec_identity_create\(identity\)!",
+                  """        throw NSError(domain: "KeyPair", code: 11,
+                      userInfo: [NSLocalizedDescriptionKey:
+                      "TLS pairing identity is unavailable in this iOS build"])"""
+              )
+          }
+
+          for path, (pattern, replacement) in patches.items():
+              if not path.is_file():
+                  raise SystemExit(f"SwiftADB source file not found: {path}")
+              source = path.read_text()
+              updated, count = re.subn(
+                  pattern, replacement, source, count=1,
+                  flags=re.MULTILINE | re.DOTALL
+              )
+              if count != 1:
+                  raise SystemExit(f"Patch target not found exactly once: {path}")
+              path.write_text(updated)
+              print(f"Patched {path}")
+          PY
+
+      - name: Build for testing on iPhone simulator
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build/ci-logs
+          # COMPILER_INDEX_STORE_ENABLE=NO skips the IDE index store, which nothing in CI reads.
+          xcodebuild build-for-testing -project GlassRemote.xcodeproj \
+            -scheme GlassRemote \
+            -destination "$SIMULATOR_DESTINATION" \
+            -configuration Debug \
+            -derivedDataPath build \
+            -showBuildTimingSummary \
+            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO 2>&1 | tee build/ci-logs/simulator-build.log
+
+      - name: Wait for the iPhone simulator to finish booting
+        shell: bash
+        run: |
+          set -euo pipefail
+          started="$(date +%s)"
+          # `-b` boots the device if the background boot never started, so this is also the fallback.
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          now="$(date +%s)"
+          echo "Waited $((now - started))s here; the boot began $((now - SIMULATOR_BOOT_STARTED))s ago, during the earlier steps."
+          mkdir -p build/ci-logs
+          echo "boot_total=$((now - SIMULATOR_BOOT_STARTED)) boot_wait=$((now - started))" > build/ci-logs/simulator-boot.txt
+          cat "$RUNNER_TEMP/simulator-boot.log" 2>/dev/null || true
+          xcrun simctl list devices | grep "$SIMULATOR_UDID"
+
+      - name: Run unit tests
+        shell: bash
+        run: |
+          echo "Testing on: $SIMULATOR_DESTINATION"
+          set -o pipefail
+          mkdir -p build/ci-logs
+          xcodebuild test-without-building -project GlassRemote.xcodeproj \
+            -scheme GlassRemote \
+            -destination "$SIMULATOR_DESTINATION" \
+            -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci-logs/unit-tests.log
+
+      - name: Summarise compiler and test errors
+        if: failure()
+        shell: bash
+        run: |
+          # Diagnostics only: turns "path:line:col: error:" lines from the xcodebuild logs into
+          # annotations on the run page plus a short job summary. It never fails the job itself.
+          set +e +o pipefail
+          shopt -s nullglob
+          logs=(build/ci-logs/*.log)
+          if [ ${#logs[@]} -eq 0 ]; then
+            echo "No xcodebuild logs were captured (the failure happened before the Xcode build)."
+            exit 0
+          fi
+          grep -hE '^/[^:]+:[0-9]+(:[0-9]+)?: (fatal )?error: ' "${logs[@]}" | sort -u > build/ci-logs/errors.txt
+          count=$(wc -l < build/ci-logs/errors.txt | tr -d ' ')
+          echo "Distinct error lines: $count"
+          head -n 10 build/ci-logs/errors.txt | while IFS= read -r line; do
+            file="${line%%:*}"
+            rest="${line#*:}"
+            num="${rest%%:*}"
+            rel="${file#"$GITHUB_WORKSPACE"/}"
+            msg="$(printf '%s' "${line#*error: }" | sed 's/%/%25/g')"
+            echo "::error file=${rel},line=${num},title=xcodebuild::${msg}"
+          done
+          {
+            echo "### Build or test errors"
+            echo
+            if [ "$count" -gt 0 ]; then
+              echo '```'
+              head -n 40 build/ci-logs/errors.txt | sed "s|$GITHUB_WORKSPACE/||"
+              echo '```'
+            else
+              echo "No file-level errors found. Last lines of each xcodebuild log:"
+              for log in "${logs[@]}"; do
+                echo
+                echo "**$(basename "$log")**"
+                echo '```'
+                tail -n 25 "$log"
+                echo '```'
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$count" -eq 0 ]; then
+            for log in "${logs[@]}"; do
+              last="$(grep -E 'error:|\*\* .* FAILED \*\*' "$log" | tail -n 1 | cut -c1-300 | sed 's/%/%25/g')"
+              if [ -n "$last" ]; then
+                echo "::error title=$(basename "$log")::${last}"
+              fi
+            done
+          fi
+          exit 0
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glassremote-build-logs-test
+          path: build
+          if-no-files-found: ignore
+
+      - name: Upload CI logs for the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs-test
+          path: build/ci-logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  device:
+    name: Helpers, physical iPhone build and IPA
+    runs-on: macos-26
+    permissions:
+      contents: read
     env:
-      HOMEBREW_NO_AUTO_UPDATE: "1"
-      HOMEBREW_NO_INSTALL_CLEANUP: "1"
-      HOMEBREW_NO_ENV_HINTS: "1"
       ANDROID_SDK_ROOT: /opt/homebrew/share/android-commandlinetools
       ANDROID_HOME: /opt/homebrew/share/android-commandlinetools
       NDK_VERSION: 27.2.12479018
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Capture toolchain version for cache keys
+      - name: Show Xcode version and capture it for cache keys
         id: toolchain
         shell: bash
         run: |
+          xcodebuild -version
           XCODE_ID="$(xcodebuild -version | tr '\n' ' ' | sed -E 's/[^A-Za-z0-9.]+/-/g; s/^-+|-+$//g')"
-          echo "Xcode cache id: $XCODE_ID"
           echo "xcode=$XCODE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Ensure Metal toolchain
-        # Phase 9 compiles a Metal shader (GlassRemote/DesignSystem/Refraction.metal). Xcode 26 ships the
-        # Metal toolchain as a separate component, so fetch it when this runner image lacks it.
         run: |
           if xcrun metal -v >/dev/null 2>&1; then
             echo "Metal toolchain present: $(xcrun metal -v 2>&1 | head -n 1)"
@@ -208,8 +476,6 @@ jobs:
 
       - name: Restore Swift package cache
         id: spm-cache
-        # Only SwiftPM's bare git mirrors are cached. Checkouts are recreated from the pinned
-        # revision on every run, so the SwiftADB patch below always applies to pristine sources.
         continue-on-error: true
         uses: actions/cache/restore@v4
         with:
@@ -228,7 +494,6 @@ jobs:
             -derivedDataPath build
 
       - name: Save Swift package cache
-        # Saved straight after resolution, before the SwiftADB checkout is patched.
         if: steps.spm-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@v4
@@ -238,22 +503,10 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm/repositories
           key: ${{ steps.spm-cache.outputs.cache-primary-key }}
 
-      - name: Record resolved SwiftADB commit
-        shell: bash
-        run: |
-          RESOLVED="$(find . -name Package.resolved -not -path './build/SourcePackages/checkouts/*' -print -quit)"
-          echo "### Resolved Swift packages" >> "$GITHUB_STEP_SUMMARY"
-          echo '```json' >> "$GITHUB_STEP_SUMMARY"
-          cat "$RESOLVED" >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "SwiftADB is pinned by revision in project.yml; change it there to move to a newer commit." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Locate SwiftADB source
-        run: find build -name AdbConnection.swift -print
-
       - name: Patch SwiftADB iOS compatibility
         shell: bash
         run: |
+          find build -name AdbConnection.swift -print
           chmod -R u+w build/SourcePackages/checkouts/SwiftADB
           python3 <<'PY'
           from pathlib import Path
@@ -290,58 +543,7 @@ jobs:
               print(f"Patched {path}")
           PY
 
-      - name: Select iPhone simulator and start booting it
-        id: simulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The first simulator boot on a fresh runner takes 5-9 minutes and used to happen inside
-          # `xcodebuild test`, after everything else. It is started here, immediately before the two
-          # xcodebuild compiles, so it overlaps work that is already CPU-bound. Starting it any earlier
-          # measurably starved the light setup steps (the Metal check went from 8s to almost 4 minutes
-          # and the simulator build nearly doubled), which cost more than the overlap gained.
-          SELECTED="$(xcrun simctl list devices available --json | python3 -c '
-          import json, sys
-          data = json.load(sys.stdin)["devices"]
-          def version(key):
-              return [int(p) if p.isdigit() else 0 for p in key.rsplit("-", 2)[-2:]]
-          # Newest iOS runtime first, then the first available iPhone in it.
-          for runtime in sorted((k for k in data if ".iOS-" in k), key=version, reverse=True):
-              for device in data[runtime]:
-                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
-                      print(device["udid"], device["name"], runtime.rsplit(".", 1)[-1], sep="\t")
-                      raise SystemExit
-          raise SystemExit("No available iPhone simulator found.")
-          ')"
-          UDID="${SELECTED%%$'\t'*}"
-          echo "Simulator (udid | name | runtime): ${SELECTED//$'\t'/ | }"
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
-          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
-          # An explicit id plus arch avoids xcodebuild's "multiple matching destinations" lookup (each
-          # device is listed as arm64 and x86_64), and both simulator steps use this exact device so
-          # the tests run what build-for-testing produced.
-          echo "SIMULATOR_DESTINATION=platform=iOS Simulator,id=$UDID,arch=arm64" >> "$GITHUB_ENV"
-          echo "SIMULATOR_BOOT_STARTED=$(date +%s)" >> "$GITHUB_ENV"
-          # CoreSimulatorService owns the boot, so it carries on after this step ends.
-          nohup xcrun simctl boot "$UDID" > "$RUNNER_TEMP/simulator-boot.log" 2>&1 &
-
-      - name: Build for testing on iPhone simulator
-        shell: bash
-        run: |
-          set -o pipefail
-          mkdir -p build/ci-logs
-          # COMPILER_INDEX_STORE_ENABLE=NO skips the IDE index store, which nothing in CI reads.
-          xcodebuild build-for-testing -project GlassRemote.xcodeproj \
-            -scheme GlassRemote \
-            -destination "$SIMULATOR_DESTINATION" \
-            -configuration Debug \
-            -derivedDataPath build \
-            -showBuildTimingSummary \
-            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO 2>&1 | tee build/ci-logs/simulator-build.log
-
       - name: Build for physical iPhone
-        # Runs before the tests so the simulator keeps booting in the background while this
-        # compiles. It needs no simulator, and the IPA is still only packaged after the tests pass.
         shell: bash
         run: |
           set -o pipefail
@@ -353,33 +555,6 @@ jobs:
             -derivedDataPath build \
             -showBuildTimingSummary \
             CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build 2>&1 | tee build/ci-logs/device-build.log
-
-      - name: Wait for the iPhone simulator to finish booting
-        shell: bash
-        run: |
-          set -euo pipefail
-          started="$(date +%s)"
-          # `-b` boots the device if the background boot never started, so this is also the fallback.
-          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
-          now="$(date +%s)"
-          echo "Waited $((now - started))s here; the boot began $((now - SIMULATOR_BOOT_STARTED))s ago, during the earlier steps."
-          echo "SIMULATOR_BOOT_WAIT_SECONDS=$((now - started))" >> "$GITHUB_ENV"
-          echo "SIMULATOR_BOOT_TOTAL_SECONDS=$((now - SIMULATOR_BOOT_STARTED))" >> "$GITHUB_ENV"
-          cat "$RUNNER_TEMP/simulator-boot.log" 2>/dev/null || true
-          xcrun simctl list devices | grep "$SIMULATOR_UDID"
-
-      - name: Run unit tests
-        shell: bash
-        run: |
-          echo "Testing on: $SIMULATOR_DESTINATION"
-          set -o pipefail
-          mkdir -p build/ci-logs
-          xcodebuild test-without-building -project GlassRemote.xcodeproj \
-            -scheme GlassRemote \
-            -destination "$SIMULATOR_DESTINATION" \
-            -configuration Debug \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci-logs/unit-tests.log
 
       - name: Bundle and verify helpers
         run: |
@@ -412,6 +587,8 @@ jobs:
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
           /usr/bin/zip -qry GlassRemote-unsigned.ipa Payload
+          mkdir -p build/ci-logs
+          du -h GlassRemote-unsigned.ipa | cut -f1 > build/ci-logs/ipa-size.txt
 
       - name: Upload unsigned iPhone app
         uses: actions/upload-artifact@v4
@@ -420,7 +597,7 @@ jobs:
           path: GlassRemote-unsigned.ipa
           if-no-files-found: error
 
-      - name: Summarise compiler and test errors
+      - name: Summarise compiler errors
         if: failure()
         shell: bash
         run: |
@@ -445,7 +622,7 @@ jobs:
             echo "::error file=${rel},line=${num},title=xcodebuild::${msg}"
           done
           {
-            echo "### Build or test errors"
+            echo "### Build errors"
             echo
             if [ "$count" -gt 0 ]; then
               echo '```'
@@ -476,21 +653,52 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: glassremote-build-logs
+          name: glassremote-build-logs-device
           path: build
           if-no-files-found: ignore
 
-      - name: Record CI timing
+      - name: Upload CI logs for the report
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs-device
+          path: build/ci-logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  report:
+    name: CI timing and PR report
+    # Diagnostics only. Runs on Linux (cheap, fast to start) after both macOS jobs, whatever
+    # their result, and never fails the workflow.
+    needs: [test, device]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Read-only: lets the timing step list every job's step durations.
+      actions: read
+      # Only used by the final report step, which comments on the open PR for this branch.
+      pull-requests: write
+      issues: write
+    env:
+      TEST_RESULT: ${{ needs.test.result }}
+      DEVICE_RESULT: ${{ needs.device.result }}
+    steps:
+      - name: Download CI logs from both jobs
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-logs-*
+          path: build/ci-logs
+          merge-multiple: true
+
+      - name: Record CI timing
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          NDK_CACHE_HIT: ${{ steps.ndk-cache.outputs.cache-hit }}
-          NDK_CACHE_SAVED: ${{ steps.ndk.outputs.save-cache }}
-          SPM_CACHE_HIT: ${{ steps.spm-cache.outputs.cache-hit }}
         run: |
-          # Diagnostics only: records each step's duration plus Xcode's build timing summaries,
-          # so future runs show where CI time goes. Never fails the job.
+          # Records each job's step durations plus Xcode's build timing summaries, so future runs
+          # show where CI time goes.
           set +e +o pipefail
           jobs_json="$RUNNER_TEMP/ci-jobs.json"
           timing="$RUNNER_TEMP/ci-timing.md"
@@ -512,43 +720,53 @@ jobs:
               seconds = int(round(seconds))
               return f"{seconds // 60}m {seconds % 60:02d}s"
 
-          print("### CI step durations")
+          print("### CI timing")
           print()
           try:
               with open(sys.argv[1]) as handle:
                   jobs = json.load(handle).get("jobs", [])
           except Exception:
               jobs = []
-          job_name = os.environ.get("GITHUB_JOB", "build")
-          job = next((j for j in jobs if j.get("name") == job_name), jobs[0] if jobs else None)
-          if not job:
-              print("Step timings unavailable (this job could not be read from the Actions API).")
+          jobs = [j for j in jobs if j.get("name") != os.environ.get("GITHUB_JOB", "report") and not str(j.get("name", "")).startswith("CI timing")]
+          if not jobs:
+              print("Step timings unavailable (the jobs could not be read from the Actions API).")
               sys.exit(0)
-          rows = []
-          for step in job.get("steps", []):
-              start, end = parse(step.get("started_at")), parse(step.get("completed_at"))
-              if start and end and step.get("conclusion") != "skipped":
-                  rows.append((step.get("name", "?"), (end - start).total_seconds(), step.get("conclusion") or step.get("status")))
-          job_start = parse(job.get("started_at"))
-          if job_start:
-              print(f"Job elapsed so far: **{fmt((datetime.now(timezone.utc) - job_start).total_seconds())}**")
+          starts = [parse(j.get("started_at")) for j in jobs if parse(j.get("started_at"))]
+          ends = [parse(j.get("completed_at")) or datetime.now(timezone.utc) for j in jobs]
+          if starts:
+              wall = (max(ends) - min(starts)).total_seconds()
+              billed = sum((e - s).total_seconds() for s, e in zip(starts, ends))
+              print(f"Wall clock across the macOS jobs: **{fmt(wall)}** (they ran in parallel; {fmt(billed)} of macOS runner time in total)")
               print()
-          print("| Step | Duration | Result |")
-          print("| --- | ---: | --- |")
-          for name, seconds, result in rows:
-              print(f"| {name} | {fmt(seconds)} | {result} |")
-          slowest = sorted(rows, key=lambda row: row[1], reverse=True)[:5]
-          if slowest:
+          for job in jobs:
+              s, e = parse(job.get("started_at")), parse(job.get("completed_at"))
+              total = fmt((e - s).total_seconds()) if s and e else "running"
+              print(f"#### {job.get('name')} — {total}, {job.get('conclusion') or job.get('status')}")
               print()
-              print("Slowest steps: " + ", ".join(f"{name} ({fmt(seconds)})" for name, seconds, _ in slowest))
+              rows = []
+              for step in job.get("steps", []):
+                  ss, se = parse(step.get("started_at")), parse(step.get("completed_at"))
+                  if ss and se and step.get("conclusion") != "skipped":
+                      rows.append((step.get("name", "?"), (se - ss).total_seconds(), step.get("conclusion") or step.get("status")))
+              print("| Step | Duration | Result |")
+              print("| --- | ---: | --- |")
+              for name, seconds, result in rows:
+                  print(f"| {name} | {fmt(seconds)} | {result} |")
+              slowest = sorted(rows, key=lambda row: row[1], reverse=True)[:3]
+              if slowest:
+                  print()
+                  print("Slowest: " + ", ".join(f"{name} ({fmt(seconds)})" for name, seconds, _ in slowest))
+              print()
           PY
           {
+            echo "#### Simulator"
             echo
-            echo "#### Cache and simulator"
-            echo
-            echo "- Android NDK cache hit: ${NDK_CACHE_HIT:-false}; saved this run: ${NDK_CACHE_SAVED:-false}"
-            echo "- Swift package cache hit: ${SPM_CACHE_HIT:-false}"
-            echo "- Simulator boot: ${SIMULATOR_BOOT_TOTAL_SECONDS:-?}s from job start to booted, of which ${SIMULATOR_BOOT_WAIT_SECONDS:-?}s was spent waiting before the tests"
+            if [ -s build/ci-logs/simulator-boot.txt ]; then
+              read -r total wait < build/ci-logs/simulator-boot.txt
+              echo "- Boot: ${total#boot_total=}s from job start to booted, of which ${wait#boot_wait=}s was spent waiting before the tests"
+            else
+              echo "- Boot timing unavailable"
+            fi
           } >> "$timing"
           for log in build/ci-logs/simulator-build.log build/ci-logs/device-build.log; do
             [ -s "$log" ] || continue
@@ -571,14 +789,13 @@ jobs:
           exit 0
 
       - name: Report results on the tracking pull request
-        if: ${{ always() && (github.ref_name == 'phase-6-ui-nuvio-rebuild' || startsWith(github.ref_name, 'Phase-9')) }}
+        if: ${{ github.ref_name == 'phase-6-ui-nuvio-rebuild' || startsWith(github.ref_name, 'Phase-9') }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          JOB_STATUS: ${{ job.status }}
         run: |
-          # Diagnostics only: posts a short build/test report on the open pull request for this
-          # branch, so results can be reviewed without opening the Actions UI. Never fails the job.
+          # Posts a short build/test report on the open pull request for this branch, so results
+          # can be reviewed without opening the Actions UI. Never fails the job.
           set +e +o pipefail
           shopt -s nullglob
           PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq '.[0].number // empty')"
@@ -586,15 +803,22 @@ jobs:
             echo "No open pull request for $GITHUB_REF_NAME; skipping report."
             exit 0
           fi
+          if [ "$TEST_RESULT" = "success" ] && [ "$DEVICE_RESULT" = "success" ]; then
+            STATUS="success"
+          else
+            STATUS="failure"
+          fi
           mkdir -p build
           report=build/ci-report.md
           {
-            echo "### CI ${JOB_STATUS}: \`${GITHUB_SHA:0:7}\`"
+            echo "### CI ${STATUS}: \`${GITHUB_SHA:0:7}\`"
             echo
             echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            if [ -s GlassRemote-unsigned.ipa ]; then
+            echo
+            echo "Simulator build and unit tests: ${TEST_RESULT}; helpers, physical iPhone build and IPA: ${DEVICE_RESULT}"
+            if [ -s build/ci-logs/ipa-size.txt ]; then
               echo
-              echo "Unsigned IPA: $(du -h GlassRemote-unsigned.ipa | cut -f1), artifact \`glassremote-unsigned-ipa\`"
+              echo "Unsigned IPA: $(cat build/ci-logs/ipa-size.txt), artifact \`glassremote-unsigned-ipa\`"
             fi
             logs=(build/ci-logs/*.log)
             if [ ${#logs[@]} -eq 0 ]; then
@@ -612,7 +836,7 @@ jobs:
                 echo "${tests}"
               fi
               problems="$(grep -E '(^|[^a-zA-Z])(fatal )?error:|Undefined symbol|Test Case .* failed|Testing failed' "$log" \
-                | sed "s|${GITHUB_WORKSPACE}/||g" | awk '!seen[$0]++' | head -n 60)"
+                | sed "s|/Users/runner/work/${GITHUB_REPOSITORY#*/}/${GITHUB_REPOSITORY#*/}/||g" | awk '!seen[$0]++' | head -n 60)"
               if [ -n "$problems" ]; then
                 echo
                 echo '```'
