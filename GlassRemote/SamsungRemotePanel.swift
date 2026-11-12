@@ -32,31 +32,39 @@ enum SamsungRemoteLayout {
 
     static let removedFromSurface: Set<SamsungKey> = [.up, .down, .left, .right, .enter]
 
-    // MARK: Phase 8 landscape stage
+    // MARK: Landscape key rails (Phase 9 gap fix)
 
-    /// Leading column foot: navigation.
+    /// Leading rail, first group: navigation.
     static let landscapeNavigation: [Item] = [
         Item(key: .back, title: "Back", symbol: "arrow.uturn.backward"),
         Item(key: .home, title: "Home", symbol: "house")
     ]
 
-    /// Trailing column top: transport (one combined Play/Pause).
+    /// Leading rail, second group: channel, up above down.
+    static let landscapeChannels: [Item] = [
+        Item(key: .channelUp, title: "Channel up", symbol: "chevron.up"),
+        Item(key: .channelDown, title: "Channel down", symbol: "chevron.down")
+    ]
+
+    /// Trailing rail, first group: transport (one combined Play/Pause).
     static let landscapeMedia: [Item] = [
         Item(key: .rewind, title: "Rewind", symbol: "backward.fill"),
         Item(key: .play, title: "Play/Pause", symbol: "playpause.fill"),
         Item(key: .fastForward, title: "Fast forward", symbol: "forward.fill")
     ]
 
-    /// Trailing column foot, just above the volume slider: the TV group (mute and channel).
-    static let landscapeTVGroup: [Item] = [
-        Item(key: .mute, title: "Mute", symbol: "speaker.slash.fill"),
-        Item(key: .channelDown, title: "Channel down", symbol: "chevron.down"),
-        Item(key: .channelUp, title: "Channel up", symbol: "chevron.up")
+    /// Trailing rail, second group: mute, beside the volume deck's loud end.
+    static let landscapeAudio: [Item] = [
+        Item(key: .mute, title: "Mute", symbol: "speaker.slash.fill")
     ]
 
-    /// Every key on the landscape surface, in column order. Each appears once.
+    /// Key groups per rail, top to bottom. Four keys each side, so the rails balance.
+    static let landscapeLeadingRail: [[Item]] = [landscapeNavigation, landscapeChannels]
+    static let landscapeTrailingRail: [[Item]] = [landscapeMedia, landscapeAudio]
+
+    /// Every key on the landscape surface, in rail order. Each appears once.
     static var landscapeKeys: [SamsungKey] {
-        (landscapeNavigation + landscapeMedia + landscapeTVGroup).map(\.key)
+        (landscapeLeadingRail + landscapeTrailingRail).flatMap { $0 }.map(\.key)
     }
 
     /// The status banner is shown whenever the TV link is not fully up (or the TV is not set up).
@@ -164,12 +172,15 @@ struct SamsungKeyRow: View {
     let items: [SamsungRemoteLayout.Item]
     var height: CGFloat = 54
     var captions: Bool = false
+    /// `.vertical` stacks the keys for a landscape rail.
+    var axis: Axis = .horizontal
 
     private var ready: Bool { remote.samsungRemoteReady }
 
     var body: some View {
+        let layout = axis == .vertical ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))
         GlassGroup(spacing: 10) {
-            HStack(spacing: 10) {
+            layout {
                 ForEach(items, id: \.key) { item in
                     if item.key == .play {
                         playPauseButton

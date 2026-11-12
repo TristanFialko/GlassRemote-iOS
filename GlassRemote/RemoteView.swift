@@ -105,7 +105,6 @@ struct RemoteView: View {
     @State private var pendingPower: PowerAction?
     @State private var didAutoConnect = false
     @State private var screenshotItem: ScreenshotItem?
-    @ObservedObject private var favourites = AppFavourites.shared
     @State private var volumeSliderValue: Double = 0.5
     @State private var externalVolumeEcho: Double?
 
@@ -114,12 +113,15 @@ struct RemoteView: View {
     private var isLandscape: Bool { layoutContext.isLandscape }
 
     /// Phase 8: portrait stacks status, mode, the dominant pad, the navigation cluster and volume.
-    /// Landscape is a three-column stage (RemoteStageLayout). Both go through `AnyLayout` with the
-    /// same children, so rotating re-arranges the views instead of rebuilding them: the trackpad, its
-    /// recognisers, a held key and the mouse session survive.
+    /// Landscape is the console stage (RemoteStageLayout): top bar, key rails under the thumbs, the
+    /// pad in the middle and volume along its foot. Both go through `AnyLayout` with the same pad,
+    /// mode selector and volume children, so rotating re-arranges those views instead of rebuilding
+    /// them: the trackpad, its recognisers, a held key and the mouse session survive.
     private func surfaceLayout(compact: Bool) -> AnyLayout {
         let spacing = RemoteLayoutPolicy.spacing(compact: compact, isLandscape: isLandscape)
-        if isLandscape { return AnyLayout(RemoteStageLayout(spacing: spacing, columnSpacing: 14)) }
+        if isLandscape {
+            return AnyLayout(RemoteStageLayout(spacing: spacing, columnSpacing: RemoteLayoutPolicy.stageColumnSpacing))
+        }
         return AnyLayout(VStackLayout(spacing: spacing))
     }
 
@@ -128,33 +130,32 @@ struct RemoteView: View {
             GeometryReader { proxy in
                 let compact = !isLandscape && RemoteLayoutPolicy.isCompact(height: proxy.size.height)
                 let surface = surfaceLayout(compact: compact)
-                let stageWidth = max(proxy.size.width - 32, 0)
-                let leadingWidth = RemoteLayoutPolicy.columnWidths(for: stageWidth).leading
-                // Continuation §C3: the landscape volume deck's height for this stage (top 6 + bottom 8).
+                let insets = RemoteLayoutPolicy.stageInsets
+                let stageWidth = max(proxy.size.width - insets.leading - insets.trailing, 0)
+                let stageHeight = max(proxy.size.height - insets.top - insets.bottom, 0)
+                // Continuation §C3: the landscape volume deck's height for this stage.
                 let volumeThickness = isLandscape
-                    ? RemoteLayoutPolicy.volumeDeckHeight(stageHeight: max(proxy.size.height - 14, 0),
-                                                          spacing: RemoteLayoutPolicy.spacing(compact: false, isLandscape: true))
+                    ? RemoteLayoutPolicy.landscapeDeckHeight(stageHeight: stageHeight,
+                                                             spacing: RemoteLayoutPolicy.spacing(compact: false, isLandscape: true))
                     : RemoteLayoutPolicy.volumeThickness(compact: compact)
+                let keyHeight = RemoteLayoutPolicy.railKeyHeight(stageHeight: stageHeight)
                 surface {
-                    header(stageWidth: stageWidth, leadingWidth: leadingWidth)
-                        .remoteStage(.leading)
+                    header(stageWidth: stageWidth)
                     if remote.target == .samsung {
-                        samsungControls(compact: compact)
+                        samsungControls(compact: compact, railKeyHeight: keyHeight)
                     } else {
-                        androidControls(compact: compact, leadingWidth: leadingWidth)
+                        androidControls(compact: compact, railKeyHeight: keyHeight)
                     }
                     volumeBar(thickness: volumeThickness)
                         .remoteStage(.deck)
                     if isLandscape && !folder.isVisible {
-                        // Continuation §D: the free space in the side columns is where a vertical page
+                        // Continuation §D: the free space in the key rails is where a vertical page
                         // swipe may start on the Remote; everything else on it is a control.
                         PagerSwipeArea().remoteStage(.gap)
                         PagerSwipeArea().remoteStage(.gap)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 8)
+                .padding(insets)
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             }
             // The Remote keeps its layout while the folder's search keyboard is up; the folder moves.
@@ -208,16 +209,14 @@ struct RemoteView: View {
 
     // MARK: - Compositions
 
-    /// Android TV: mode selector, the pad, the navigation cluster; in landscape also the launcher card.
+    /// Android TV: mode selector, the pad and the navigation keys (one row in portrait, a rail under
+    /// each thumb in landscape).
     @ViewBuilder
-    private func androidControls(compact: Bool, leadingWidth: CGFloat) -> some View {
+    private func androidControls(compact: Bool, railKeyHeight: CGFloat) -> some View {
         Group {
+            // Landscape: centred over the pad in the top bar.
             modeRow(compact: compact)
-                .remoteStage(.leading)
-            if isLandscape {
-                launcherCard(width: leadingWidth)
-                    .remoteStage(.leading, bottom: true)
-            }
+                .remoteStage(.topCenter)
             // The pad is the point of this page: it takes every spare point and never shrinks below a
             // comfortable size.
             controlSurface
@@ -225,18 +224,27 @@ struct RemoteView: View {
                        maxHeight: .infinity)
                 .layoutPriority(1)
                 .remoteStage(.pad)
-            navCluster(compact: compact)
-                .remoteStage(.trailing)
+            if isLandscape {
+                navRail(landscapeRails.leading, height: railKeyHeight)
+                    .remoteStage(.leading)
+                navRail(landscapeRails.trailing, height: railKeyHeight)
+                    .remoteStage(.trailing)
+            } else {
+                navCluster(compact: compact)
+            }
         }
+    }
+
+    private var landscapeRails: (leading: [RemoteNavKey], trailing: [RemoteNavKey]) {
+        RemoteNavKey.landscapeRails(samsungLinked: remote.tvVolumeEnabled)
     }
 
     /// Samsung TV: a permanent trackpad and a short key set replace the Android controls.
     @ViewBuilder
-    private func samsungControls(compact: Bool) -> some View {
+    private func samsungControls(compact: Bool, railKeyHeight: CGFloat) -> some View {
         Group {
-            if SamsungRemoteLayout.showsBanner(enabled: remote.tvVolumeEnabled, state: remote.samsungState) {
-                SamsungLinkBanner(stacked: isLandscape)
-                    .remoteStage(.leading)
+            if showsSamsungBanner && !isLandscape {
+                SamsungLinkBanner()
             }
             SamsungTrackpad()
                 .disabled(!remote.samsungRemoteReady)
@@ -245,14 +253,22 @@ struct RemoteView: View {
                 .layoutPriority(1)
                 .remoteStage(.pad)
             if isLandscape {
-                // Dedicated landscape: navigation under the header, transport at the top right, and the
-                // TV group (mute, channel) directly above the volume slider. No key appears twice.
-                SamsungKeyRow(items: SamsungRemoteLayout.landscapeNavigation, height: 52, captions: true)
-                    .remoteStage(.leading, bottom: true)
-                SamsungKeyRow(items: SamsungRemoteLayout.landscapeMedia, height: 52, captions: true)
-                    .remoteStage(.trailing)
-                SamsungKeyRow(items: SamsungRemoteLayout.landscapeTVGroup, height: 52, captions: true)
-                    .remoteStage(.trailing, bottom: true)
+                // The banner floats over the top of the pad, which is disabled while it shows. Declared
+                // after the pad so it draws above it.
+                if showsSamsungBanner {
+                    SamsungLinkBanner()
+                        .remoteStage(.overPad)
+                }
+                // A rail under each thumb: navigation and channel on the left, transport and mute on the
+                // right beside the volume deck. No key appears twice.
+                ForEach(Array(SamsungRemoteLayout.landscapeLeadingRail.enumerated()), id: \.offset) { _, group in
+                    SamsungKeyRow(items: group, height: railKeyHeight, captions: true, axis: .vertical)
+                        .remoteStage(.leading)
+                }
+                ForEach(Array(SamsungRemoteLayout.landscapeTrailingRail.enumerated()), id: \.offset) { _, group in
+                    SamsungKeyRow(items: group, height: railKeyHeight, captions: true, axis: .vertical)
+                        .remoteStage(.trailing)
+                }
             } else {
                 ForEach(Array(SamsungRemoteLayout.primaryRows.enumerated()), id: \.offset) { _, row in
                     SamsungKeyRow(items: row, height: compact ? 48 : 54)
@@ -264,18 +280,25 @@ struct RemoteView: View {
 
     // MARK: - Header
 
-    /// Status pill (opens the live-action menu), the device switch and power. Phase 9 §1.2: in the
-    /// landscape column the pill has the whole first row, so the device name is never cut to "And...",
-    /// and the switch shares the second row with power. The pill drops to the short name and then the
+    private var showsSamsungBanner: Bool {
+        SamsungRemoteLayout.showsBanner(enabled: remote.tvVolumeEnabled, state: remote.samsungState)
+    }
+
+    /// Status pill (opens the live-action menu), the device switch and power. Portrait: one row.
+    /// Landscape: the two ends of the top bar, the pill leading and the switch with power trailing (the
+    /// mode selector sits between them, over the pad). The pill drops to the short name and then the
     /// chevron when the room is tight (RemoteLayoutPolicy.pillStyle).
-    private func header(stageWidth: CGFloat, leadingWidth: CGFloat) -> some View {
-        VStack(spacing: 8) {
+    private func header(stageWidth: CGFloat) -> some View {
+        Group {
             if isLandscape {
-                RemoteStatusMenu(pillStyle: RemoteLayoutPolicy.pillStyle(width: leadingWidth), onScreenshot: takeScreenshot)
+                RemoteStatusMenu(pillStyle: RemoteLayoutPolicy.pillStyle(width: RemoteLayoutPolicy.statusWidth(stageWidth: stageWidth)),
+                                 onScreenshot: takeScreenshot)
+                    .remoteStage(.topLeading)
                 HStack(spacing: 8) {
-                    RemoteTargetSwitch(showsTitles: leadingWidth >= 210, fixedWidth: nil)
+                    RemoteTargetSwitch()
                     PowerMenuButton { pendingPower = $0 }
                 }
+                .remoteStage(.topTrailing)
             } else {
                 HStack(spacing: 8) {
                     // The switch is 108 pt, power 44 pt, two 8 pt gaps.
@@ -364,58 +387,6 @@ struct RemoteView: View {
     private func recordAppsAnchor(_ frame: CGRect, radius: CGFloat) {
         if frame != appsAnchor { appsAnchor = frame }
         if radius != appsAnchorRadius { appsAnchorRadius = radius }
-    }
-
-    private var previewApps: [TVApp] {
-        Array(AppLauncherPolicy.ordered(remote.apps, favourites: favourites.packages).prefix(3))
-    }
-
-    /// Landscape: the Apps control is a card in the leading column with the first favourites.
-    /// Phase 9 §1.2: it shows only as many preview icons as fit beside its one-line text, so the
-    /// count never wraps ("9 / apps"). Highlighted only while its folder is open or animating.
-    private func launcherCard(width: CGFloat) -> some View {
-        let previews = RemoteLayoutPolicy.launcherPreviewCount(cardWidth: width)
-        let countLabel = RemoteLayoutPolicy.appCountLabel(remote.apps.count)
-        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
-        return Button { openFolder() } label: {
-            HStack(spacing: 10) {
-                if previews > 0 {
-                    HStack(spacing: -10) {
-                        ForEach(Array(previewApps.prefix(previews))) { app in
-                            AppIconImage(asset: "\(app.asset)_dark")
-                                .frame(width: 34, height: 34)
-                                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .strokeBorder(Color.ink.opacity(0.25), lineWidth: 1))
-                                .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
-                        }
-                    }
-                    .accessibilityHidden(true)
-                }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Apps").scaledFont(15, .semibold).lineLimit(1)
-                    Text(countLabel).scaledFont(11).lineLimit(1).minimumScaleFactor(0.8)
-                        .foregroundStyle(Color.inkAlpha(0.6))
-                }
-                .layoutPriority(1)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(Color.ink)
-            .padding(.horizontal, 12)
-            .frame(height: 58)
-            .frame(maxWidth: .infinity)
-            .glassSurface(shape, interactive: true, accent: folder.highlightsSource)
-            .contentShape(shape)
-        }
-        .buttonStyle(PressStyle())
-        .accessibilityLabel("Apps")
-        .accessibilityValue(countLabel)
-        .accessibilityHint(RemoteNavKey.apps.hint)
-        .accessibilityFocused($appsControlFocused)
-        .help("Apps")
-        .onGeometryChange(for: CGRect.self) { proxy in proxy.frame(in: .global) } action: { frame in
-            recordAppsAnchor(frame, radius: 22)
-        }
     }
 
     // MARK: - Mode selector
@@ -613,26 +584,23 @@ struct RemoteView: View {
 
     // MARK: - Navigation and volume
 
-    /// Secondary navigation: one row in portrait (Apps is the folder key), a two-column grid in the
-    /// landscape trailing column. Same commands as before. Phase 9 §1.1: icon-only, full-size
-    /// hit targets, names for VoiceOver, the pointer tooltip and the Large Content Viewer.
+    /// Portrait secondary navigation: one row (Apps is the folder key). Phase 9 §1.1: icon-only,
+    /// full-size hit targets, names for VoiceOver, the pointer tooltip and the Large Content Viewer.
     private func navCluster(compact: Bool) -> some View {
-        let keys = RemoteNavKey.cluster(isLandscape: isLandscape, samsungLinked: remote.tvVolumeEnabled)
-        let height: CGFloat = isLandscape ? 52 : (compact ? 48 : 56)
-        let rows: [[RemoteNavKey]] = stride(from: 0, to: keys.count, by: 2).map { Array(keys[$0..<min($0 + 2, keys.count)]) }
+        let keys = RemoteNavKey.cluster(isLandscape: false, samsungLinked: remote.tvVolumeEnabled)
+        let height: CGFloat = compact ? 48 : 56
         return GlassGroup(spacing: 10) {
-            if isLandscape {
-                VStack(spacing: 10) {
-                    ForEach(rows, id: \.self) { row in
-                        HStack(spacing: 10) {
-                            ForEach(row, id: \.self) { key in navKey(key, height: height) }
-                        }
-                    }
-                }
-            } else {
-                HStack(spacing: 8) {
-                    ForEach(keys, id: \.self) { key in navKey(key, height: height) }
-                }
+            HStack(spacing: 8) {
+                ForEach(keys, id: \.self) { key in navKey(key, height: height) }
+            }
+        }
+    }
+
+    /// Landscape: one rail of the same keys, stacked under a thumb.
+    private func navRail(_ keys: [RemoteNavKey], height: CGFloat) -> some View {
+        GlassGroup(spacing: 10) {
+            VStack(spacing: 10) {
+                ForEach(keys, id: \.self) { key in navKey(key, height: height) }
             }
         }
     }
@@ -653,6 +621,7 @@ struct RemoteView: View {
         case .apps:
             RemoteClusterKey(symbol: key.symbol, label: key.title, prominent: folder.highlightsSource,
                              height: height) { openFolder() }
+                .accessibilityValue(RemoteLayoutPolicy.appCountLabel(remote.apps.count))
                 .accessibilityHint(key.hint)
                 .accessibilityFocused($appsControlFocused)
                 .onGeometryChange(for: CGRect.self) { proxy in proxy.frame(in: .global) } action: { frame in

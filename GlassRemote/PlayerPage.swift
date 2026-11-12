@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Now Playing (v5 §3), laid out like the Apple Music player. Independent of the Remote page: it only
 /// reads `remote.media` (the shared, read-only `dumpsys media_session` poll) and sends transport
@@ -105,13 +106,13 @@ struct PlayerPage: View {
                         bleedArtwork(scene: scene, size: bleed)
                             .offset(y: -top)
                             .id(scene.key)                       // artwork and metadata change together
-                            .transition(.opacity)
+                            .transition(artworkTransition(settlingFrom: 1.04))
                     } else {
                         let frame = PlayerLayoutPolicy.nowPlayingArtwork(kind: .appIcon,
                                                                          region: PlayerLayoutPolicy.portraitCardRegion(region: region.size))
                         artworkCard(scene: scene, size: frame)
                             .id(scene.key)
-                            .transition(.opacity)
+                            .transition(artworkTransition(settlingFrom: 0.94))
                             .frame(width: region.size.width, height: region.size.height)
                     }
                 }
@@ -135,7 +136,7 @@ struct PlayerPage: View {
             ZStack {
                 artworkCard(scene: scene, size: frame)
                     .id(scene.key)
-                    .transition(.opacity)
+                    .transition(artworkTransition(settlingFrom: 0.94))
             }
             // The region hugs the card's own width, so the gap to the column is the same for a
             // 4:5 poster as for a square card.
@@ -156,7 +157,7 @@ struct PlayerPage: View {
             ZStack(alignment: .leading) {
                 titleBlock(app: scene.app, media: scene.media)
                     .id(scene.key)
-                    .transition(.opacity)
+                    .transition(metadataTransition)
             }
             if spread { Spacer(minLength: PlayerLayoutPolicy.landscapeMinRowGap) }
             statusBlock(scene: scene)
@@ -173,6 +174,19 @@ struct PlayerPage: View {
 
     // MARK: Artwork
 
+    private var motionReduced: Bool { reduceMotion || MotionPreference.reduced }
+
+    /// New artwork cross-fades in while settling from `scale` to its size; with reduced motion it
+    /// only fades.
+    private func artworkTransition(settlingFrom scale: CGFloat) -> AnyTransition {
+        motionReduced ? .opacity : .opacity.combined(with: .scale(scale: scale))
+    }
+
+    /// The new title rises a few points as it fades in; the old one simply fades.
+    private var metadataTransition: AnyTransition {
+        motionReduced ? .opacity : .asymmetric(insertion: .opacity.combined(with: .offset(y: 6)), removal: .opacity)
+    }
+
     private func artworkLabel(_ kind: PlayerArtworkKind) -> String {
         switch kind {
         case .poster: return "Poster"
@@ -184,13 +198,18 @@ struct PlayerPage: View {
     /// Portrait title artwork: edge to edge, under the status bar, filled and centre-cropped (never
     /// stretched), with its lower part fading into the backdrop made from the same picture.
     private func bleedArtwork(scene: PlayerScene, size: CGSize) -> some View {
-        ZStack {
+        let paused = scene.media.isActive && !scene.media.isPlaying
+        return ZStack {
             if let art = scene.art {
                 CachedArtwork(url: art, contentMode: .fill) { Color.clear }
             }
         }
         .frame(width: size.width, height: size.height)
         .clipped()
+        // The edge-to-edge artwork cannot ease back like the card, so pausing dims it slightly instead.
+        .brightness(paused ? -0.06 : 0)
+        .saturation(paused ? 0.88 : 1)
+        .animation(Motion.adaptive(Motion.settle), value: paused)
         .mask {
             LinearGradient(stops: [.init(color: .black, location: 0),
                                    .init(color: .black, location: PlayerLayoutPolicy.bleedFadeStart),
@@ -227,12 +246,15 @@ struct PlayerPage: View {
         .accessibilityLabel(artworkLabel(scene.kind))
     }
 
-    /// The no-artwork card: a soft wash of the theme accent with the app's own artwork (or a symbol).
+    /// The no-artwork card: the same palette as the no-artwork background (theme accents, or
+    /// GlassRemote's deep blue for neutral themes), a little lighter, with the app's own artwork.
     private func fallbackArt(app: TVApp?, media: MediaState, side: CGFloat) -> some View {
-        ZStack {
-            LinearGradient(colors: [theme.accent.opacity(0.55), theme.accent.opacity(0.22)],
+        let palette = NowPlayingPalette.fallback(accent: NowPlayingPalette.Tone(theme.accent),
+                                                 secondary: NowPlayingPalette.Tone(theme.accent2), light: theme.isLight)
+        return ZStack {
+            LinearGradient(colors: [palette.accent.color, palette.support.color],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
-            Color.ink.opacity(0.04)
+            Color.white.opacity(theme.isLight ? 0.18 : 0.07)
             if let app {
                 Image(app.asset == "nuvio" ? "nuvio_nowplaying" : "\(app.asset)_dark")
                     .resizable().scaledToFit()
@@ -285,9 +307,9 @@ struct PlayerPage: View {
         let interval = PlayerTimeline.refreshInterval(isPlaying: media.state == 3)
         let paused = PlayerTimeline.isPaused(sceneActive: scenePhase == .active, presented: navigator.playerPresented)
         return TimelineView(.animation(minimumInterval: interval, paused: paused)) { context in
-            statusContent(media: media, controls: controls,
-                          phase: PlayerSessionPhase.resolve(media: media, connected: connected, connecting: connecting, now: context.date),
-                          now: context.date)
+            let phase = PlayerSessionPhase.resolve(media: media, connected: connected, connecting: connecting, now: context.date)
+            statusContent(media: media, controls: controls, phase: phase, now: context.date)
+                .animation(Motion.adaptive(Motion.fade), value: phase.showsSession)
         }
     }
 
@@ -298,11 +320,13 @@ struct PlayerPage: View {
             let total: TimeInterval? = (controls.progress ? media.durationMs : nil).map { Double($0) / 1000 }
             timeline(position: position, total: total,
                      caption: PlayerCaptionPolicy.caption(phase: phase, seek: seekNote(now: now)))
+                .transition(.opacity)
         } else {
             Text(phase.hint)
                 .scaledFont(15)
                 .foregroundStyle(Color.inkAlpha(0.58))
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.opacity)
         }
     }
 
@@ -318,6 +342,8 @@ struct PlayerPage: View {
                     Capsule(style: .continuous).fill(Color.inkAlpha(0.2))
                     Capsule(style: .continuous).fill(Color.inkAlpha(0.85)).frame(width: geo.size.width * fraction)
                 }
+                // Glides between clock ticks; nothing to animate while there is no real duration.
+                .animation(fraction > 0 ? Motion.unlessReduced(Motion.settle, reduceMotion: reduceMotion) : nil, value: fraction)
             }
             .frame(height: PlayerLayoutPolicy.timelineHeight)
             ZStack {
@@ -333,9 +359,12 @@ struct PlayerPage: View {
                         .scaledFont(12, .semibold)
                         .foregroundStyle(Color.inkAlpha(0.6))
                         .lineLimit(1)
+                        .contentTransition(.opacity)
                         .padding(.horizontal, 52)
+                        .transition(.opacity)
                 }
             }
+            .animation(Motion.adaptive(Motion.fade), value: caption)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
