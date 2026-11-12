@@ -41,3 +41,11 @@ extension EnvironmentValues {
         set { self[RemoteSurfaceActiveKey.self] = newValue }
     }
 }
+
+/// VoiceOver actions on the mouse trackpad (audit A11Y-001).
+enum TrackpadAccessibility {
+    /// Wheel notches per "Scroll up / down" action.
+    static let scrollNotches = 3
+    /// Pointer travel per "Move pointer" action, in helper units (about one list row on the TV).
+    static let nudge = 40
+}

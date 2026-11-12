@@ -460,6 +460,16 @@ struct RemoteView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Trackpad")
             .accessibilityHint(RemoteSurfaceHints.androidTrackpad)
+            // Audit A11Y-001: VoiceOver cannot drag a pointer, so the pad offers its actions directly.
+            .accessibilityAction { remote.mouseClick() }
+            .accessibilityAction(.escape) { remote.key("BACK") }
+            .accessibilityAction(named: "Back") { remote.key("BACK") }
+            .accessibilityAction(named: "Scroll up") { remote.mouse(wheel: TrackpadAccessibility.scrollNotches, hscroll: 0) }
+            .accessibilityAction(named: "Scroll down") { remote.mouse(wheel: -TrackpadAccessibility.scrollNotches, hscroll: 0) }
+            .accessibilityAction(named: "Move pointer left") { remote.mouseMove(dx: -TrackpadAccessibility.nudge, dy: 0) }
+            .accessibilityAction(named: "Move pointer right") { remote.mouseMove(dx: TrackpadAccessibility.nudge, dy: 0) }
+            .accessibilityAction(named: "Move pointer up") { remote.mouseMove(dx: 0, dy: -TrackpadAccessibility.nudge) }
+            .accessibilityAction(named: "Move pointer down") { remote.mouseMove(dx: 0, dy: TrackpadAccessibility.nudge) }
             .background {
                 TwoFingerScroll(
                     state: scrollState,

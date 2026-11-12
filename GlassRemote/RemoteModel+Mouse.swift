@@ -128,6 +128,12 @@ extension RemoteModel {
         }
     }
 
+    /// One left click (VoiceOver's activate on the trackpad): press and release, queued in order.
+    func mouseClick() {
+        mouseButton(1)
+        mouseButton(0)
+    }
+
     /// Audit BUG-008: a drag the phone lost track of (the app left the foreground, the touch was
     /// cancelled) must not leave the TV's virtual mouse button down. Sends nothing unless a button
     /// is actually held, so leaving the app stays silent otherwise.
