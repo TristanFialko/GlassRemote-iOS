@@ -188,8 +188,8 @@ enum VolumeReadout {
     }
 }
 
-/// v5 §5: Samsung is the only volume source. These app key names are volume commands: they go to the
-/// Samsung TV or are not sent at all, never to the Android box (no ADB keyevent, no HID usage).
+/// The app key names that are volume commands. Wherever they come from they follow the chosen volume
+/// output (VolumeRoutePolicy) or are not sent at all; never HID.
 enum VolumeKeyPolicy {
     static let keys: Set<String> = ["VOLUME_UP", "VOLUME_DOWN", "MUTE"]
     static func isVolumeKey(_ name: String) -> Bool { keys.contains(name) }
