@@ -179,7 +179,7 @@ final class SamsungVolumeLink {
         lastFailure = String(describing: error)
         GRLog.note("volume", "UPnP RenderingControl request failed (\(consecutiveFailures)): \(error)")
         if consecutiveFailures >= 3 {
-            if isAvailable { onStatus?("TV volume: no answer · using key presses") }
+            if isAvailable { onStatus?("TV volume: no answer · TV speakers unavailable until it answers") }
             setAvailable(false)
         }
     }

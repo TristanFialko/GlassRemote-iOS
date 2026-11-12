@@ -105,8 +105,6 @@ struct RemoteView: View {
     @State private var pendingPower: PowerAction?
     @State private var didAutoConnect = false
     @State private var screenshotItem: ScreenshotItem?
-    @State private var volumeSliderValue: Double = 0.5
-    @State private var externalVolumeEcho: Double?
 
     @Environment(\.layoutContext) private var layoutContext
 
@@ -647,25 +645,14 @@ struct RemoteView: View {
     }
 
     private func volumeBar(thickness: CGFloat) -> some View {
-        GlassVolumeSlider(value: $volumeSliderValue, scale: remote.volumeScale, thickness: thickness,
+        // One shared position (RemoteModel.volumeSliderFraction) with Now Playing's row, so the two
+        // rows can never disagree; readings reach it only through VolumeSync in the model.
+        GlassVolumeSlider(value: Binding(get: { remote.volumeSliderFraction },
+                                         set: { remote.userMovedVolumeSlider(to: $0) }),
+                          scale: remote.volumeScale, thickness: thickness,
                           onDragChange: { remote.volumeDragChanged($0) },
-                          unavailableReason: remote.volumeUnavailableReason)
-            .onChange(of: volumeSliderValue) { _, newValue in
-                // A value we just applied from the TV's own reading must not be sent back to it.
-                if let echo = externalVolumeEcho, abs(newValue - echo) < 0.0001 {
-                    externalVolumeEcho = nil
-                    return
-                }
-                remote.setVolumeFraction(newValue)
-            }
-            // Continuation §C2: every device reading (Samsung UPnP only, v5 §5) goes through
-            // VolumeSync, so it never fights a finger and the settled value is shown after a drag.
-            .onChange(of: remote.volumeReading) { _, event in
-                guard let event,
-                      let shown = remote.sliderValue(forReading: event.fraction, showing: volumeSliderValue) else { return }
-                externalVolumeEcho = shown
-                volumeSliderValue = shown
-            }
+                          unavailableReason: remote.volumeUnavailableReason,
+                          outputLabel: remote.volumeOutputLabel)
             .onAppear { remote.refreshDeviceVolume() }
     }
 }

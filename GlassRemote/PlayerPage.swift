@@ -497,30 +497,16 @@ private struct PlayerScene {
 /// in place, dimmed, with the model's short reason.
 private struct PlayerVolumeBar: View {
     @EnvironmentObject private var remote: RemoteModel
-    @State private var value: Double = 0.5
-    @State private var externalEcho: Double?
 
     var body: some View {
-        GlassVolumeSlider(value: $value, scale: remote.volumeScale, thickness: ThinVolumeMetrics.minimumTouchTarget,
+        // The same shared position as the Remote page's row (RemoteModel.volumeSliderFraction).
+        GlassVolumeSlider(value: Binding(get: { remote.volumeSliderFraction },
+                                         set: { remote.userMovedVolumeSlider(to: $0) }),
+                          scale: remote.volumeScale, thickness: ThinVolumeMetrics.minimumTouchTarget,
                           appearance: .nowPlaying,
                           onDragChange: { remote.volumeDragChanged($0) },
                           unavailableReason: remote.volumeUnavailableReason,
-                          onMute: { remote.volume("MUTE") })
-            .onChange(of: value) { _, newValue in
-                if let echo = externalEcho, abs(newValue - echo) < 0.0001 { externalEcho = nil; return }
-                remote.setVolumeFraction(newValue)
-            }
-            .onChange(of: remote.volumeReading) { _, event in
-                guard let event, let shown = remote.sliderValue(forReading: event.fraction, showing: value) else { return }
-                externalEcho = shown
-                value = shown
-            }
-            .onAppear {
-                // Start from the last real reading (the Remote page asks the device on appear).
-                if let last = remote.volumeReading?.fraction, abs(last - value) > 0.0001 {
-                    externalEcho = last
-                    value = last
-                }
-            }
+                          onMute: { remote.volume("MUTE") },
+                          outputLabel: remote.volumeOutputLabel)
     }
 }
