@@ -117,7 +117,20 @@ final class AddonStore: ObservableObject {
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
     }
 
-    var streamAddonCount: Int { addons.filter { $0.enabled && $0.manifest.capabilities.contains(.stream) }.count }
+    /// Enabled stream add-ons that can actually be asked (their link is in the Keychain).
+    var streamAddonCount: Int { addons.filter { isStreamAddon($0) && !linkMissing($0) }.count }
+    /// Enabled stream add-ons whose Keychain link is gone (e.g. after restoring to a new device).
+    var linkMissingStreamAddonCount: Int { addons.filter { isStreamAddon($0) && linkMissing($0) }.count }
+
+    private func isStreamAddon(_ addon: InstalledAddon) -> Bool {
+        addon.enabled && addon.manifest.capabilities.contains(.stream)
+    }
+
+    /// The install is listed but its full link isn't in the Keychain (Keychain items don't always come
+    /// back with a restore). Nothing is deleted; the user re-adds the link with Replace link.
+    func linkMissing(_ addon: InstalledAddon) -> Bool {
+        transportURL(for: addon) == nil
+    }
 
     /// Loads a profile's list. Records saved before install ids existed get one, and their Keychain
     /// item moves from the manifest-id account to the install-id account.
@@ -275,7 +288,19 @@ final class AddonStore: ObservableObject {
     }
 
     private func installed(withLink url: URL) -> InstalledAddon? {
-        addons.first { transportURL(for: $0)?.absoluteString == url.absoluteString }
+        addons.first { candidate in transportURL(for: candidate).map { Self.sameLink($0, url) } ?? false }
+    }
+
+    /// Links are the same install when they match apart from scheme and host case (both are
+    /// case-insensitive); the path and query may carry case-sensitive tokens, so they must match exactly.
+    nonisolated static func sameLink(_ a: URL, _ b: URL) -> Bool {
+        func folded(_ url: URL) -> String {
+            guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.absoluteString }
+            parts.scheme = parts.scheme?.lowercased()
+            parts.host = parts.host?.lowercased()
+            return parts.string ?? url.absoluteString
+        }
+        return folded(a) == folded(b)
     }
 
     private func fileURL(_ profile: UUID) -> URL {
