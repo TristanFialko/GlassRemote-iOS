@@ -85,9 +85,10 @@ enum RemoteLayoutPolicy {
         return min(max(side, 180), 440)
     }
 
-    /// Mode selector height: prominent in portrait, slimmer in the landscape top bar.
+    /// Mode selector height: prominent in portrait, slimmer in the landscape top bar. Never below a
+    /// 44 pt touch target (audit UX-012); in landscape it fills the 44 pt top bar.
     static func selectorHeight(compact: Bool, isLandscape: Bool) -> CGFloat {
-        isLandscape ? 40 : (compact ? 42 : 48)
+        isLandscape ? 44 : (compact ? 44 : 48)
     }
 
     /// Gap between a landscape key rail and the pad.
@@ -327,7 +328,7 @@ struct RemoteStageLayout: Layout {
                                   anchor: .topLeading,
                                   proposal: ProposedViewSize(width: rect.width, height: rect.height))
         }
-        /// Top-bar children keep their own height (the selector is 40 pt in a 44 pt bar): centred.
+        /// Top-bar children keep their own height (the selector fills the 44 pt bar): centred.
         func placeCentred(_ index: Int, _ rect: CGRect) {
             subviews[index].place(at: CGPoint(x: bounds.minX + rect.midX, y: bounds.minY + rect.midY),
                                   anchor: .center,

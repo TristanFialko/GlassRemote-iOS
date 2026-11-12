@@ -160,6 +160,9 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var ns
     @State private var drag: Drag?
+    /// Resets on lift and on a system cancellation; a drag left behind by a lost `onEnded` is
+    /// cleared (audit BUG-015), so the bubble never stays parked mid-bar.
+    @GestureState private var scrubTouching = false
 
     /// `grab`: where along the bubble the finger holds it. `offset`: the bubble's leading (or top) edge.
     /// `speed`: smoothed finger speed along the bar in pt/s.
@@ -242,6 +245,7 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
             .contentShape(Capsule())
             .gesture(
                 DragGesture(minimumDistance: 0)
+                    .updating($scrubTouching) { _, state, _ in state = true }
                     .onChanged { value in
                         ScrubTouch.shared.touch()
                         let p: CGFloat = vertical ? value.location.y : value.location.x
@@ -285,6 +289,14 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
                         if i < values.count { commit(values[i]) }
                     }
             )
+            .onChange(of: scrubTouching) { _, touching in
+                guard !touching, let started = drag?.time else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: InputCancellation.lostEndGrace)
+                    // No end arrived for this touch (the system took it): nothing is committed.
+                    if drag != nil, drag?.time == started { drag = nil }
+                }
+            }
         }
         .frame(width: vertical ? height : nil, height: vertical ? nil : height)
         // Phase 7.1: a page swipe never starts on a selector (see PagerExclusion.swift).
@@ -440,7 +452,10 @@ struct ModeSelector: View {
                 withAnimation(Motion.adaptive(Motion.snappy)) { isMouse = newValue }
             }),
             height: segmentHeight + inset * 2,
-            inset: inset
+            inset: inset,
+            // Audit UX-012: like the dock, the mode changes on release, not on touch-down, so a thumb
+            // reaching for the pad that grazes the other half does not flip the mode.
+            commitOnRelease: true
         ) { mouse, selected in
             // v5 §6: icons only (no "Mouse" / "D-pad" captions); the selected half takes the theme
             // accent (v5 §9). The names stay available to VoiceOver below.
