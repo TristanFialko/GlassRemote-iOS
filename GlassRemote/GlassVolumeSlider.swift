@@ -18,8 +18,13 @@ struct GlassVolumeSlider: View {
     var scale: VolumeScale = .samsungAbsolute(.standard)
     /// Height of the control's touch area (never below 44 pt). The visible track stays thin.
     var thickness: CGFloat = RemoteLayoutPolicy.portraitVolumeThickness
+    /// `.nowPlaying` draws the row as Apple Music does: a neutral fill and a loud-speaker glyph at
+    /// the trailing end instead of the accent fill and the percentage (still spoken by VoiceOver).
+    var appearance: Appearance = .standard
     /// Tells the model a finger is on the slider, so TV readings never move the level mid-drag.
     var onDragChange: (Bool) -> Void = { _ in }
+
+    enum Appearance: Equatable { case standard, nowPlaying }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.glassTheme) private var theme
@@ -31,15 +36,21 @@ struct GlassVolumeSlider: View {
     private var available: Bool { scale.isAvailable }
     private var percent: Int { scale.percent(forFraction: value) }
     private var large: Bool { thickness >= 64 }
+    private var quiet: Bool { appearance == .nowPlaying }
+    private var leadingSymbol: String {
+        guard available else { return "speaker.slash" }
+        // Apple Music keeps one quiet speaker here; mute and minimum still show their own glyph.
+        if quiet, percent > 0 { return "speaker.fill" }
+        return VolumeReadout.symbol(percent: percent, floorIsMute: scale.floorIsMute)
+    }
 
     var body: some View {
         HStack(spacing: ThinVolumeMetrics.spacing) {
-            Image(systemName: available ? VolumeReadout.symbol(percent: percent, floorIsMute: scale.floorIsMute)
-                                        : "speaker.slash")
-                .scaledFont(large ? 17 : 15, .semibold)
-                .foregroundStyle(Color.inkAlpha(0.75))
+            Image(systemName: leadingSymbol)
+                .scaledFont(large ? 17 : (quiet ? 13 : 15), .semibold)
+                .foregroundStyle(Color.inkAlpha(quiet ? 0.6 : 0.75))
                 .contentTransition(.symbolEffect(.replace))
-                .frame(width: 24)
+                .frame(width: quiet ? 18 : 24)
 
             GeometryReader { geo in
                 let width = max(geo.size.width, 1)
@@ -48,7 +59,7 @@ struct GlassVolumeSlider: View {
                     Capsule(style: .continuous)
                         .fill(Color.inkAlpha(0.16))
                     Capsule(style: .continuous)
-                        .fill(available ? theme.accent : Color.inkAlpha(0.28))
+                        .fill(available ? (quiet ? Color.inkAlpha(0.85) : theme.accent) : Color.inkAlpha(0.28))
                         .frame(width: ThinVolumeMetrics.fillWidth(value: value, width: width))
                 }
                 .frame(width: width, height: track)
@@ -59,16 +70,23 @@ struct GlassVolumeSlider: View {
                 .gesture(drag(width: width), including: available ? .all : .none)
             }
 
-            Text(available ? VolumeReadout.text(percent: percent) : "Unavailable")
-                .scaledFont(large ? 14 : 13, .semibold)
-                .monospacedDigit()
-                .contentTransition(.numericText(value: Double(percent)))
-                .foregroundStyle(Color.inkAlpha(0.7))
-                .lineLimit(1)
-                .fixedSize()
-                .frame(minWidth: 40, alignment: .trailing)
+            if quiet, available {
+                Image(systemName: "speaker.wave.3.fill")
+                    .scaledFont(13, .semibold)
+                    .foregroundStyle(Color.inkAlpha(0.6))
+                    .frame(width: 24, alignment: .trailing)
+            } else {
+                Text(available ? VolumeReadout.text(percent: percent) : "Unavailable")
+                    .scaledFont(large ? 14 : 13, .semibold)
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: Double(percent)))
+                    .foregroundStyle(Color.inkAlpha(0.7))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(minWidth: 40, alignment: .trailing)
+            }
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, quiet ? 0 : 4)
         .frame(height: ThinVolumeMetrics.controlHeight(thickness))
         .opacity(available ? 1 : 0.6)
         .onChange(of: value) { _, newValue in

@@ -103,15 +103,58 @@ enum PlayerLayoutPolicy {
 
     // MARK: v5 §3 (Now Playing, Apple Music style)
 
-    /// Portrait side margin of the Now Playing group: the artwork runs nearly edge to edge.
-    static let nowPlayingMargin: CGFloat = 26
+    /// Portrait side margin of the controls (the title artwork itself runs edge to edge).
+    static let nowPlayingMargin: CGFloat = 28
     static let artworkCornerRadius: CGFloat = 14
     /// Thin, display-only timeline.
-    static let timelineHeight: CGFloat = 5
+    static let timelineHeight: CGFloat = 6
     /// Transport row: plain glyphs, the play glyph largest; every glyph keeps a full touch target.
-    static let transportHeight: CGFloat = 64
-    static let playGlyph: CGFloat = 42
-    static let secondaryGlyph: CGFloat = 28
+    static let transportHeight: CGFloat = 68
+    static let playGlyph: CGFloat = 46
+    static let secondaryGlyph: CGFloat = 32
+    /// Title and artist line share one size, as in Apple Music; the second line is only lighter.
+    static let titleSize: CGFloat = 20
+    /// The grabber at the top of the sheet.
+    static let grabberSize = CGSize(width: 38, height: 5)
+    /// Portrait: room between the volume row and the dock.
+    static let portraitBottomGap: CGFloat = 10
+
+    // MARK: Gap fixes (Apple Music references)
+
+    /// Portrait title artwork reaches this far below the artwork region, behind the title, where it
+    /// has already faded out.
+    static let bleedOverlap: CGFloat = 64
+    /// The artwork is fully opaque down to this share of its height, then fades to nothing.
+    static let bleedFadeStart: CGFloat = 0.62
+
+    /// Portrait title artwork: the full page width (the side margins are given back), from the top
+    /// of the screen (`topInset` is the status bar's safe area) to `bleedOverlap` below the region.
+    static func portraitBleed(region: CGSize, margin: CGFloat, topInset: CGFloat) -> CGSize {
+        guard region.width > 0, region.height > 0 else { return .zero }
+        return CGSize(width: region.width + 2 * max(margin, 0),
+                      height: region.height + max(topInset, 0) + bleedOverlap)
+    }
+
+    /// Portrait without title artwork: the card keeps clear of the grabber above it and of the
+    /// title below it.
+    static func portraitCardRegion(region: CGSize) -> CGSize {
+        CGSize(width: max(region.width, 0), height: max(region.height - 2 * portraitCardInset, 0))
+    }
+    static let portraitCardInset: CGFloat = 28
+
+    /// Landscape: the grabber sits above the artwork card.
+    static let landscapeTopInset: CGFloat = 10
+    /// Landscape: the least room between the rows of the control column.
+    static let landscapeMinRowGap: CGFloat = 8
+    /// Landscape: what the column's rows need at their natural sizes (title, timeline, transport,
+    /// volume and the least gaps), so a short artwork card never squeezes them.
+    static let landscapeMinColumnHeight: CGFloat = 236
+
+    /// Landscape: the control column is as tall as the artwork card, so the title lines up with the
+    /// card's top edge and the volume row with its bottom edge.
+    static func landscapeColumnHeight(artSide: CGFloat) -> CGFloat {
+        max(artSide, landscapeMinColumnHeight)
+    }
     /// The artwork eases back to this scale while paused, as Apple Music does.
     static let pausedArtworkScale: CGFloat = 0.9
 
@@ -149,6 +192,24 @@ enum PlayerTitlePolicy {
             parts.append(trimmed)
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// The small caption centred under the timeline (where Apple Music shows "Mixing" or the audio
+/// format): the last seek the TV confirmed, else the session state when it is not simply playing.
+enum PlayerCaptionPolicy {
+    static func caption(phase: PlayerSessionPhase, seek: String?) -> String {
+        if let seek, !seek.isEmpty { return seek }
+        switch phase {
+        case .playing: return ""
+        case .paused, .buffering, .stale: return phase.label
+        case .disconnected, .connecting, .idle: return ""
+        }
+    }
+
+    /// "+10 s" / "−10 s": the jump the TV's session confirmed.
+    static func seekText(seconds: Double) -> String {
+        "\(seconds < 0 ? "−" : "+")\(Int(abs(seconds).rounded())) s"
     }
 }
 

@@ -84,6 +84,16 @@ struct ConnectionSheet: View {
                         Text("Remote (WebSocket): \(remote.samsungState.label)").font(.footnote).foregroundStyle(.secondary)
                         Text("Volume link (UPnP): \(remote.samsungVolumeReady ? "Ready" : "Not available") · the two work independently")
                             .font(.footnote).foregroundStyle(.secondary)
+                        Picker("Sound comes from", selection: $remote.samsungAudioOutput) {
+                            ForEach(SamsungAudioOutput.allCases) { output in
+                                Text(output.label).tag(output)
+                            }
+                        }
+                        Text(remote.volumeRouteSummary).font(.footnote).foregroundStyle(.secondary)
+                        if remote.samsungAudioOutput == .automatic, remote.volumeOutputEvidence != .unknown {
+                            Button("Check the sound output again") { remote.resetVolumeEvidence() }
+                                .accessibilityHint("Forgets what was learned about this TV's volume, then learns it again from the next volume key")
+                        }
                         Text(remote.samsungDiagnostics).font(.footnote).foregroundStyle(.secondary)
                         if !remote.samsungPairingDiagnostics.isEmpty {
                             Text(remote.samsungPairingDiagnostics).font(.footnote).foregroundStyle(.secondary)
@@ -110,7 +120,7 @@ struct ConnectionSheet: View {
                         Text("Set this to the highest number your soundbar shows. The slider spans this whole range, so full slider = soundbar maximum.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    Text("Volume goes only to the Samsung TV: its UPnP level when it answers, otherwise its remote keys. When this is off, or the TV cannot be reached, volume is shown as unavailable; it is never sent to the Android box. The app connects to the Samsung TV automatically and retries if it is unreachable.")
+                    Text("Volume goes only to the Samsung TV. Its remote keys reach whatever is playing, including a soundbar or receiver. The TV's own level (UPnP) is used for an exact 0–100 slider only when it is the output that is playing. When this is off, or the TV cannot be reached, volume is shown as unavailable; it is never sent to the Android box. The app connects to the Samsung TV automatically and retries if it is unreachable.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 

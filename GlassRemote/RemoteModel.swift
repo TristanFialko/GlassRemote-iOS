@@ -86,8 +86,30 @@ final class RemoteModel: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return saved.isEmpty ? RemoteModel.defaultSamsungHost : saved
     }() {
-        didSet { UserDefaults.standard.set(samsungHost, forKey: "glassRemote.samsungHost") }
+        didSet {
+            UserDefaults.standard.set(samsungHost, forKey: "glassRemote.samsungHost")
+            // What was learned about one TV's volume says nothing about another.
+            volumeOutputProbe.reset()
+            volumeOutputEvidence = VolumeOutputEvidenceStore.load(host: samsungHost)
+        }
     }
+
+    /// What the TV's sound comes out of (Connection settings). Automatic decides from evidence.
+    @Published var samsungAudioOutput: SamsungAudioOutput = {
+        SamsungAudioOutput(rawValue: UserDefaults.standard.string(forKey: "glassRemote.samsungAudioOutput") ?? "") ?? .automatic
+    }() {
+        didSet {
+            UserDefaults.standard.set(samsungAudioOutput.rawValue, forKey: "glassRemote.samsungAudioOutput")
+            volumeRouteChanged()
+        }
+    }
+    /// Whether the TV's UPnP level has been seen to follow its remote volume keys (VolumeOutput.swift).
+    @Published var volumeOutputEvidence: VolumeOutputEvidence = {
+        let saved = (UserDefaults.standard.string(forKey: "glassRemote.samsungHost") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return VolumeOutputEvidenceStore.load(host: saved.isEmpty ? RemoteModel.defaultSamsungHost : saved)
+    }()
+    var volumeOutputProbe = VolumeOutputProbe()
 
     /// Highest level of the soundbar's own volume scale (what one full slider sweep covers).
     /// Each VOLUP/VOLDOWN press moves the soundbar one level, so the slider must span this

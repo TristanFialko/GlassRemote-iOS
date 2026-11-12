@@ -275,6 +275,18 @@ jobs:
           fi
           exit 0
 
+      - name: Upload rendered Now Playing screens
+        # Phase9PlayerGapTests renders the real page (portrait and landscape) to PNG so the layout
+        # can be compared with its design references. Diagnostics only.
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: glassremote-nowplaying-screens
+          path: /tmp/glassremote-snapshots/nowplaying-*.png
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload build logs
         if: failure()
         uses: actions/upload-artifact@v4

@@ -151,32 +151,49 @@ final class Phase9RecoveryVolumeTests: XCTestCase {
 
     func testButtonsPreferTheRemoteSocketThenUPnPAndNeverAndroid() {
         for name in VolumeKeyPolicy.keys {
-            XCTAssertEqual(VolumeButtonPolicy.route(for: name, tvVolumeEnabled: true, remoteReady: true, upnpReady: true),
-                           .samsungKey(name), name)
-            XCTAssertEqual(VolumeButtonPolicy.route(for: name, tvVolumeEnabled: true, remoteReady: true, upnpReady: false),
-                           .samsungKey(name), name)
-            XCTAssertEqual(VolumeButtonPolicy.route(for: name, tvVolumeEnabled: true, remoteReady: false, upnpReady: false),
-                           .unavailable, name)
-            for remote in [false, true] {
-                for upnp in [false, true] {
-                    XCTAssertEqual(VolumeButtonPolicy.route(for: name, tvVolumeEnabled: false, remoteReady: remote, upnpReady: upnp),
-                                   .unavailable, "Samsung off: nothing is sent (\(name))")
+            for trusted in [false, true] {
+                XCTAssertEqual(VolumeButtonPolicy.route(for: name, tvVolumeEnabled: true, remoteReady: true, upnpReady: true,
+                                                        upnpControlsOutput: trusted),
+                               .samsungKey(name), "the TV's own key whenever the remote socket is up (\(name))")
+                XCTAssertEqual(VolumeButtonPolicy.route(for: name, tvVolumeEnabled: true, remoteReady: true, upnpReady: false,
+                                                        upnpControlsOutput: trusted),
+                               .samsungKey(name), name)
+                XCTAssertEqual(VolumeButtonPolicy.route(for: name, tvVolumeEnabled: true, remoteReady: false, upnpReady: false,
+                                                        upnpControlsOutput: trusted),
+                               .unavailable, name)
+                for remote in [false, true] {
+                    for upnp in [false, true] {
+                        XCTAssertEqual(VolumeButtonPolicy.route(for: name, tvVolumeEnabled: false, remoteReady: remote, upnpReady: upnp,
+                                                                upnpControlsOutput: trusted),
+                                       .unavailable, "Samsung off: nothing is sent (\(name))")
+                    }
                 }
             }
         }
-        XCTAssertEqual(VolumeButtonPolicy.route(for: "VOLUME_UP", tvVolumeEnabled: true, remoteReady: false, upnpReady: true), .upnpStep(1))
-        XCTAssertEqual(VolumeButtonPolicy.route(for: "VOLUME_DOWN", tvVolumeEnabled: true, remoteReady: false, upnpReady: true), .upnpStep(-1))
-        XCTAssertEqual(VolumeButtonPolicy.route(for: "MUTE", tvVolumeEnabled: true, remoteReady: false, upnpReady: true), .upnpMuteToggle)
+        // UPnP steps only when UPnP is known to address the output that is playing.
+        XCTAssertEqual(VolumeButtonPolicy.route(for: "VOLUME_UP", tvVolumeEnabled: true, remoteReady: false, upnpReady: true,
+                                                upnpControlsOutput: true), .upnpStep(1))
+        XCTAssertEqual(VolumeButtonPolicy.route(for: "VOLUME_DOWN", tvVolumeEnabled: true, remoteReady: false, upnpReady: true,
+                                                upnpControlsOutput: true), .upnpStep(-1))
+        XCTAssertEqual(VolumeButtonPolicy.route(for: "MUTE", tvVolumeEnabled: true, remoteReady: false, upnpReady: true,
+                                                upnpControlsOutput: true), .upnpMuteToggle)
+        for name in VolumeKeyPolicy.keys {
+            XCTAssertEqual(VolumeButtonPolicy.route(for: name, tvVolumeEnabled: true, remoteReady: false, upnpReady: true,
+                                                    upnpControlsOutput: false),
+                           .unavailable, "an unverified UPnP level must not stand in for the soundbar (\(name))")
+        }
         for other in ["UP", "OK", "HOME", "POWER", ""] {
-            XCTAssertEqual(VolumeButtonPolicy.route(for: other, tvVolumeEnabled: true, remoteReady: true, upnpReady: true), .unavailable, other)
+            XCTAssertEqual(VolumeButtonPolicy.route(for: other, tvVolumeEnabled: true, remoteReady: true, upnpReady: true,
+                                                    upnpControlsOutput: true), .unavailable, other)
         }
     }
 
-    func testButtonsAreAvailableWhenEitherSamsungRouteIsUp() {
-        XCTAssertTrue(VolumeButtonPolicy.isAvailable(tvVolumeEnabled: true, remoteReady: true, upnpReady: false))
-        XCTAssertTrue(VolumeButtonPolicy.isAvailable(tvVolumeEnabled: true, remoteReady: false, upnpReady: true))
-        XCTAssertFalse(VolumeButtonPolicy.isAvailable(tvVolumeEnabled: true, remoteReady: false, upnpReady: false))
-        XCTAssertFalse(VolumeButtonPolicy.isAvailable(tvVolumeEnabled: false, remoteReady: true, upnpReady: true))
+    func testButtonsAreAvailableWhenASamsungRouteReachesThePlayingOutput() {
+        XCTAssertTrue(VolumeButtonPolicy.isAvailable(tvVolumeEnabled: true, remoteReady: true, upnpReady: false, upnpControlsOutput: false))
+        XCTAssertTrue(VolumeButtonPolicy.isAvailable(tvVolumeEnabled: true, remoteReady: false, upnpReady: true, upnpControlsOutput: true))
+        XCTAssertFalse(VolumeButtonPolicy.isAvailable(tvVolumeEnabled: true, remoteReady: false, upnpReady: true, upnpControlsOutput: false))
+        XCTAssertFalse(VolumeButtonPolicy.isAvailable(tvVolumeEnabled: true, remoteReady: false, upnpReady: false, upnpControlsOutput: true))
+        XCTAssertFalse(VolumeButtonPolicy.isAvailable(tvVolumeEnabled: false, remoteReady: true, upnpReady: true, upnpControlsOutput: true))
     }
 
     @MainActor

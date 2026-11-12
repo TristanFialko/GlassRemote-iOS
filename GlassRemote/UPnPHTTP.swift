@@ -199,11 +199,14 @@ enum VolumeButtonRoute: Equatable, Sendable {
 }
 
 enum VolumeButtonPolicy {
+    /// `upnpControlsOutput`: UPnP is known to address the output that is playing
+    /// (`VolumeRoutePolicy.upnpControlsOutput`). Without that a UPnP step would change the TV's
+    /// built-in speaker level while a soundbar plays, so nothing is sent instead.
     static func route(for name: String, tvVolumeEnabled: Bool, remoteReady: Bool,
-                      upnpReady: Bool) -> VolumeButtonRoute {
+                      upnpReady: Bool, upnpControlsOutput: Bool) -> VolumeButtonRoute {
         guard tvVolumeEnabled, VolumeKeyPolicy.isVolumeKey(name) else { return .unavailable }
         if remoteReady { return .samsungKey(name) }
-        guard upnpReady else { return .unavailable }
+        guard upnpReady, upnpControlsOutput else { return .unavailable }
         switch name {
         case "VOLUME_UP": return .upnpStep(1)
         case "VOLUME_DOWN": return .upnpStep(-1)
@@ -213,8 +216,9 @@ enum VolumeButtonPolicy {
     }
 
     /// Whether a volume button can do anything right now (drives its enabled state).
-    static func isAvailable(tvVolumeEnabled: Bool, remoteReady: Bool, upnpReady: Bool) -> Bool {
+    static func isAvailable(tvVolumeEnabled: Bool, remoteReady: Bool, upnpReady: Bool,
+                            upnpControlsOutput: Bool) -> Bool {
         route(for: "VOLUME_UP", tvVolumeEnabled: tvVolumeEnabled, remoteReady: remoteReady,
-              upnpReady: upnpReady) != .unavailable
+              upnpReady: upnpReady, upnpControlsOutput: upnpControlsOutput) != .unavailable
     }
 }
