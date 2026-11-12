@@ -648,7 +648,8 @@ struct RemoteView: View {
 
     private func volumeBar(thickness: CGFloat) -> some View {
         GlassVolumeSlider(value: $volumeSliderValue, scale: remote.volumeScale, thickness: thickness,
-                          onDragChange: { remote.volumeDragChanged($0) })
+                          onDragChange: { remote.volumeDragChanged($0) },
+                          unavailableReason: remote.volumeUnavailableReason)
             .onChange(of: volumeSliderValue) { _, newValue in
                 // A value we just applied from the TV's own reading must not be sent back to it.
                 if let echo = externalVolumeEcho, abs(newValue - echo) < 0.0001 {

@@ -220,6 +220,13 @@ struct NowPlayingPalette: Equatable {
         let others = rest.filter { $0 != accentSwatch }
         let supportSwatch = others.max { contribution($0, base: base, accent: accent) < contribution($1, base: base, accent: accent) }
         let support = supportSwatch.map { Tone($0) } ?? base.shifted(hue: -0.05, saturation: 0.9, value: 0.8)
+        // A pale, colourless field (cream, white) darkens to grey under white ink; let the poster's
+        // own colours carry the wash instead.
+        if !light, base.luminance > 0.55, base.hsv.s < 0.2, accentSwatch != nil, accent.hsv.s >= 0.35 {
+            return readable(base: accent, accent: accent.shifted(hue: -0.03, saturation: 1.1, value: 1.15),
+                            support: supportSwatch.map { Tone($0) } ?? accent.shifted(hue: -0.05, saturation: 0.9, value: 0.8),
+                            light: light)
+        }
         return readable(base: base, accent: accent, support: support, light: light)
     }
 

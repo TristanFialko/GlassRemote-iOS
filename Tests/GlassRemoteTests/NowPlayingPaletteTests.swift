@@ -103,6 +103,17 @@ final class NowPlayingPaletteTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(light.base.luminance, PlayerBackdropPolicy.lightMinLuminance - 0.001)
     }
 
+    func testAPaleColourlessPosterTakesItsWashFromItsColours() throws {
+        // Seen in the CI render: a cream field darkened under white ink became a muddy grey.
+        let swatches = NowPlayingPaletteExtractor.swatches(rgba: pixels(245, 238, 215, count: 600)
+            + pixels(250, 214, 80, count: 300) + pixels(190, 120, 60, count: 100))
+        let dark = try XCTUnwrap(NowPlayingPalette.make(swatches: swatches, light: false))
+        XCTAssertGreaterThan(dark.base.hsv.s, 0.3, "the field keeps the poster's colour, not grey")
+        XCTAssertLessThanOrEqual(dark.base.luminance, PlayerBackdropPolicy.darkMaxLuminance + 0.001)
+        let light = try XCTUnwrap(NowPlayingPalette.make(swatches: swatches, light: true))
+        XCTAssertGreaterThanOrEqual(light.base.luminance, PlayerBackdropPolicy.lightMinLuminance - 0.001)
+    }
+
     func testADarkPosterKeepsItsSaturatedAccent() throws {
         let night = ArtworkSwatch(r: 0.03, g: 0.03, b: 0.04, share: 0.9)
         let cyan = ArtworkSwatch(r: 0.0, g: 0.75, b: 0.9, share: 0.08)

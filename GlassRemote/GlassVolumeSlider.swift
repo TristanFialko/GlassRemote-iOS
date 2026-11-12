@@ -134,7 +134,7 @@ struct GlassVolumeSlider: View {
         if send() {
             muteSent += 1
         } else {
-            withAnimation(Motion.unlessReduced(.easeOut(duration: 0.42), reduceMotion: reduceMotion)) { muteFailures += 1 }
+            withAnimation(Motion.unlessReduced(Motion.release, reduceMotion: reduceMotion)) { muteFailures += 1 }
             UIAccessibility.post(notification: .announcement, argument: "Mute not sent. \(readoutReason)")
         }
     }
