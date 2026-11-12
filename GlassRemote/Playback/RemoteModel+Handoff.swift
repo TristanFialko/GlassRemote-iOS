@@ -50,31 +50,39 @@ extension RemoteModel {
 
     /// Sends one add-on stream to the TV box.
     func playOnTV(_ stream: AddonStream) async -> String {
+        await playOnTVResult(stream).message
+    }
+
+    func playOnTVResult(_ stream: AddonStream) async -> HandoffResult {
         switch stream.kind {
         case .direct(let url):
             if stream.behaviorHints?.needsHeaders == true {
-                return "This stream needs request headers that can't be passed to the TV. Pick another stream or use Open in Nuvio."
+                return .failed("This stream needs request headers that can't be passed to the TV. Pick another stream or use Open in Nuvio.")
             }
-            guard let safe = Self.shellSafeURL(url) else { return "This stream's address can't be sent safely. Pick another stream." }
+            guard let safe = Self.shellSafeURL(url) else { return .failed("This stream's address can't be sent safely. Pick another stream.") }
             return await runIntent(Self.videoIntentCommand(url: safe),
                                    success: "Sent to the TV's video player. Android accepted it; the player decides whether the stream plays.",
                                    note: "stream")
         case .external(let url):
-            guard let safe = Self.shellSafeURL(url) else { return "This link can't be sent safely." }
+            guard let safe = Self.shellSafeURL(url) else { return .failed("This link can't be sent safely.") }
             return await runIntent(Self.viewIntentCommand(url: safe), success: "Opened the link on the TV.", note: "external")
         case .youtube(let id):
-            return await playYouTube(id: id)
+            return await youTubeResult(id: id)
         case .torrent:
-            return "Torrent streams can't be sent from GlassRemote. Use Open in Nuvio: if this add-on is installed in Nuvio as well, Nuvio can play it."
+            return .failed("Torrent streams can't be sent from GlassRemote. Use Open in Nuvio: if this add-on is installed in Nuvio as well, Nuvio can play it.")
         case .unsupported:
-            return "This stream has no address the TV can open."
+            return .failed("This stream has no address the TV can open.")
         }
     }
 
     /// Trailers: YouTube ids open in the TV's YouTube app (VIEW on the watch URL).
     func playYouTube(id: String) async -> String {
+        await youTubeResult(id: id).message
+    }
+
+    private func youTubeResult(id: String) async -> HandoffResult {
         guard let url = Self.youTubeURL(id: id), let safe = Self.shellSafeURL(url, schemes: ["https"]) else {
-            return "This trailer id isn't valid."
+            return .failed("This trailer id isn't valid.")
         }
         return await runIntent(Self.viewIntentCommand(url: safe), success: "Playing the trailer on the TV.", note: "trailer")
     }
@@ -85,24 +93,33 @@ extension RemoteModel {
         }
         return await runIntent(Self.nuvioIntentCommand(link: link),
                                success: "Sent to Nuvio on the TV. Confirm the install there.",
-                               note: "addon install")
+                               note: "addon install").message
     }
 
-    private func runIntent(_ command: String, success: String, note: String) async -> String {
-        guard connected, let adb else { return "Not connected to the TV box. Connect it in Profile > TV Connections." }
+    private func runIntent(_ command: String, success: String, note: String) async -> HandoffResult {
+        guard connected, let adb else { return .failed("Not connected to the TV box. Connect it in Profile > TV Connections.") }
         do {
             let out = try await runShell(adb, ["sh", "-c", command])
             GRLog.note("handoff", "user-initiated \(note)")
-            if Self.intentAccepted(out) { return success }
+            if Self.intentAccepted(out) { return HandoffResult(message: success, succeeded: true) }
             if out.localizedCaseInsensitiveContains("unable to resolve") || out.localizedCaseInsensitiveContains("no activity") {
-                return "The TV has no app that can open this."
+                return .failed("The TV has no app that can open this.")
             }
             if out.localizedCaseInsensitiveContains("permission denial") {
-                return "Android on the TV refused the request."
+                return .failed("Android on the TV refused the request.")
             }
-            return "The TV didn't accept the request."
+            return .failed("The TV didn't accept the request.")
         } catch {
-            return "Couldn't send: \(error.localizedDescription)"
+            return .failed("Couldn't send: \(error.localizedDescription)")
         }
     }
+}
+
+/// What a handoff to the TV produced: the user-facing line, and whether Android accepted it, so the UI
+/// only offers "Continue on the TV" after a handoff that went through.
+struct HandoffResult: Equatable, Sendable {
+    let message: String
+    let succeeded: Bool
+
+    static func failed(_ message: String) -> HandoffResult { HandoffResult(message: message, succeeded: false) }
 }

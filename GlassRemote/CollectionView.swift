@@ -19,6 +19,8 @@ struct CollectionRequest: Identifiable {
 /// The single reusable See All page. One implementation serves every category: only the source differs.
 struct CollectionView: View {
     let request: CollectionRequest
+    /// Closes See All and shows the Remote after a handoff from a title opened here (UX-011).
+    var onShowRemote: (() -> Void)? = nil
     @EnvironmentObject private var remote: RemoteModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.glassTheme) private var theme
@@ -37,14 +39,23 @@ struct CollectionView: View {
 
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 150), spacing: 12, alignment: .top)]
 
-    init(request: CollectionRequest) {
+    init(request: CollectionRequest, onShowRemote: (() -> Void)? = nil) {
         self.request = request
+        self.onShowRemote = onShowRemote
         _kind = State(initialValue: request.kind)
         _catalog = State(initialValue: request.catalog)
         _genre = State(initialValue: request.genre)
     }
 
     private var isLocal: Bool { request.local != nil }
+
+    private var showRemoteFromDetail: (() -> Void)? {
+        guard let onShowRemote else { return nil }
+        return {
+            target = nil
+            onShowRemote()
+        }
+    }
     private var heading: String { isLocal ? request.title : CatalogSource(kind: kind, catalog: catalog, genre: genre).title.capitalizedFirst }
 
     var body: some View {
@@ -59,7 +70,8 @@ struct CollectionView: View {
         .background { AmbientBackdrop() }
         .themedSheet()
         .sheet(item: $target) { item in
-            TitleDetailView(title: item.title, libraryItem: item.libraryItem).environmentObject(remote)
+            TitleDetailView(title: item.title, libraryItem: item.libraryItem, onShowRemote: showRemoteFromDetail)
+                .environmentObject(remote)
         }
         .task(id: "\(kind.rawValue)|\(catalog)|\(genre ?? "")") { await reload() }
     }
