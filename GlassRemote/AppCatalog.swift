@@ -44,6 +44,14 @@ enum AppCatalog {
         var launcher: [String] = []
     }
 
+    /// Status after a scan that listed packages. Zero launch activities usually means the box's
+    /// `cmd package` lacks `query-activities` or refused it; say so instead of "N apps found".
+    static func scanStatus(installedCount: Int, launchableCount: Int) -> String {
+        launchableCount == 0
+            ? "Connected · app list unavailable on this box; built-in tiles still work"
+            : "Connected · \(installedCount) apps found"
+    }
+
     static func parseScan(_ output: String) -> Scan {
         enum Section { case packages, leanback, launcher }
         var section = Section.packages

@@ -91,4 +91,31 @@ final class RemediationGestureTests: XCTestCase {
             }
         }
     }
+
+    // BUG-007: a key cancelled while the finger stays down (repeat cap, page change) must not
+    // restart on that touch's next drag event; it may begin again after the finger lifts.
+    func testCancelledKeyStaysStoppedUntilTheFingerLifts() {
+        var gate = HeldTouchGate()
+        XCTAssertTrue(gate.touched())
+        gate.cancelled()
+        XCTAssertFalse(gate.touched(), "the same touch keeps moving after the cap")
+        XCTAssertFalse(gate.touched())
+        gate.lifted()
+        XCTAssertTrue(gate.touched(), "a new touch works")
+    }
+
+    func testCancellationAfterTheLiftDoesNotEatTheNextTap() {
+        var gate = HeldTouchGate()
+        XCTAssertTrue(gate.touched())
+        gate.lifted()       // gesture state reset (lost end)
+        gate.cancelled()    // the lost-end grace then cancels the key
+        XCTAssertTrue(gate.touched())
+    }
+
+    func testRepeatKeyUsesTheGate() throws {
+        let text = try source("GlassRemote/RepeatKey.swift")
+        XCTAssertTrue(text.contains("guard box.gate.touched() else { return }"))
+        XCTAssertTrue(text.contains("box.gate.cancelled()"))
+        XCTAssertTrue(text.contains("box.gate.lifted()"))
+    }
 }
