@@ -319,7 +319,7 @@ struct PlayerPage: View {
             let position = PlayerTimeline.position(media: media, phase: phase, at: now)
             let total: TimeInterval? = (controls.progress ? media.durationMs : nil).map { Double($0) / 1000 }
             timeline(position: position, total: total,
-                     caption: PlayerCaptionPolicy.caption(phase: phase, seek: seekNote(now: now)))
+                     caption: PlayerCaptionPolicy.caption(phase: phase, seek: failureNote(now: now) ?? seekNote(now: now)))
                 .transition(.opacity)
         } else {
             Text(phase.hint)
@@ -330,34 +330,40 @@ struct PlayerPage: View {
         }
     }
 
-    /// Thin, display-only timeline with the times under it. It fills only with a real total length
-    /// (never today: the box does not report one, see SEEKING_REPORT.md); without one the track stays
-    /// empty and only the elapsed time is shown. There is no scrubber because nothing can seek to a
-    /// position. The centre caption carries the session state or the last confirmed seek.
+    /// Display-only timeline with the times under it. A track is drawn only with a real total length
+    /// (never today: the box does not report one, see SEEKING_REPORT.md). Without one there is no track
+    /// at all (audit UX-013: an empty bar read as "0 % played" or a broken scrubber), only the elapsed
+    /// time. There is no scrubber because nothing can seek to a position. The centre caption carries
+    /// the session state, a command the TV did not take, or the last confirmed seek.
     private func timeline(position: TimeInterval, total: TimeInterval?, caption: String) -> some View {
         let fraction = total.map { PlayerTimeline.fraction(position: position, total: $0) } ?? 0
         return VStack(spacing: 7) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous).fill(Color.inkAlpha(0.2))
-                    Capsule(style: .continuous).fill(Color.inkAlpha(0.85)).frame(width: geo.size.width * fraction)
+            if total != nil {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule(style: .continuous).fill(Color.inkAlpha(0.2))
+                        Capsule(style: .continuous).fill(Color.inkAlpha(0.85)).frame(width: geo.size.width * fraction)
+                    }
+                    .animation(Motion.unlessReduced(Motion.settle, reduceMotion: reduceMotion), value: fraction)
                 }
-                // Glides between clock ticks; nothing to animate while there is no real duration.
-                .animation(fraction > 0 ? Motion.unlessReduced(Motion.settle, reduceMotion: reduceMotion) : nil, value: fraction)
+                .frame(height: PlayerLayoutPolicy.timelineHeight)
+            } else {
+                // Keeps the column's rhythm without drawing anything that looks like progress.
+                Color.clear.frame(height: PlayerLayoutPolicy.timelineHeight)
             }
-            .frame(height: PlayerLayoutPolicy.timelineHeight)
             ZStack {
                 HStack {
                     Text(MediaState.format(position))
                     Spacer()
                     if let total { Text("-" + MediaState.format(max(0, total - position))) }
                 }
-                .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                .foregroundStyle(Color.inkAlpha(0.5))
+                .scaledFont(12, .semibold)
+                .monospacedDigit()
+                .foregroundStyle(Color.inkAlpha(PlayerTextContrast.secondary(increased: increaseContrast)))
                 if !caption.isEmpty {
                     Text(caption)
                         .scaledFont(12, .semibold)
-                        .foregroundStyle(Color.inkAlpha(0.6))
+                        .foregroundStyle(Color.inkAlpha(PlayerTextContrast.secondary(increased: increaseContrast)))
                         .lineLimit(1)
                         .contentTransition(.opacity)
                         .padding(.horizontal, 52)
@@ -371,6 +377,12 @@ struct PlayerPage: View {
         .accessibilityLabel(total.map { "Elapsed \(MediaState.format(position)) of \(MediaState.format($0))" }
                             ?? "Elapsed \(MediaState.format(position))")
         .accessibilityValue(caption)
+    }
+
+    /// A command the TV did not take, for a few seconds after it was pressed (audit UX-005).
+    private func failureNote(now: Date) -> String? {
+        guard let failure = remote.lastMediaFailure, failure.isVisible(at: now) else { return nil }
+        return failure.text
     }
 
     /// Honest seek feedback: only what the TV's session confirmed, for a few seconds after the key.

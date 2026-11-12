@@ -15,8 +15,9 @@ import SwiftUI
 
 /// Pure rules for the Apps launcher (unit tested in Phase8RemoteTests and Phase9ContinuationTests).
 ///
-/// Package discovery stays informational (see `RemoteModel.refreshApps`): it never hides, dims or
-/// disables a tile. The launcher only reports the scan's state in a banner.
+/// The catalogue is `RemoteModel.launcherApps` (UX-004): the nine curated apps, which discovery never
+/// hides, dims or disables, then TV apps found on the box and the Android TV Settings tile. The
+/// launcher reports the scan's state in a banner.
 enum AppLauncherPolicy {
     enum Banner: Equatable {
         /// Connected and the package scan finished.
@@ -412,7 +413,7 @@ struct AppsFolderOverlay: View {
             let origin = geo.frame(in: .global).origin
             let local = anchor.offsetBy(dx: -origin.x, dy: -origin.y)
             let placement = AppsFolderLayout.placement(container: geo.size, anchor: local, isLandscape: isLandscape,
-                                                       appCount: remote.apps.count, showsBanner: banner != .none)
+                                                       appCount: remote.launcherApps.count, showsBanner: banner != .none)
             let target = placement.frame
             let collapsed = AppsFolderLayout.collapsedFrame(anchor: local, container: geo.size)
             let morphs = AppsFolderMotion.morphs(reduceMotion: reduceMotion)
@@ -450,7 +451,7 @@ struct AppsFolderOverlay: View {
         }
         .onChange(of: query) { _, _ in refreshVisible() }
         .onChange(of: favourites.packages) { _, _ in refreshVisible() }
-        .onChange(of: remote.apps.map(\.package)) { _, _ in refreshVisible() }
+        .onChange(of: remote.launcherApps.map(\.package)) { _, _ in refreshVisible() }
         .onChange(of: state.phase) { _, phase in
             if phase == .open { titleFocused = true }
             if phase == .closing { searchFocused = false }
@@ -458,7 +459,7 @@ struct AppsFolderOverlay: View {
     }
 
     private func refreshVisible() {
-        visibleApps = AppLauncherPolicy.visible(remote.apps, favourites: favourites.packages, query: query)
+        visibleApps = AppLauncherPolicy.visible(remote.launcherApps, favourites: favourites.packages, query: query)
     }
 
     private func close(_ reason: AppsFolderState.DismissReason) {
@@ -655,6 +656,16 @@ struct AppsFolderOverlay: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Curated apps keep their bundled artwork; discovered apps and Settings get a generic icon.
+    @ViewBuilder
+    private func tileArtwork(_ app: TVApp) -> some View {
+        if AppCatalog.hasArtwork(app) {
+            AppIconImage(asset: "\(app.asset)_dark")
+        } else {
+            GenericAppIcon(name: app.name, symbol: AppCatalog.isSettings(app) ? "gearshape.fill" : nil)
+        }
+    }
+
     private func tile(_ app: TVApp, metrics: AppsFolderMetrics) -> some View {
         let isFavourite = favourites.contains(app.package)
         let corner = metrics.tileCornerRadius
@@ -664,7 +675,7 @@ struct AppsFolderOverlay: View {
             onLaunch(app)
         } label: {
             VStack(spacing: AppsFolderLayout.labelGap) {
-                AppIconImage(asset: "\(app.asset)_dark")
+                tileArtwork(app)
                     .frame(width: metrics.tileSide, height: metrics.tileSide)
                     .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
                     .overlay {

@@ -9,7 +9,9 @@ struct StreamPickerSheet: View {
     let title: MediaTitle
     var episodes: [CinemetaCatalog.Episode] = []
     var initialSeason: Int = 1
-    var onHandoff: ((String) -> Void)? = nil
+    /// The episode the user tapped (or is resuming). Nil keeps the season's first episode.
+    var initialEpisode: Int? = nil
+    var onHandoff: ((HandoffResult) -> Void)? = nil
 
     @EnvironmentObject private var remote: RemoteModel
     @ObservedObject private var addons = AddonStore.shared
@@ -77,7 +79,7 @@ struct StreamPickerSheet: View {
             guard !started else { return }
             started = true
             season = seasons.contains(initialSeason) ? initialSeason : (seasons.first ?? initialSeason)
-            if isSeries { episode = episodes.filter { $0.season == season }.map(\.number).min() }
+            if isSeries { episode = EpisodeSelection.start(in: episodes, season: season, requested: initialEpisode) }
         }
         .task(id: lookupKey) { await runLookup() }
     }
@@ -86,7 +88,7 @@ struct StreamPickerSheet: View {
 
     private var nuvioCard: some View {
         Button {
-            send("nuvio") { await remote.openInNuvio(title) }
+            send("nuvio") { await remote.openInNuvioResult(title) }
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: "arrow.up.forward.app.fill")
@@ -141,7 +143,9 @@ struct StreamPickerSheet: View {
     @ViewBuilder
     private var streams: some View {
         GlassSectionHeader(title: "Streams from your add-ons", subtitle: streamSubtitle)
-        if addons.streamAddonCount == 0 {
+        if addons.streamAddonCount == 0 && addons.linkMissingStreamAddonCount > 0 {
+            emptyCard("Add-on links missing", "Your stream add-ons' links weren't restored on this device. Open Profile > Add-ons and use Replace link on each one. Open in Nuvio works meanwhile.")
+        } else if addons.streamAddonCount == 0 {
             emptyCard("No stream add-ons yet", "Add a Stremio-compatible stream add-on in Profile > Add-ons and its streams appear here. Open in Nuvio works without one.")
         } else if isSeries && videoID == nil {
             emptyCard("Pick an episode", "Streams are found per episode.")
@@ -152,7 +156,8 @@ struct StreamPickerSheet: View {
             }
             .padding(.vertical, 8)
         } else if lookup.options.isEmpty {
-            emptyCard("No streams found", lookup.failures.isEmpty ? "Your add-ons have nothing for this title." : lookup.failures.joined(separator: "\n"))
+            emptyCard("No streams found", (lookup.failures.isEmpty ? "Your add-ons have nothing for this title." : lookup.failures.joined(separator: "\n"))
+                      + (addons.linkMissingStreamAddonCount > 0 ? "\nSome add-ons weren't asked: their link is missing (Profile > Add-ons)." : ""))
         } else {
             if availableQualities.count > 1 { qualityChips }
             ForEach(groups) { group in
@@ -160,7 +165,7 @@ struct StreamPickerSheet: View {
                     Text(group.name).font(.footnote.weight(.semibold)).foregroundStyle(Color.inkAlpha(0.6))
                     ForEach(group.options) { option in
                         StreamRow(option: option, sending: sending == option.id) {
-                            send(option.id) { await remote.playOnTV(option.stream) }
+                            send(option.id) { await remote.playOnTVResult(option.stream) }
                         }
                         .disabled(sending != nil && sending != option.id)
                     }
@@ -254,18 +259,34 @@ struct StreamPickerSheet: View {
         }
     }
 
-    private func send(_ id: String, _ action: @escaping () async -> String) {
+    private func send(_ id: String, _ action: @escaping () async -> HandoffResult) {
         guard sending == nil else { return }
         Haptics.soft()
         sending = id
         Task {
-            let message = await action()
+            let outcome = await action()
             withAnimation(Motion.resolve(Motion.snappy, reduceMotion: reduceMotion)) {
-                result = message
+                result = outcome.message
                 sending = nil
             }
-            onHandoff?(message)
+            onHandoff?(outcome)
         }
+    }
+}
+
+/// Which episode the picker starts on (pure, unit tested).
+enum EpisodeSelection {
+    /// The requested episode when this season lists it, otherwise the season's lowest episode.
+    static func start(in episodes: [CinemetaCatalog.Episode], season: Int, requested: Int?) -> Int? {
+        let numbers = episodes.filter { $0.season == season }.map(\.number)
+        if let requested, numbers.contains(requested) { return requested }
+        return numbers.min()
+    }
+
+    /// The watched episode, when the page's selected season is the one being watched.
+    static func resume(season: Int, watching: (season: Int, episode: Int)?) -> Int? {
+        guard let watching, watching.season == season else { return nil }
+        return watching.episode
     }
 }
 

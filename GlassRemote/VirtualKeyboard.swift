@@ -6,8 +6,9 @@ import SwiftADB
 /// Nothing here shares state with the mouse: separate helper binary, separate remote
 /// path, separate ADB stream, separate queue, separate readiness flag, separate errors.
 /// `start` never throws, so a keyboard failure cannot affect the mouse or the app's
-/// connection state. While the keyboard is not ready, `send` returns false and the
-/// caller keeps using the existing ADB `input keyevent` path.
+/// connection state. While the keyboard is not ready, `send` returns false. Arrows and OK
+/// have no ADB fallback (RemoteModel.key reports that the helper needs a reconnect);
+/// BACK/HOME are not routed here and always use ADB `input keyevent`.
 @MainActor
 final class VirtualKeyboard {
     enum HIDUsage {
@@ -34,7 +35,8 @@ final class VirtualKeyboard {
 
     /// Human-readable keyboard status (shown in the Connection sheet).
     var onStatus: ((String) -> Void)?
-    /// Called when a write fails after being accepted, so the press can be re-sent via ADB.
+    /// Called with a routed button whose write failed after being accepted, so the caller can
+    /// report it. Navigation has no ADB fallback; live-typing failures go to `type`'s callback instead.
     var onFallback: ((String) -> Void)?
     /// Called when a running keyboard stream ends or fails on its own (not on stop()).
     var onStopped: (() -> Void)?
@@ -81,7 +83,7 @@ final class VirtualKeyboard {
         } catch {
             isReady = false
             stream = nil
-            report("Virtual keyboard unavailable · ADB fallback active: \(error.localizedDescription)")
+            report("Virtual keyboard unavailable · reconnect the TV box to restore arrows, OK and typing: \(error.localizedDescription)")
         }
     }
 
@@ -152,13 +154,20 @@ final class VirtualKeyboard {
         return true
     }
 
-    private func writeFailed(_ error: Error, key name: String, generation gen: Int) {
+    /// How long BACK/HOME wait for earlier arrow reports before going out anyway (BUG-023).
+    static let orderingDeadline: Double = 0.3
+
+    /// Finishes once every report queued before this call has been written (or has failed).
+    func pendingWrites() -> Task<Void, Never> { queue.barrier() }
+
+    /// `name` is nil for live-typing text, which is not a button and has no fallback.
+    private func writeFailed(_ error: Error, key name: String?, generation gen: Int) {
         guard gen == generation else { return }
         let wasReady = isReady
         isReady = false
-        report("Virtual keyboard stream failed · ADB fallback active: \(error.localizedDescription)")
+        report("Virtual keyboard stream failed · arrows, OK and typing paused until it reconnects: \(error.localizedDescription)")
         if wasReady {
-            onFallback?(name)
+            if let name { onFallback?(name) }
             onStopped?()
         }
     }
@@ -185,7 +194,7 @@ final class VirtualKeyboard {
         isReady = false
         stream = nil
         let text = lastOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        report("Virtual keyboard: stopped · ADB fallback active" + (text.isEmpty ? "" : ": \(text)"))
+        report("Virtual keyboard: stopped · arrows, OK and typing paused until it reconnects" + (text.isEmpty ? "" : ": \(text)"))
         onStopped?()
     }
 
@@ -277,17 +286,25 @@ extension VirtualKeyboard {
         }
     }
 
-    /// Types through the virtual keyboard. Returns false when it isn't ready (caller falls back).
-    func type(_ text: String, backspaces: Int = 0) -> Bool {
+    /// Most backspaces and characters one `type` call sends. Callers split longer edits into
+    /// steps of this size (LiveTypingDiff.step) so nothing is silently dropped (BUG-019).
+    nonisolated static let liveTypingLimit = 400
+
+    /// Types through the virtual keyboard. Returns false when it isn't ready, so the caller keeps
+    /// the text as undelivered. `onWriteFailure` runs if the write fails after being accepted.
+    func type(_ text: String, backspaces: Int = 0, onWriteFailure: (@MainActor () -> Void)? = nil) -> Bool {
         guard isReady, let stream else { return false }
-        var payload = String(repeating: "K \(Self.backspaceUsage)\n", count: min(backspaces, 400))
-        payload += Self.lines(forTyping: String(text.prefix(400))).joined()
+        var payload = String(repeating: "K \(Self.backspaceUsage)\n", count: min(max(backspaces, 0), Self.liveTypingLimit))
+        payload += Self.lines(forTyping: String(text.prefix(Self.liveTypingLimit))).joined()
         guard !payload.isEmpty else { return true }
         let data = Data(payload.utf8)
         let gen = generation
         queue.enqueue { [weak self] in
             do { try await stream.write(data) } catch {
-                await MainActor.run { self?.writeFailed(error, key: "TEXT", generation: gen) }
+                await MainActor.run {
+                    self?.writeFailed(error, key: nil, generation: gen)
+                    onWriteFailure?()
+                }
             }
         }
         return true

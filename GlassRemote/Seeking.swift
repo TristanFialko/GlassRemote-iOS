@@ -79,3 +79,36 @@ struct SeekStepLearner: Equatable {
     }
     func save() { UserDefaults.standard.set(samples, forKey: Self.defaultsKey) }
 }
+
+/// A transport command the TV did not take (audit UX-005). Shown briefly on Now Playing and the
+/// mini-player, where it was pressed, instead of only in the Connection sheet's status line.
+struct MediaFailureReport: Equatable {
+    var text: String
+    var at: Date
+
+    static let visibleFor: TimeInterval = 6
+
+    func isVisible(at now: Date) -> Bool { now.timeIntervalSince(at) < Self.visibleFor && now >= at }
+
+    static func notAccepted(_ command: MediaCommand, at: Date = Date()) -> MediaFailureReport {
+        MediaFailureReport(text: "TV didn't accept \(command.displayName)", at: at)
+    }
+
+    static func notConnected(at: Date = Date()) -> MediaFailureReport {
+        MediaFailureReport(text: "Not connected to the TV box", at: at)
+    }
+}
+
+extension MediaCommand {
+    /// Short, readable name for feedback ("Pause", "Fast-forward").
+    var displayName: String {
+        switch self {
+        case .play: return "Play"
+        case .pause: return "Pause"
+        case .next: return "Next"
+        case .previous: return "Previous"
+        case .rewind: return "Rewind"
+        case .fastForward: return "Fast-forward"
+        }
+    }
+}
