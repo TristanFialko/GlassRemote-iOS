@@ -153,6 +153,8 @@ final class RemoteModel: ObservableObject {
         .init(name: "Spotify", package: "com.spotify.tv.android", asset: "spotify"),
         .init(name: "Rhenium", package: "com.nitesh.rhenium", asset: "rhenium")
     ]
+    /// Launchable activities found at connect (RemoteModel+Apps.swift). Never hides a curated tile.
+    @Published var launchableApps: [LaunchableActivity] = []
 
     var adb: AdbConnection?
     private var commandStream: AdbStream?
@@ -263,9 +265,11 @@ final class RemoteModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            // Log-only. Leaving the app must never send anything to the TV box.
-            GRLog.note("lifecycle", "willResignActive (no device commands sent)")
+            // Leaving the app sends nothing to the TV box, except releasing a mouse button that a
+            // drag in progress is holding down (otherwise the TV keeps dragging).
+            GRLog.note("lifecycle", "willResignActive (no device commands sent unless a mouse button is held)")
             Task { @MainActor in
+                self?.releaseHeldMouseButton(reason: "app left the foreground")
                 self?.appActive = false
                 self?.recoveryPending = true
             }
@@ -492,53 +496,7 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-    // Package discovery is informational only. It never controls whether app tiles
-    // are displayed, dimmed, enabled, or clickable.
-    func refreshApps() async {
-        guard let adb else { return }
-
-        do {
-            let output = try await runShell(adb, ["pm", "list", "packages"])
-            installed = Set(
-                output.components(separatedBy: .newlines).compactMap { line in
-                    guard line.hasPrefix("package:") else { return nil }
-                    return String(line.dropFirst(8)).trimmingCharacters(in: .whitespaces)
-                }
-            )
-            status = "Connected · \(installed.count) apps found"
-        } catch {
-            status = "ADB connected · app scan failed: \(error.localizedDescription)"
-        }
-    }
-
-    func launch(_ app: TVApp) {
-        // The tile's PressStyle already gave haptic feedback.
-        Task { await launchApp(app) }
-    }
-
-    /// Force-stops and relaunches one selected app without rebooting the TV box.
-    func restartApp(_ app: TVApp) {
-        Task {
-            guard let connection = adb, connected else {
-                status = "Cannot restart \(app.name) · not connected"
-                return
-            }
-            status = "Restarting \(app.name)…"
-            do {
-                let command = "am force-stop '\(app.package)' && sleep 1 && monkey -p '\(app.package)' 1 2>&1; rc=$?; echo GLASSREMOTE_RESTART_EXIT:$rc"
-                let output = try await runShell(connection, ["sh", "-c", command])
-                if output.contains("GLASSREMOTE_RESTART_EXIT:0") {
-                    status = "\(app.name) restarted"
-                    GRLog.note("apps", "user restarted \(app.package)")
-                } else {
-                    status = "Restart response · \(app.name): \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
-                }
-            } catch {
-                status = "Restart failed · \(app.name): \(error.localizedDescription)"
-            }
-            Haptics.medium()
-        }
-    }
+    // App discovery, launch and restart live in RemoteModel+Apps.swift (UX-004).
 
     /// Captures a bounded, read-only Android logcat slice plus persistent-helper state.
     /// Run after a playback interruption so the TV-side process/activity events are still in the ring buffer.
@@ -580,36 +538,6 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-    @discardableResult
-    func launchApp(_ app: TVApp) async -> Bool {
-        guard let adb else {
-            status = "Cannot launch · not connected"
-            return false
-        }
-
-        do {
-            let output = try await runShell(
-                adb,
-                ["sh", "-c", "monkey -p \(app.package) 1 2>&1; rc=$?; echo GLASSREMOTE_LAUNCH_EXIT:$rc"]
-            )
-
-            // Trust the actual process exit marker before interpreting Monkey's
-            // human-readable output, which can be misleading on some TV builds.
-            if output.contains("GLASSREMOTE_LAUNCH_EXIT:0") {
-                status = "Android accepted launch request · \(app.name)"
-                return true
-            } else if output.localizedCaseInsensitiveContains("no activities found") ||
-                        output.localizedCaseInsensitiveContains("monkey aborted") {
-                status = "Launch response · \(app.name): \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
-            } else {
-                status = "Launch result · \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
-            }
-        } catch {
-            status = "Launch failed: \(error.localizedDescription)"
-        }
-        return false
-    }
-
     func key(_ key: String) {
         // Volume and mute follow the chosen volume output (VolumeOutput.swift), whatever sent them.
         if VolumeKeyPolicy.isVolumeKey(key) { volume(key, haptic: false); return }
@@ -649,7 +577,19 @@ final class RemoteModel: ObservableObject {
             return
         }
 
-        sendPersistentCommand("input keyevent \(code)")
+        // BUG-023: arrows/OK travel on the keyboard helper's queue, BACK/HOME on the shell. Send
+        // BACK/HOME only once the arrows queued before them are written (bounded, so a stuck
+        // helper stream can never swallow BACK).
+        let command = "input keyevent \(code)"
+        guard keyboard.isReady else {
+            sendPersistentCommand(command)
+            return
+        }
+        let queuedArrows = keyboard.pendingWrites()
+        Task { [weak self] in
+            _ = await withDeadline(VirtualKeyboard.orderingDeadline) { await queuedArrows.value }
+            self?.sendPersistentCommand(command)
+        }
     }
 
     /// Types text on the TV. Handles spaces, newlines, quotes, URLs and a literal "%s"
@@ -851,6 +791,7 @@ final class RemoteModel: ObservableObject {
                 mouseStream = input
                 pendingMoveDX = 0; pendingMoveDY = 0; mouseButtonsHeld = 0
                 mouseReady = true
+                clearStaleMouseButtonOnTV()
                 status = "Connected · mouse reattached to existing TV helper"
                 GRLog.note("mouse", "reattached to existing helper without UHID recreation")
             } else {

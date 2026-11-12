@@ -45,4 +45,10 @@ final class TaskQueue {
             await operation()
         }
     }
+
+    /// Finishes once every operation enqueued before this call has run. Adds nothing to the queue.
+    func barrier() -> Task<Void, Never> {
+        let previous = tail
+        return Task { await previous.value }
+    }
 }

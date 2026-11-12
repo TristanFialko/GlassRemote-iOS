@@ -111,7 +111,11 @@ struct RootPagerView: View {
     @ViewBuilder
     private func content(for item: AppPage, clearance: CGFloat) -> some View {
         switch item {
-        case .remote: RemoteView().padding(.bottom, clearance)
+        case .remote:
+            RemoteView().padding(.bottom, clearance)
+                // Two-finger recognisers live on the hosting view; they act only while Remote is
+                // the visible page and Now Playing is closed (audit BUG-006).
+                .environment(\.remoteSurfaceActive, navigator.page == .remote && !navigator.playerPresented)
         case .discover: DiscoverPage()
         case .profile: ProfilePage()
         }

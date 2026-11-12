@@ -37,6 +37,7 @@ final class PageNavigator: ObservableObject {
             return
         }
         if haptic { Haptics.soft() }
+        InputCancellation.cancelAllTouches(reason: "page change")
         withAnimation(TabSwitchPolicy.adaptiveAnimation) { page = target }
     }
 
@@ -44,6 +45,7 @@ final class PageNavigator: ObservableObject {
     func openPlayer(haptic: Bool = true) {
         guard !playerPresented else { return }
         if haptic { Haptics.soft() }
+        InputCancellation.cancelAllTouches(reason: "Now Playing opened")
         withAnimation(NowPlayingPresentation.adaptiveAnimation) { playerPresented = true }
     }
 
