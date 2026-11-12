@@ -34,38 +34,6 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Select iPhone simulator and start booting it
-        id: simulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The first simulator boot on a fresh runner takes several minutes and previously happened
-          # inside `xcodebuild test`, after everything else. Kick it off now so it boots while the
-          # toolchain installs and the simulator build run; the test step waits for it to finish.
-          SELECTED="$(xcrun simctl list devices available --json | python3 -c '
-          import json, sys
-          data = json.load(sys.stdin)["devices"]
-          def version(key):
-              return [int(p) if p.isdigit() else 0 for p in key.rsplit("-", 2)[-2:]]
-          # Newest iOS runtime first, then the first available iPhone in it.
-          for runtime in sorted((k for k in data if ".iOS-" in k), key=version, reverse=True):
-              for device in data[runtime]:
-                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
-                      print(device["udid"], device["name"], runtime.rsplit(".", 1)[-1], sep="\t")
-                      raise SystemExit
-          raise SystemExit("No available iPhone simulator found.")
-          ')"
-          UDID="${SELECTED%%$'\t'*}"
-          echo "Simulator (udid | name | runtime): ${SELECTED//$'\t'/ | }"
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
-          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
-          # An explicit id avoids xcodebuild's "multiple matching destinations" lookup, and both
-          # simulator steps use this exact device so the tests run what build-for-testing produced.
-          echo "SIMULATOR_DESTINATION=platform=iOS Simulator,id=$UDID" >> "$GITHUB_ENV"
-          echo "SIMULATOR_BOOT_STARTED=$(date +%s)" >> "$GITHUB_ENV"
-          # CoreSimulatorService owns the boot, so it carries on after this step ends.
-          nohup xcrun simctl boot "$UDID" > "$RUNNER_TEMP/simulator-boot.log" 2>&1 &
-
       - name: Capture toolchain version for cache keys
         id: toolchain
         shell: bash
@@ -322,6 +290,41 @@ jobs:
               print(f"Patched {path}")
           PY
 
+      - name: Select iPhone simulator and start booting it
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The first simulator boot on a fresh runner takes 5-9 minutes and used to happen inside
+          # `xcodebuild test`, after everything else. It is started here, immediately before the two
+          # xcodebuild compiles, so it overlaps work that is already CPU-bound. Starting it any earlier
+          # measurably starved the light setup steps (the Metal check went from 8s to almost 4 minutes
+          # and the simulator build nearly doubled), which cost more than the overlap gained.
+          SELECTED="$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          def version(key):
+              return [int(p) if p.isdigit() else 0 for p in key.rsplit("-", 2)[-2:]]
+          # Newest iOS runtime first, then the first available iPhone in it.
+          for runtime in sorted((k for k in data if ".iOS-" in k), key=version, reverse=True):
+              for device in data[runtime]:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      print(device["udid"], device["name"], runtime.rsplit(".", 1)[-1], sep="\t")
+                      raise SystemExit
+          raise SystemExit("No available iPhone simulator found.")
+          ')"
+          UDID="${SELECTED%%$'\t'*}"
+          echo "Simulator (udid | name | runtime): ${SELECTED//$'\t'/ | }"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
+          # An explicit id plus arch avoids xcodebuild's "multiple matching destinations" lookup (each
+          # device is listed as arm64 and x86_64), and both simulator steps use this exact device so
+          # the tests run what build-for-testing produced.
+          echo "SIMULATOR_DESTINATION=platform=iOS Simulator,id=$UDID,arch=arm64" >> "$GITHUB_ENV"
+          echo "SIMULATOR_BOOT_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+          # CoreSimulatorService owns the boot, so it carries on after this step ends.
+          nohup xcrun simctl boot "$UDID" > "$RUNNER_TEMP/simulator-boot.log" 2>&1 &
+
       - name: Build for testing on iPhone simulator
         shell: bash
         run: |
@@ -335,6 +338,21 @@ jobs:
             -derivedDataPath build \
             -showBuildTimingSummary \
             CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO 2>&1 | tee build/ci-logs/simulator-build.log
+
+      - name: Build for physical iPhone
+        # Runs before the tests so the simulator keeps booting in the background while this
+        # compiles. It needs no simulator, and the IPA is still only packaged after the tests pass.
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build/ci-logs
+          xcodebuild -project GlassRemote.xcodeproj \
+            -scheme GlassRemote \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath build \
+            -showBuildTimingSummary \
+            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build 2>&1 | tee build/ci-logs/device-build.log
 
       - name: Wait for the iPhone simulator to finish booting
         shell: bash
@@ -362,19 +380,6 @@ jobs:
             -configuration Debug \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci-logs/unit-tests.log
-
-      - name: Build for physical iPhone
-        shell: bash
-        run: |
-          set -o pipefail
-          mkdir -p build/ci-logs
-          xcodebuild -project GlassRemote.xcodeproj \
-            -scheme GlassRemote \
-            -destination 'generic/platform=iOS' \
-            -configuration Release \
-            -derivedDataPath build \
-            -showBuildTimingSummary \
-            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build 2>&1 | tee build/ci-logs/device-build.log
 
       - name: Bundle and verify helpers
         run: |
