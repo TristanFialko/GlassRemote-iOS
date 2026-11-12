@@ -6,7 +6,7 @@
 - [ ] Two-finger scroll vertical and horizontal; no stray click when lifting
 - [ ] White cursor still shown on the TV
 - [ ] D-pad Up/Down/Left/Right/Select; Back; Home (there is no Android Menu key any more)
-- [ ] Volume up/down/mute (ADB path, with Samsung route off)
+- [ ] Volume up/down/mute with the Samsung route off: nothing is sent, the slider is disabled and reads "Unavailable" (there is no ADB volume path)
 - [ ] Each of the nine apps launches, in the original order
 - [ ] Haptics on buttons, tap, launch
 - [ ] Background → foreground recovers the session; kill ADB and see automatic reconnect
@@ -26,7 +26,7 @@
 - [ ] Restart box: shell `reboot` works for the shell user; app reconnects by itself (~1–2 min)
 - [ ] Media: Nuvio play/pause; title and position correct; Spotify enables prev/next
 - [ ] Keyboard: text, spaces, quotes, URLs, `%s`, newline, Backspace, Paste button
-- [ ] Samsung TV: pairing prompt, token reuse, VOLUP/VOLDOWN/MUTE, does the soundbar respond? ADB fallback when TV is off
+- [ ] Samsung TV: pairing prompt, token reuse, VOLUP/VOLDOWN/MUTE, does the soundbar respond? With the TV off, volume is unavailable (never sent to the Android box)
 - [ ] Siri/Shortcuts intents launch the app and perform the action
 
 ## Added in this pass
@@ -44,7 +44,7 @@
 - Play and Pause each verified from the Player (explicit 126 / 127).
 - Volume slider reaches 0 % and 100 %; TV readings never move it mid-drag.
 - Android and Samsung targets never send one command to both devices, and a disconnected selected device never falls back to the other.
-- A denied Samsung pairing prompt is not re-raised until Reconnect.
+- A denied Samsung pairing prompt is not re-raised until Reconnect (reported as denied, not as a timeout).
 - The Remote Search button focuses Discover.
 
 ## v0.4 review additions
@@ -64,7 +64,7 @@
 - [ ] Discover: titles without a Cinemeta poster show the placeholder or a Metahub poster.
 
 ## Discover / Nuvio migration (nothing below has been run on a device or built)
-- [ ] Dock shows exactly Remote, Player, Discover, evenly spaced; the Remote icon is the Apple TV remote symbol; swiping pages still works and carousels scroll without changing page.
+- [ ] Dock shows exactly Remote, Discover, Profile, evenly spaced; the Remote icon is the Apple TV remote symbol; the selected item takes the theme accent under the Liquid Glass selector; switching cross-fades with a haptic. Now Playing is not in the dock.
 - [ ] Header button shows the Glass Remote logo and still opens the menu.
 - [ ] Android: expanding Apps does not change the Samsung remote's size; switching Android -> Samsung -> Android keeps Apps expanded.
 - [ ] Android nav row: Back, Home, Sources, Search, Keyboard. Sources opens the Samsung TV source menu (needs the Samsung link; otherwise the status line explains).
@@ -86,7 +86,6 @@
 - [ ] Discover: vertical scroll works when a swipe starts on a poster or carousel; horizontal carousel scroll works; tapping a poster opens details; carousels do not change the page; genre rows load as they scroll into view.
 - [ ] See All (Popular / Top rated / Newest, genres, library rows): grid, sort and genre menus, Movies/Series switch, loads more at the bottom, empty/error states, tap opens details.
 - [ ] Account: Continue Watching and history match the Nuvio app on the TV (same profile; profile selection is unverified and defaults to the lowest id).
-- [ ] Player: poster no taller than ~1/3 of the screen, transport bar sits above the dock on small iPhones, nothing overlaps.
 
 ## Phase 4.3 additions
 - [ ] Discover: hold/press a recent-search chip, a genre chip and a poster; the expanded glass is not clipped top, bottom or at the screen edge.
@@ -94,13 +93,30 @@
 - [ ] Detail sheet shows a 16:9 backdrop when one exists, otherwise the 2:3 poster.
 - [ ] Remote, trackpad, mouse, keyboard, helpers, Samsung, volume, YouTube launch: unchanged (no input/helper files were edited).
 
-## Phase 9 §A Player redesign (built and unit tested in CI only; nothing below has been run on a device)
-- [ ] Portrait: the artwork is the dominant element above the controls; title, state, transport and volume sit above the dock on an iPhone SE and a Pro Max; nothing overlaps the dock or the safe areas.
-- [ ] Posters keep 2:3, Discover key art keeps 16:9, app artwork is a smaller square; nothing is stretched. Without artwork the app artwork or a symbol shows on a dark card.
-- [ ] A new title cross-fades artwork and title together; position polls do not restart the fade.
-- [ ] Full-screen artwork background on the Player page only; it fades in and out when paging; the dock and header stay legible over bright and dark posters, in dark and light themes.
-- [ ] Landscape: square artwork on the leading side, title / time / transport / volume beside it; the rail stays visible and the background runs unbroken behind the rail (no split at its edge).
+## Phase 9 Now Playing (built and unit tested in CI only; nothing below has been run on a device)
+- [ ] Opens from the mini-player (portrait), the rail tile (landscape) and the Remote page's Now Playing card; the grabber and any dock item close it. The mini-player appears within one poll of playback starting and goes when the session ends.
+- [ ] Portrait: title artwork runs edge to edge from the top of the screen (under the status bar) and fades out behind the title; title and second line, timeline, transport and volume sit above the dock on an iPhone SE and a Pro Max; nothing overlaps the dock or the safe areas; no borders, cards or status dots.
+- [ ] Landscape: a large rounded artwork card on the leading side; beside it the title lines up with the card's top and the volume row with its bottom; the rail stays visible and the background runs unbroken behind it.
+- [ ] Without title artwork the app artwork (or a symbol) shows on a rounded card in both orientations.
+- [ ] A new title cross-fades artwork and title together; position polls do not restart the fade. The card eases back slightly while paused (not with Reduce Motion).
+- [ ] The background is made from the artwork; the dock stays legible over bright and dark posters, in dark and light themes; Adaptive takes its accent from the artwork.
 - [ ] Play / pause sends explicit Play or Pause; buffering pauses. Rewind / fast-forward only when the session advertises them; Nuvio and other video apps never show previous / next.
-- [ ] Volume slider on the Player moves the TV volume 0-100 % with haptic ticks, matches the Remote page slider, and never fights a finger when a reading arrives.
-- [ ] States: not connected, connecting, nothing playing, playing, paused, buffering, "Waiting for the TV" after 30 s without a poll; backgrounding and returning, and an ADB reconnect, recover without a stuck state.
-- [ ] Elapsed time ticks once a second while playing and freezes when stale; no scrubber is shown (no duration is reported).
+- [ ] Timeline: the elapsed time ticks once a second while playing and freezes when stale; the track never fills and there is no scrubber or remaining time (no duration is reported). The caption under it shows Paused / Buffering / Waiting for the TV, or a confirmed seek ("+10 s") for a few seconds.
+- [ ] States: not connected, connecting, nothing playing show a one-line hint instead of the timeline; backgrounding and returning, and an ADB reconnect, recover without a stuck state.
+- [ ] Volume row: quiet speaker, neutral track, loud speaker; it drives the same Samsung route as the Remote slider and never fights a finger when a reading arrives.
+
+## Phase 9 Samsung volume (needs the real TV and soundbar; none of this has been run on hardware)
+- [ ] Soundbar on ARC / optical, remote paired, Sound comes from: Automatic. The slider and + / − / mute change the SOUNDBAR, not the TV's built-in speakers. Connection settings says "remote keys".
+- [ ] Same setup: after a few volume key presses Connection settings reports that the TV's own level did not follow its keys, and keeps using remote keys.
+- [ ] TV speakers (no soundbar), remote paired, Automatic: after one or two volume key presses the route becomes the exact level; the slider then shows the real 0–100, reaches 0 % and 100 %, and follows changes made with the TV's own remote.
+- [ ] Remote not paired, Automatic, nothing learned: volume is unavailable and says the remote must be paired. Nothing changes on the TV or the box.
+- [ ] Sound comes from: Soundbar or receiver forces remote keys; TV speakers forces the exact level. "Check the sound output again" forgets what was learned.
+- [ ] Set "Soundbar max volume" to the soundbar's top number; full slider then reaches the soundbar's maximum and the bottom reaches 0.
+- [ ] Mute toggles what is playing. No volume command ever reaches the Android box.
+- [ ] Changing the Samsung TV address starts the learning again for the new TV.
+
+## Phase 9 Samsung pairing
+- [ ] First connection raises the TV prompt once; allowing it stores the token and later launches connect silently.
+- [ ] Denying it is reported as denied, and the prompt is not raised again until Reconnect.
+- [ ] Reset Samsung pairing… asks for confirmation, then the TV asks again; the Android connection and the volume link are untouched.
+- [ ] A token issued by one TV is never offered to a different address.
