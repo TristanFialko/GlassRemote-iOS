@@ -641,7 +641,7 @@ struct RemoteView: View {
         case .apps:
             RemoteClusterKey(symbol: key.symbol, label: key.title, prominent: folder.highlightsSource,
                              height: height) { openFolder() }
-                .accessibilityValue(RemoteLayoutPolicy.appCountLabel(remote.apps.count))
+                .accessibilityValue(RemoteLayoutPolicy.appCountLabel(remote.launcherApps.count))
                 .accessibilityHint(key.hint)
                 .accessibilityFocused($appsControlFocused)
                 .onGeometryChange(for: CGRect.self) { proxy in proxy.frame(in: .global) } action: { frame in

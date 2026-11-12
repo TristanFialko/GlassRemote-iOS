@@ -522,9 +522,13 @@ extension RemoteModel {
         Task {
             guard let adb else { status = "Restart failed · not connected"; return }
             status = "Restarting Glass Launcher…"
-            let command = "am force-stop com.glasslauncher; am start -a android.intent.action.MAIN -c android.intent.category.HOME -n com.glasslauncher/.MainActivity"
-            _ = try? await runShell(adb, ["sh", "-c", command])
-            status = "Glass Launcher restarted"
+            let command = "am force-stop com.glasslauncher; am start -W -a android.intent.action.MAIN -c android.intent.category.HOME -n com.glasslauncher/.MainActivity 2>&1; echo \"__exit=$?\""
+            let output = (try? await runShell(adb, ["sh", "-c", command])) ?? ""
+            // Audit BUG-016: report success only when Android says the activity started.
+            status = LauncherRestartOutcome.started(output: output)
+                ? "Glass Launcher restarted"
+                : "Glass Launcher did not restart · \(LauncherRestartOutcome.reason(output: output))"
+            GRLog.note("launcher", "restart outcome started=\(LauncherRestartOutcome.started(output: output))")
         }
     }
 

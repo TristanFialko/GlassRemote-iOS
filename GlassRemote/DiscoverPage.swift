@@ -24,6 +24,7 @@ struct DiscoverPage: View {
     @State private var collection: CollectionRequest?
     @State private var showAccount = false
     @State private var launchNote = ""
+    @State private var launchSucceeded = true
     @State private var heroID: String?
     @State private var playTarget: MediaTitle?
     @State private var headerHeight: CGFloat = 104
@@ -79,9 +80,6 @@ struct DiscoverPage: View {
                         }
                         LazyVStack(alignment: .leading, spacing: 22) {
                             if model.isSearching { searchContent } else { home }
-                            if !launchNote.isEmpty {
-                                Text(launchNote).scaledFont(12).foregroundStyle(Color.inkAlpha(0.7)).frame(maxWidth: .infinity)
-                            }
                         }
                         .padding(.top, showsHero ? 4 : 0)
                         .padding(.leading, railClearance)
@@ -124,6 +122,17 @@ struct DiscoverPage: View {
                     .allowsHitTesting(!headerHidden)
                     .accessibilityHidden(headerHidden)
                     .animation(Motion.resolve(Motion.snappy, reduceMotion: reduceMotion), value: headerHidden)
+
+                // UX-011: hero Play and Search in Nuvio report back just under the header, where the
+                // user acted, instead of at the bottom of a long page.
+                if !launchNote.isEmpty {
+                    DiscoverHandoffBanner(text: launchNote, succeeded: launchSucceeded) {
+                        withAnimation(Motion.resolve(Motion.snappy, reduceMotion: reduceMotion)) { launchNote = "" }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, headerHidden ? 8 : headerHeight + 4)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
             .onPreferenceChange(DiscoverHeaderHeightKey.self) { headerHeight = $0 }
             .onPreferenceChange(DiscoverHeaderBottomKey.self) { if abs($0 - headerBottom) > 0.5 { headerBottom = $0 } }
@@ -144,15 +153,22 @@ struct DiscoverPage: View {
             detailStyle = DetailPresentation.next(current: detailStyle, isPresenting: target != nil, isLandscape: landscape)
         }
         .onChange(of: target == nil) { _, closed in
-            if closed { detailStyle = DetailPresentation.style(isLandscape: layoutContext.isLandscape) }
+            guard closed else { return }
+            detailStyle = DetailPresentation.style(isLandscape: layoutContext.isLandscape)
+            // UX-009: back from a title (maybe after a handoff): Continue Watching catches up, rate-limited.
+            Task { await account.refreshIfStale() }
         }
         .sheet(item: $playTarget) { title in
-            StreamPickerSheet(title: title, onHandoff: { launchNote = $0 })
+            StreamPickerSheet(title: title, onHandoff: { showHandoff($0) })
                 .environmentObject(RemoteModel.shared)
         }
         .sheet(isPresented: $showAccount) { NuvioAccountSheet() }
         .fullScreenCover(item: $collection) { request in
-            CollectionView(request: request).environmentObject(RemoteModel.shared)
+            CollectionView(request: request, onShowRemote: {
+                collection = nil
+                navigator.go(.remote)
+            })
+            .environmentObject(RemoteModel.shared)
         }
         .task { await model.loadHomeIfNeeded() }
         // Adaptive theme: the featured artwork (or the title being viewed) feeds the ONE shared palette.
@@ -163,7 +179,11 @@ struct DiscoverPage: View {
         // Phase 7.4: Search shortcut from the Remote page. The navigator fires only once Discover has
         // finished sliding in and the field is mounted (SearchFocusPolicy); no fixed delay.
         .onChange(of: navigator.searchFocusFire) { _, _ in searching = true }
-        .onChange(of: scenePhase) { _, phase in navigator.sceneActiveChanged(phase == .active) }
+        .onChange(of: scenePhase) { _, phase in
+            navigator.sceneActiveChanged(phase == .active)
+            // UX-009: back in the foreground (often after watching on the TV), at most once a minute.
+            if phase == .active { Task { await account.refreshIfStale() } }
+        }
         // v6 §8: the header comes back whenever search is wanted or the content changes under it.
         .onChange(of: searching) { _, focused in if focused { revealHeader() } }
         .onChange(of: voiceOverEnabled) { _, enabled in if enabled { revealHeader() } }
@@ -245,7 +265,10 @@ struct DiscoverPage: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.words)
                 .onChange(of: model.query) { _, _ in model.queryChanged() }
-                .onSubmit { searching = false }
+                .onSubmit {
+                    model.rememberSearch(.submit)
+                    searching = false
+                }
             if !model.query.isEmpty {
                 Button { model.query = ""; model.queryChanged(); searching = true } label: {
                     Image(systemName: "xmark.circle.fill").scaledFont(17).foregroundStyle(Color.inkAlpha(0.55))
@@ -630,7 +653,16 @@ struct DiscoverPage: View {
     /// Its own view so the connection model (which publishes often) only re-renders this button,
     /// not the whole scrolling page.
     private var searchInNuvioButton: some View {
-        SearchInNuvioButton(query: model.query) { launchNote = $0 }
+        SearchInNuvioButton(query: model.query) { showHandoff($0) }
+    }
+
+    private func showHandoff(_ outcome: HandoffResult) {
+        withAnimation(Motion.resolve(Motion.snappy, reduceMotion: reduceMotion)) {
+            launchSucceeded = outcome.succeeded
+            launchNote = outcome.message
+        }
+        if outcome.succeeded { account.markStale() }
+        UIAccessibility.post(notification: .announcement, argument: outcome.message)
     }
 
     private func note(_ symbol: String, _ title: String, _ text: String, searchInNuvio: Bool) -> some View {
@@ -678,6 +710,8 @@ struct DiscoverPage: View {
     }
 
     private func open(_ title: MediaTitle, zoomID: String? = nil) {
+        // UX-010: opening a search result is what saves the search, not the live results.
+        if model.isSearching { model.rememberSearch(.openedResult) }
         searching = false; launchNote = ""
         target = DetailTarget(title: title, libraryItem: account.item(id: title.id), sourceID: zoomID)
     }
@@ -709,11 +743,11 @@ struct DetailTarget: Identifiable {
 private struct SearchInNuvioButton: View {
     @EnvironmentObject private var remote: RemoteModel
     let query: String
-    let onResult: (String) -> Void
+    let onResult: (HandoffResult) -> Void
 
     var body: some View {
         Button {
-            Task { onResult(await remote.searchInNuvio(query)) }
+            Task { onResult(await remote.searchInNuvioResult(query)) }
         } label: {
             Label("Search “\(query.trimmingCharacters(in: .whitespaces))” in Nuvio on the TV", systemImage: "arrow.up.forward.app")
                 .scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
@@ -722,6 +756,34 @@ private struct SearchInNuvioButton: View {
         .buttonStyle(PressStyle())
         .disabled(!remote.connected).controlDisabled(!remote.connected)
         .padding(.horizontal, 16)
+    }
+}
+
+/// The result of a handoff started on Discover (hero Play, Search in Nuvio), shown under the header.
+private struct DiscoverHandoffBanner: View {
+    let text: String
+    let succeeded: Bool
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(succeeded ? Color.inkAlpha(0.75) : Color.orange)
+                .accessibilityHidden(true)
+            Text(text).foregroundStyle(Color.inkAlpha(0.8))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark").scaledFont(11, .semibold).foregroundStyle(Color.inkAlpha(0.55))
+                    .frame(width: 28, height: 28).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+        }
+        .scaledFont(12)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .glassSurface(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .frame(maxWidth: 560)
     }
 }
 
@@ -762,7 +824,7 @@ struct PosterCard: View {
         }
         .frame(width: fixedWidth ? cardWidth : nil, alignment: .topLeading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title.name)\(title.year.isEmpty ? "" : ", \(title.year)")")
+        .accessibilityLabel(DiscoverMetaLine.cardLabel(name: title.name, year: title.year, caption: caption))
     }
 
     private var placeholder: some View {
@@ -786,6 +848,15 @@ enum DiscoverMetaLine {
         [kind == .movie ? "Movie" : "Series", year.trimmingCharacters(in: .whitespacesAndNewlines)]
             .filter { !$0.isEmpty }
             .joined(separator: separator)
+    }
+
+    /// VoiceOver label for a poster or landscape card: the name, then the progress caption
+    /// ("S1 · E3 · 20 min left") when there is one, otherwise the year. Dots are read as pauses.
+    static func cardLabel(name: String, year: String, caption: String?) -> String {
+        let detail = (caption?.isEmpty == false ? caption ?? "" : year)
+            .replacingOccurrences(of: separator, with: ", ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return detail.isEmpty ? name : "\(name), \(detail)"
     }
 }
 
@@ -867,6 +938,6 @@ struct LandscapeCard: View {
         }
         .frame(width: cardWidth, alignment: .topLeading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title.name)\(caption.map { ", \($0)" } ?? "")")
+        .accessibilityLabel(DiscoverMetaLine.cardLabel(name: title.name, year: title.year, caption: caption))
     }
 }
