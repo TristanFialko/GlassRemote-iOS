@@ -144,39 +144,35 @@ final class Phase9VolumeTests: XCTestCase {
 
     // MARK: C3 landscape volume deck
 
+    // Phase 9 gap fix: the landscape stage has a top bar and a key rail each side; the deck runs exactly
+    // under the pad (RemoteLandscapeLayoutTests). Stage heights include the 54 pt top bar.
     private func androidStage(width: CGFloat, height: CGFloat) -> RemoteStageLayout.Frames {
-        RemoteStageLayout.frames(width: width, height: height,
-                                 leading: [96, 40, 58], leadingBottom: [false, false, true],
-                                 trailing: [114], trailingBottom: [false],
-                                 hasPad: true, spacing: 10, columnSpacing: 14,
-                                 reservesColumns: true, deck: true)
+        RemoteStageLayout.frames(width: width, height: height, topTrailingWidth: 160,
+                                 leading: [176], trailing: [114],
+                                 spacing: 10, columnSpacing: 14)
     }
 
     private func samsungStage(width: CGFloat, height: CGFloat) -> RemoteStageLayout.Frames {
-        RemoteStageLayout.frames(width: width, height: height,
-                                 leading: [96, 52], leadingBottom: [false, true],
-                                 trailing: [52, 52], trailingBottom: [false, true],
-                                 hasPad: true, spacing: 10, columnSpacing: 14,
-                                 reservesColumns: true, deck: true)
+        RemoteStageLayout.frames(width: width, height: height, topTrailingWidth: 160,
+                                 leading: [114, 114], trailing: [176, 52],
+                                 spacing: 10, columnSpacing: 14)
     }
 
     func testLandscapeVolumeDeckIsLongAndProminent() throws {
         for width in stageWidths {
-            for height in [300, 340, 380] as [CGFloat] {
+            for height in [340, 350, 380, 397] as [CGFloat] {
                 let frames = androidStage(width: width, height: height)
                 let deck = try XCTUnwrap(frames.deck)
                 let pad = try XCTUnwrap(frames.pad)
                 let label = "\(width)×\(height)"
                 XCTAssertGreaterThanOrEqual(deck.width, RemoteLayoutPolicy.landscapeVolumeMinLength, label)
                 XCTAssertGreaterThanOrEqual(deck.width, width * 0.6, label)
-                XCTAssertGreaterThanOrEqual(deck.width, RemoteLayoutPolicy.columnWidths(for: width).trailing * 2,
-                                            "at least twice the old trailing-column slider, \(label)")
                 XCTAssertEqual(deck.height, RemoteLayoutPolicy.landscapeVolumeThickness, label)
                 XCTAssertGreaterThan(VolumeSliderGeometry.thumbDiameter(height: deck.height),
                                      VolumeSliderGeometry.thumbDiameter(height: RemoteLayoutPolicy.portraitVolumeThickness), label)
                 XCTAssertEqual(deck.maxY, height, accuracy: 0.5, label)
                 XCTAssertEqual(deck.minX, pad.minX, accuracy: 0.5, label)
-                XCTAssertEqual(deck.maxX, width, accuracy: 0.5, label)
+                XCTAssertEqual(deck.maxX, pad.maxX, accuracy: 0.5, label)
                 XCTAssertGreaterThanOrEqual(pad.width, RemoteLayoutPolicy.landscapePadMinWidth - 0.5, label)
                 XCTAssertGreaterThanOrEqual(pad.height, RemoteLayoutPolicy.padMinHeight(compact: false, isLandscape: true), label)
                 XCTAssertFalse(deck.intersects(pad), label)
@@ -193,7 +189,9 @@ final class Phase9VolumeTests: XCTestCase {
         XCTAssertEqual(RemoteLayoutPolicy.volumeDeckHeight(stageHeight: 270), 60)
         XCTAssertEqual(RemoteLayoutPolicy.volumeDeckHeight(stageHeight: 266), 56)
         XCTAssertEqual(RemoteLayoutPolicy.volumeDeckHeight(stageHeight: 200), 56)
-        for height in [266, 270, 280, 300] as [CGFloat] {
+        // Pad-column heights 266...300 under the top bar.
+        for band in [266, 270, 280, 300] as [CGFloat] {
+            let height = band + RemoteLayoutPolicy.topBarHeight + 10
             for width in stageWidths {
                 let frames = androidStage(width: width, height: height)
                 XCTAssertGreaterThanOrEqual(frames.pad?.height ?? 0, 199.5, "\(width)×\(height)")
@@ -205,15 +203,17 @@ final class Phase9VolumeTests: XCTestCase {
 
     func testAndroidAndSamsungShareThePadAndTheDeck() throws {
         for width in [520, 640, 812, 932] as [CGFloat] {
-            for height in [266, 300, 340, 380] as [CGFloat] {
+            for height in [320, 340, 350, 380] as [CGFloat] {
                 let android = androidStage(width: width, height: height)
                 let samsung = samsungStage(width: width, height: height)
                 XCTAssertEqual(android.pad, samsung.pad, "\(width)×\(height)")
                 XCTAssertEqual(android.deck, samsung.deck, "\(width)×\(height)")
                 XCTAssertEqual(RemoteStageLayout.padRect(width: width, height: height), android.pad)
-                // The Samsung TV group sits directly above the deck, one spacing clear of it.
+                // Mute (the trailing rail's last group) stays on the stage, beside the deck.
                 let deck = try XCTUnwrap(samsung.deck)
-                XCTAssertEqual(samsung.trailing[1].maxY + 10, deck.minY, accuracy: 0.5)
+                let mute = try XCTUnwrap(samsung.trailing.last)
+                XCTAssertLessThanOrEqual(mute.maxY, deck.maxY + 0.5)
+                XCTAssertGreaterThan(mute.minX, deck.maxX)
             }
         }
     }
@@ -226,11 +226,9 @@ final class Phase9VolumeTests: XCTestCase {
     }
 
     func testStagesWithoutADeckAreUnchanged() {
-        let frames = RemoteStageLayout.frames(width: 844, height: 360,
-                                              leading: [96], leadingBottom: [false],
-                                              trailing: [114], trailingBottom: [false],
-                                              hasPad: true, spacing: 10, columnSpacing: 14)
+        let frames = RemoteStageLayout.frames(width: 844, height: 360, leading: [114], trailing: [114],
+                                              deck: false, spacing: 10, columnSpacing: 14)
         XCTAssertNil(frames.deck)
-        XCTAssertEqual(frames.pad?.height, 360)
+        XCTAssertEqual(frames.pad?.height, 360 - RemoteLayoutPolicy.topBarHeight - 10)
     }
 }

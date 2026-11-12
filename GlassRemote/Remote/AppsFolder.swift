@@ -322,8 +322,8 @@ enum AppsFolderLayout {
     }
 
     /// The open folder's frame and tile metrics. Portrait: centred on the Apps key and above it.
-    /// Landscape: beside the launcher card (over the pad), bottom-aligned with it, so the status
-    /// column stays visible. Always inside the container's margins.
+    /// Landscape: beside the Apps key on the leading rail (over the pad), bottom-aligned with it, so
+    /// the rail stays visible. Always inside the container's margins.
     static func placement(container: CGSize, anchor: CGRect, isLandscape: Bool,
                           appCount: Int, showsBanner: Bool) -> Placement {
         let w = width(container: container, isLandscape: isLandscape)

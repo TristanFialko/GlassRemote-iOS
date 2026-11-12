@@ -102,23 +102,33 @@ final class Phase9PlayerGapTests: XCTestCase {
 
         let posterURL = folder.appendingPathComponent("sample-poster.png")
         try XCTUnwrap(Self.samplePoster().pngData()).write(to: posterURL)
+        let brightURL = folder.appendingPathComponent("sample-poster-bright.png")
+        try XCTUnwrap(Self.brightPoster().pngData()).write(to: brightURL)
+        let darkURL = folder.appendingPathComponent("sample-poster-dark.png")
+        try XCTUnwrap(Self.darkPoster().pngData()).write(to: darkURL)
+        let posters: [String: URL] = ["Girl Like Me": posterURL, "Summer Light": brightURL, "Night Signal": darkURL]
 
         let remote = RemoteModel()
         remote.connected = true
         let navigator = PageNavigator()
         navigator.openPlayer(haptic: false)
 
-        let cases: [(name: String, title: String, landscape: Bool, art: Bool)] = [
-            ("nowplaying-portrait-art", "Girl Like Me", false, true),
-            ("nowplaying-landscape-art", "Girl Like Me", true, true),
-            ("nowplaying-portrait-noart", "No Artwork Title", false, false),
-            ("nowplaying-landscape-noart", "No Artwork Title", true, false),
+        let cases: [(name: String, title: String, landscape: Bool)] = [
+            ("nowplaying-portrait-art", "Girl Like Me", false),
+            ("nowplaying-landscape-art", "Girl Like Me", true),
+            ("nowplaying-portrait-noart", "No Artwork Title", false),
+            ("nowplaying-landscape-noart", "No Artwork Title", true),
+            ("nowplaying-portrait-bright", "Summer Light", false),
+            ("nowplaying-portrait-dark", "Night Signal", false),
+            ("nowplaying-landscape-bright", "Summer Light", true),
         ]
         for item in cases {
-            PlayerArtworkStore.shared.remember(title: "Girl Like Me", posterURL: posterURL)
+            // The store keeps one hint: the title being rendered (the no-artwork title matches none).
+            let hinted = posters[item.title] == nil ? "Girl Like Me" : item.title
+            PlayerArtworkStore.shared.remember(title: hinted, posterURL: posters[hinted])
             remote.media = MediaState(package: "com.nuvio.app", title: item.title, state: 3, positionMs: 125_000, speed: 1,
                                       sampledAt: Date(), actions: 2 | 4 | 8 | 64 | 512, headline: "", subtitle: "Season 1 · Episode 4")
-            PlayerBackdropStore.shared.show(item.art ? posterURL : nil)
+            PlayerBackdropStore.shared.show(posters[item.title])
 
             let size = item.landscape ? CGSize(width: 852, height: 393) : CGSize(width: 393, height: 852)
             // Landscape is drawn in a portrait-shaped host, so its insets are supplied by hand: the

@@ -134,67 +134,59 @@ final class Phase9NavigationTests: XCTestCase {
 
     // MARK: Remote swipe areas
 
+    // Phase 9 gap fix: the landscape stage has a key rail each side with its keys centred; the swipe
+    // areas are the free rail space under the keys.
     private func androidStage(width: CGFloat, height: CGFloat) -> RemoteStageLayout.Frames {
-        RemoteStageLayout.frames(width: width, height: height,
-                                 leading: [96, 40, 58], leadingBottom: [false, false, true],
-                                 trailing: [114], trailingBottom: [false],
-                                 hasPad: true, spacing: 10, columnSpacing: 14, reservesColumns: true, deck: true)
+        RemoteStageLayout.frames(width: width, height: height, topTrailingWidth: 160,
+                                 leading: [176], trailing: [114],
+                                 spacing: 10, columnSpacing: 14)
     }
 
     private func samsungStage(width: CGFloat, height: CGFloat) -> RemoteStageLayout.Frames {
-        RemoteStageLayout.frames(width: width, height: height,
-                                 leading: [96, 52], leadingBottom: [false, true],
-                                 trailing: [52, 52], trailingBottom: [false, true],
-                                 hasPad: true, spacing: 10, columnSpacing: 14, reservesColumns: true, deck: true)
+        RemoteStageLayout.frames(width: width, height: height, topTrailingWidth: 160,
+                                 leading: [114, 114], trailing: [176, 52],
+                                 spacing: 10, columnSpacing: 14)
     }
 
-    private func assertClearOfControls(_ frames: RemoteStageLayout.Frames, file: StaticString = #filePath, line: UInt = #line) throws {
-        let leadingGap = try XCTUnwrap(frames.leadingGap, file: file, line: line)
-        let trailingGap = try XCTUnwrap(frames.trailingGap, file: file, line: line)
+    private func assertClearOfControls(_ frames: RemoteStageLayout.Frames, file: StaticString = #filePath, line: UInt = #line) {
         var controls = frames.leading + frames.trailing
-        if let pad = frames.pad { controls.append(pad) }
-        if let deck = frames.deck { controls.append(deck) }
-        for rect in controls {
-            XCTAssertFalse(rect.intersects(leadingGap), "\(rect) overlaps the leading swipe area", file: file, line: line)
-            XCTAssertFalse(rect.intersects(trailingGap), "\(rect) overlaps the trailing swipe area", file: file, line: line)
+        controls += [frames.pad, frames.deck, frames.topLeading, frames.topCenter, frames.topTrailing].compactMap { $0 }
+        for gap in [frames.leadingGap, frames.trailingGap].compactMap({ $0 }) {
+            for rect in controls {
+                XCTAssertFalse(rect.intersects(gap), "\(rect) overlaps the swipe area \(gap)", file: file, line: line)
+            }
+            XCTAssertGreaterThanOrEqual(gap.height, RemoteStageLayout.swipeAreaMinHeight, file: file, line: line)
         }
-        XCTAssertGreaterThanOrEqual(leadingGap.height, RemoteStageLayout.swipeAreaMinHeight, file: file, line: line)
-        XCTAssertGreaterThanOrEqual(trailingGap.height, RemoteStageLayout.swipeAreaMinHeight, file: file, line: line)
     }
 
-    func testAndroidStageOffersItsFreeColumnSpace() throws {
+    func testAndroidStageOffersItsFreeRailSpace() throws {
         for width in [568, 700, 812, 932] as [CGFloat] {
-            for height in [300, 340, 380] as [CGFloat] {
+            for height in [350, 380, 400] as [CGFloat] {
                 let frames = androidStage(width: width, height: height)
-                try assertClearOfControls(frames)
+                assertClearOfControls(frames)
                 let leadingGap = try XCTUnwrap(frames.leadingGap)
                 let trailingGap = try XCTUnwrap(frames.trailingGap)
-                let deck = try XCTUnwrap(frames.deck)
-                XCTAssertEqual(leadingGap.minY, frames.leading[1].maxY + 10, accuracy: 0.5)
-                XCTAssertEqual(leadingGap.maxY, frames.leading[2].minY - 10, accuracy: 0.5)
+                XCTAssertEqual(leadingGap.minY, frames.leading[0].maxY + 10, accuracy: 0.5)
+                XCTAssertEqual(leadingGap.maxY, height, accuracy: 0.5)
                 XCTAssertEqual(leadingGap.minX, frames.leading[0].minX, accuracy: 0.5)
                 XCTAssertEqual(leadingGap.width, frames.leading[0].width, accuracy: 0.5)
                 XCTAssertEqual(trailingGap.minY, frames.trailing[0].maxY + 10, accuracy: 0.5)
-                XCTAssertEqual(trailingGap.maxY + 10, deck.minY, accuracy: 0.5)
+                XCTAssertEqual(trailingGap.maxX, width, accuracy: 0.5)
             }
         }
     }
 
-    func testSamsungStageOffersItsFreeColumnSpace() throws {
+    func testSamsungStageOffersOnlyRealFreeSpace() {
         for width in [568, 812, 932] as [CGFloat] {
-            let frames = samsungStage(width: width, height: 340)
-            try assertClearOfControls(frames)
-            let leadingGap = try XCTUnwrap(frames.leadingGap)
-            let trailingGap = try XCTUnwrap(frames.trailingGap)
-            XCTAssertEqual(leadingGap.minY, frames.leading[0].maxY + 10, accuracy: 0.5)
-            XCTAssertEqual(leadingGap.maxY, frames.leading[1].minY - 10, accuracy: 0.5)
-            XCTAssertEqual(trailingGap.minY, frames.trailing[0].maxY + 10, accuracy: 0.5)
-            XCTAssertEqual(trailingGap.maxY, frames.trailing[1].minY - 10, accuracy: 0.5)
+            for height in [340, 350, 397, 440] as [CGFloat] {
+                assertClearOfControls(samsungStage(width: width, height: height))
+            }
         }
+        XCTAssertNotNil(samsungStage(width: 812, height: 440).leadingGap)
     }
 
-    func testTooShortColumnsOfferNoSwipeArea() {
-        let frames = androidStage(width: 812, height: 200)
+    func testTooShortRailsOfferNoSwipeArea() {
+        let frames = samsungStage(width: 812, height: 300)
         XCTAssertNil(frames.leadingGap)
         XCTAssertNil(frames.trailingGap)
     }

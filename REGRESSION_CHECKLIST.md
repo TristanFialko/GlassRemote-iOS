@@ -118,3 +118,10 @@
 - [ ] Denying it is reported as denied, and the prompt is not raised again until Reconnect.
 - [ ] Reset Samsung pairing… asks for confirmation, then the TV asks again; the Android connection and the volume link are untouched.
 - [ ] A token issued by one TV is never offered to a different address.
+
+## Phase 9 landscape Remote (layout unit tested; not run on a device)
+- [ ] Landscape Remote is a console, not the portrait stack in columns: status pill top left, Mouse / D-pad selector centred over the pad, device switch and power top right; Back, Home, Apps on a rail under the left thumb; Search, Keyboard (and Sources when the Samsung link is on) under the right; volume runs along the foot of the pad.
+- [ ] The trackpad is about 477 × 220 pt on a 6.1" iPhone (409 × 223 on an SE, 558 × 267 on a Pro Max) and is identical for the Android and Samsung remotes.
+- [ ] Samsung landscape: Back, Home, Ch +, Ch − on the left rail; Rewind, Play/Pause, Fast forward, Mute on the right; the link banner floats over the disabled pad.
+- [ ] Apps key on the left rail opens the folder beside it, over the pad; rotating with the folder open keeps it open.
+- [ ] Rotating mid-touch: mouse movement, a touch-and-hold drag and a held D-pad key behave as before and stop on lift; nothing keeps repeating; two-finger scroll and two-finger Back still work afterwards.
