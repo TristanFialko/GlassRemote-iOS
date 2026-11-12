@@ -31,50 +31,41 @@ final class Phase8RemoteLayoutTests: XCTestCase {
         XCTAssertEqual(RemoteLayoutPolicy.dpadDiameter(for: CGSize(width: 320, height: 400)), 300)
     }
 
-    func testColumnWidthsAlwaysLeaveThePadRoom() {
+    // Phase 9 gap fix: the 27 % / 23 % side columns became narrow key rails, so the pad takes about
+    // three quarters of the stage (RemoteLandscapeLayoutTests covers the whole landscape stage).
+    func testRailsAlwaysLeaveThePadRoom() {
         for width in [400, 568, 667, 740, 844, 932, 1200] as [CGFloat] {
-            let c = RemoteLayoutPolicy.columnWidths(for: width)
-            XCTAssertGreaterThan(c.leading, 0)
-            XCTAssertGreaterThan(c.trailing, 0)
-            XCTAssertLessThanOrEqual(c.leading + c.trailing, width * 0.6 + 0.001, "width \(width)")
+            let rail = RemoteLayoutPolicy.railWidth(stageWidth: width)
+            XCTAssertGreaterThanOrEqual(rail, 58)
+            XCTAssertLessThanOrEqual(rail, 72)
+            XCTAssertGreaterThanOrEqual(RemoteLayoutPolicy.landscapePadWidth(stageWidth: width), width * 0.6, "width \(width)")
         }
-        let wide = RemoteLayoutPolicy.columnWidths(for: 2000)
-        // Phase 9 §1.2 raised the caps (the landscape columns had oversized gutters on wide screens).
-        XCTAssertEqual(wide.leading, 280)
-        XCTAssertEqual(wide.trailing, 252)
-        let none = RemoteLayoutPolicy.columnWidths(for: 0)
-        XCTAssertEqual(none.leading, 0)
-        XCTAssertEqual(none.trailing, 0)
+        XCTAssertEqual(RemoteLayoutPolicy.railWidth(stageWidth: 2000), 72)
+        XCTAssertEqual(RemoteLayoutPolicy.landscapePadWidth(stageWidth: 0), 0)
     }
 
-    func testStageFramesKeepColumnsBesideThePad() throws {
-        let f = RemoteStageLayout.frames(width: 844, height: 360,
-                                         leading: [96, 48, 58], leadingBottom: [false, false, true],
-                                         trailing: [176, 54, 44], trailingBottom: [false, true, true],
-                                         hasPad: true, spacing: 10, columnSpacing: 14)
+    func testStageFramesKeepRailsBesideThePad() throws {
+        let f = RemoteStageLayout.frames(width: 844, height: 360, topTrailingWidth: 160,
+                                         leading: [176], trailing: [114, 52],
+                                         spacing: 10, columnSpacing: 14)
         let pad = try XCTUnwrap(f.pad)
         XCTAssertGreaterThan(pad.width, 0)
-        XCTAssertEqual(pad.minY, 0, accuracy: 0.5)
-        XCTAssertEqual(pad.height, 360, accuracy: 0.5)
+        XCTAssertEqual(pad.minY, RemoteLayoutPolicy.topBarHeight + 10, accuracy: 0.5, "under the top bar")
         for rect in f.leading + f.trailing { XCTAssertFalse(rect.intersects(pad), "\(rect) overlaps the pad") }
-        // Top children stack from the top with the spacing; pinned ones sit on the foot.
-        XCTAssertEqual(f.leading[0].minY, 0, accuracy: 0.5)
-        XCTAssertEqual(f.leading[1].minY, 106, accuracy: 0.5)
-        XCTAssertEqual(f.leading[2].maxY, 360, accuracy: 0.5)
-        XCTAssertEqual(f.trailing[2].maxY, 360, accuracy: 0.5)
-        // Two pinned children keep their order: the TV group sits directly above the volume slider.
-        XCTAssertEqual(f.trailing[1].maxY + 10, f.trailing[2].minY, accuracy: 0.5)
+        // Groups keep their order on a rail, one group gap apart.
+        XCTAssertEqual(f.trailing[0].maxY + RemoteLayoutPolicy.railGroupSpacing, f.trailing[1].minY, accuracy: 0.5)
         XCTAssertLessThan(f.leading[0].maxX, pad.minX)
         XCTAssertGreaterThan(f.trailing[0].minX, pad.maxX)
     }
 
-    func testStageWithoutColumnsGivesThePadEverything() throws {
-        let f = RemoteStageLayout.frames(width: 700, height: 300, leading: [], leadingBottom: [],
-                                         trailing: [], trailingBottom: [], hasPad: true, spacing: 10, columnSpacing: 14)
+    func testStageWithoutTopBarOrDeckGivesThePadTheFullHeight() throws {
+        let f = RemoteStageLayout.frames(width: 700, height: 300, topBar: false, leading: [], trailing: [],
+                                         deck: false, spacing: 10, columnSpacing: 14)
         let pad = try XCTUnwrap(f.pad)
-        XCTAssertEqual(pad, CGRect(x: 0, y: 0, width: 700, height: 300))
-        XCTAssertNil(RemoteStageLayout.frames(width: 700, height: 300, leading: [40], leadingBottom: [false],
-                                              trailing: [], trailingBottom: [], hasPad: false,
+        let rail = RemoteLayoutPolicy.railWidth(stageWidth: 700)
+        XCTAssertEqual(pad, CGRect(x: rail + 14, y: 0, width: 700 - 2 * (rail + 14), height: 300))
+        XCTAssertNil(f.topLeading)
+        XCTAssertNil(RemoteStageLayout.frames(width: 700, height: 300, leading: [40], trailing: [], hasPad: false,
                                               spacing: 10, columnSpacing: 14).pad)
     }
 }
@@ -127,9 +118,11 @@ final class Phase8RemoteChromeTests: XCTestCase {
         }
     }
 
-    func testLauncherKeyIsInPortraitAndACardInLandscape() {
+    // Phase 9 gap fix: the landscape launcher card became the Apps key on the leading rail.
+    func testLauncherKeyIsInBothOrientations() {
         XCTAssertTrue(RemoteNavKey.cluster(isLandscape: false, samsungLinked: false).contains(.apps))
-        XCTAssertFalse(RemoteNavKey.cluster(isLandscape: true, samsungLinked: false).contains(.apps))
+        XCTAssertTrue(RemoteNavKey.cluster(isLandscape: true, samsungLinked: false).contains(.apps))
+        XCTAssertTrue(RemoteNavKey.landscapeRails(samsungLinked: false).leading.contains(.apps))
     }
 
     func testSettingsMovedOutOfTheRemoteMenu() {
@@ -163,10 +156,14 @@ final class Phase8SamsungLandscapeTests: XCTestCase {
         }
     }
 
-    func testTVGroupHoldsMuteAndChannel() {
-        XCTAssertEqual(SamsungRemoteLayout.landscapeTVGroup.map(\.key), [.mute, .channelDown, .channelUp])
+    // Phase 9 gap fix: the keys moved onto two rails (four keys each); mute sits beside the deck.
+    func testRailsHoldNavigationChannelTransportAndMute() {
         XCTAssertEqual(SamsungRemoteLayout.landscapeNavigation.map(\.key), [.back, .home])
+        XCTAssertEqual(SamsungRemoteLayout.landscapeChannels.map(\.key), [.channelUp, .channelDown])
         XCTAssertEqual(SamsungRemoteLayout.landscapeMedia.map(\.key), [.rewind, .play, .fastForward])
+        XCTAssertEqual(SamsungRemoteLayout.landscapeAudio.map(\.key), [.mute])
+        XCTAssertEqual(SamsungRemoteLayout.landscapeLeadingRail.flatMap { $0 }.map(\.key), [.back, .home, .channelUp, .channelDown])
+        XCTAssertEqual(SamsungRemoteLayout.landscapeTrailingRail.flatMap { $0 }.map(\.key), [.rewind, .play, .fastForward, .mute])
     }
 
     func testBannerShowsWheneverTheLinkIsNotUp() {
