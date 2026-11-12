@@ -4,7 +4,7 @@ Branch: Phase-7 (from phase-6-ui-nuvio-rebuild at adc2ec0). PR #2 is tracking-on
 
 ## What this branch adds
 
-- Four tabs: Remote, Player, Discover (unchanged names and order) plus Profile.
+- Three dock destinations: Remote, Discover, Profile. Now Playing is presented over the pages (mini-player, rail tile or the Remote page's card), not a tab. (Phase 7 had four tabs including Player; superseded in Phase 9.)
 - Dock: the Phase 6 magnifying lens is removed. The selection is a glass bubble with a moving specular sheen (DockSheen) that follows the drag/selection, on top of the existing native glass (iOS 26 glassEffect where available, material fallback below). Shared springs live in DesignSystem/Motion.swift, and every one resolves to a short fade under Reduce Motion or the per-profile "Reduce interface motion" switch. No continuous animations run while idle.
 - Profiles (Profiles/): multiple profiles with any name and an optional photo from the system photo picker (PhotosPicker runs out of process, so there is no library permission prompt). Photos are downscaled to 512 px JPEG off the main thread. The last active profile is restored at launch. Each profile has its own theme, motion preference, poster-orientation preference and add-on list. TV pairings are shared hardware state and are never duplicated per profile.
 - Profile tab: overview with switcher, TV Connections (status first, one action per device, the proven Connection screen for detailed pairing), Add-ons, Devices (device info moved here), Appearance, General (Nuvio account, privacy, accessibility, about). Landscape puts the profile card beside the sections.
@@ -26,7 +26,7 @@ Branch: Phase-7 (from phase-6-ui-nuvio-rebuild at adc2ec0). PR #2 is tracking-on
 - This environment has no Xcode, simulator or network. Builds and unit tests run in GitHub Actions CI (macos-26) only. Nothing here has been verified on a physical iPhone or TV yet; that needs the user.
 - Real Liquid Glass rendering, rotation, safe areas and touch feel need on-device checks.
 - Plain-http LAN add-ons may be blocked by App Transport Security (no NSAllowsLocalNetworking key is set).
-- Still open on this branch: a visual and landscape pass on the Player tab; checking that the other poster surfaces (search results, collections) follow the orientation preference; CI results for the latest commits; on-device checks of the card-to-detail transition, the D-pad feel and Liquid Glass rendering.
+- Still open on this branch: a visual and landscape pass on Now Playing (done in Phase 9, see README.md); checking that the other poster surfaces (search results, collections) follow the orientation preference; CI results for the latest commits; on-device checks of the card-to-detail transition, the D-pad feel and Liquid Glass rendering.
 
 ## Phase 7.1 polish pass (branch Phase-7.1, child of Phase-7)
 
