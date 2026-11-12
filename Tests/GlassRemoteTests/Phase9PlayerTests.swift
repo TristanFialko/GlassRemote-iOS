@@ -67,17 +67,21 @@ final class Phase9PlayerTests: XCTestCase {
         XCTAssertEqual(PlayerLayoutPolicy.landscape(page: .zero, bottomClearance: 8).artSide, 0)
     }
 
-    func testBackdropCropCoversTheWindowWithoutStretching() {
-        let wash = CGSize(width: 24, height: 36)
-        for canvas in [CGSize(width: 393, height: 852), CGSize(width: 852, height: 393)] {
-            let rect = PlayerBackdropPolicy.cropRect(image: wash, canvas: canvas)
-            XCTAssertEqual(rect.width / rect.height, wash.width / wash.height, accuracy: 0.001)
-            XCTAssertLessThanOrEqual(rect.minX, 0.5)
-            XCTAssertLessThanOrEqual(rect.minY, 0.5)
-            XCTAssertGreaterThanOrEqual(rect.maxX, canvas.width - 0.5)
-            XCTAssertGreaterThanOrEqual(rect.maxY, canvas.height - 0.5)
+    func testBackdropMeshCoversTheWholeWindow() {
+        // The wash is drawn, not an image: its outer control points sit on the canvas edges for any
+        // artwork, so it covers portrait and landscape windows alike with nothing to crop or enlarge.
+        for lean in [0.0, 0.3, 0.75, 1.0, -2, 7, .nan] {
+            let points = PlayerBackdropPolicy.meshPoints(lean: lean)
+            XCTAssertEqual(points.count, 9)
+            for (index, point) in points.enumerated() {
+                XCTAssertTrue((0...1).contains(point.x) && (0...1).contains(point.y), "point \(index) for lean \(lean)")
+            }
+            for corner in [0, 2, 6, 8] { XCTAssertTrue(points[corner].x == 0 || points[corner].x == 1) }
+            XCTAssertEqual(points[3].x, 0); XCTAssertEqual(points[5].x, 1)
+            XCTAssertEqual(points[1].y, 0); XCTAssertEqual(points[7].y, 1)
         }
-        XCTAssertGreaterThan(PlayerBackdropPolicy.enlargement, 1, "the soft edges stay off screen")
+        XCTAssertNotEqual(PlayerBackdropPolicy.meshPoints(lean: 0)[4], PlayerBackdropPolicy.meshPoints(lean: 1)[4],
+                          "different artwork gives a differently shaped wash")
     }
 
     // MARK: Background contrast
@@ -89,51 +93,30 @@ final class Phase9PlayerTests: XCTestCase {
         }
     }
 
-    func testScrimKeepsInkLegibleOverAnyArtwork() {
+    func testWashKeepsInkLegibleOverAnyArtwork() throws {
+        // Grey ramp: from black to white artwork, every colour the mesh draws keeps the ink at 4.5:1.
         for step in 0...40 {
-            let l = Double(step) / 40
-            let profile = PlayerBackdropPolicy.Profile(mean: l, peak: l, low: l)
-
-            let dark = PlayerBackdropPolicy.scrimOpacity(profile: profile, light: false)
-            let darkBackground = PlayerBackdropPolicy.effectiveLuminance(luminance: l, scrim: dark, light: false)
-            XCTAssertGreaterThanOrEqual(ColorMath.contrast(PlayerBackdropPolicy.darkInkLuminance, darkBackground), 4.5,
-                                        "white ink over art of luminance \(l)")
-            XCTAssertGreaterThanOrEqual(dark, PlayerBackdropPolicy.darkFloor)
-            XCTAssertLessThanOrEqual(dark, PlayerBackdropPolicy.ceiling)
-
-            let light = PlayerBackdropPolicy.scrimOpacity(profile: profile, light: true)
-            let lightBackground = PlayerBackdropPolicy.effectiveLuminance(luminance: l, scrim: light, light: true)
-            XCTAssertGreaterThanOrEqual(ColorMath.contrast(PlayerBackdropPolicy.lightInkLuminance, lightBackground), 4.5,
-                                        "dark ink over art of luminance \(l)")
-            XCTAssertGreaterThanOrEqual(light, PlayerBackdropPolicy.lightFloor)
-            XCTAssertLessThanOrEqual(light, PlayerBackdropPolicy.ceiling)
+            let v = Double(step) / 40
+            let swatches = [ArtworkSwatch(r: v, g: v, b: v, share: 1)]
+            for light in [false, true] {
+                let palette = try XCTUnwrap(NowPlayingPalette.make(swatches: swatches, light: light))
+                for tone in PlayerBackdropPolicy.meshColors(palette, light: light) {
+                    XCTAssertGreaterThanOrEqual(PlayerBackdropPolicy.inkContrast(over: tone, light: light),
+                                                PlayerBackdropPolicy.minimumContrast, "grey \(v), light \(light)")
+                }
+            }
         }
     }
 
-    func testBrighterArtGetsAStrongerDarkScrim() {
-        let dim = PlayerBackdropPolicy.scrimOpacity(profile: .init(mean: 0.05, peak: 0.1, low: 0), light: false)
-        let bright = PlayerBackdropPolicy.scrimOpacity(profile: .init(mean: 0.8, peak: 0.95, low: 0.6), light: false)
-        XCTAssertGreaterThan(bright, dim)
-        let unknown = PlayerBackdropPolicy.scrimOpacity(profile: .unknown, light: false)
-        XCTAssertGreaterThanOrEqual(unknown, bright, "nothing measured is treated as the brightest art")
-    }
-
-    func testLuminanceProfileReadsPixels() {
-        let white = [UInt8](repeating: 255, count: 40)
-        let whiteProfile = PlayerBackdropPolicy.profile(rgba: white)
-        XCTAssertEqual(whiteProfile.mean, 1, accuracy: 0.001)
-        XCTAssertEqual(whiteProfile.peak, 1, accuracy: 0.001)
-
-        let blackPixel: [UInt8] = [0, 0, 0, 255]
-        let whitePixel: [UInt8] = [255, 255, 255, 255]
-        let mixed = Array(repeating: blackPixel, count: 8).flatMap { $0 } + Array(repeating: whitePixel, count: 2).flatMap { $0 }
-        let profile = PlayerBackdropPolicy.profile(rgba: mixed)
-        XCTAssertEqual(profile.mean, 0.2, accuracy: 0.001)
-        XCTAssertEqual(profile.peak, 1, accuracy: 0.001, "the brightest tenth decides the dark scrim")
-        XCTAssertEqual(profile.low, 0, accuracy: 0.001, "the darkest tenth decides the light scrim")
-
-        XCTAssertEqual(PlayerBackdropPolicy.profile(rgba: [0, 0, 0, 0]), .unknown, "transparent pixels are ignored")
-        XCTAssertEqual(PlayerBackdropPolicy.profile(rgba: []), .unknown)
+    func testBrightArtIsDarkenedAndDarkArtKeepsItsColour() {
+        let white = NowPlayingPalette.make(swatches: [ArtworkSwatch(r: 1, g: 1, b: 1, share: 1)], light: false)!
+        XCTAssertLessThanOrEqual(white.base.luminance, PlayerBackdropPolicy.darkMaxLuminance + 0.001)
+        let black = NowPlayingPalette.make(swatches: [ArtworkSwatch(r: 0, g: 0, b: 0, share: 1)], light: false)!
+        XCTAssertGreaterThanOrEqual(black.base.luminance, PlayerBackdropPolicy.darkMinLuminance - 0.001,
+                                    "black artwork still gives a wash, not an empty background")
+        let deepRed = ArtworkSwatch(r: 0.35, g: 0.02, b: 0.05, share: 1)
+        let red = NowPlayingPalette.make(swatches: [deepRed], light: false)!
+        XCTAssertEqual(red.base, NowPlayingPalette.Tone(deepRed), "an already legible colour is kept as it is")
     }
 
     // MARK: Capabilities

@@ -1,16 +1,26 @@
 import SwiftUI
 
 /// Phase 8: the Remote's secondary navigation keys. Pure description (unit tested): each key
-/// appears once, the Apps launcher key is in the portrait cluster (landscape has a launcher card in
-/// the leading column instead), and Sources is offered only while the Samsung link is enabled.
+/// appears once, the Apps launcher key is always present, and Sources is offered only while the
+/// Samsung link is enabled.
 enum RemoteNavKey: String, Hashable, CaseIterable {
     case back, home, apps, search, keyboard, sources
 
     static func cluster(isLandscape: Bool, samsungLinked: Bool) -> [RemoteNavKey] {
-        var keys: [RemoteNavKey] = isLandscape ? [.back, .home, .search, .keyboard]
-                                               : [.back, .home, .apps, .search, .keyboard]
+        if isLandscape {
+            let rails = landscapeRails(samsungLinked: samsungLinked)
+            return rails.leading + rails.trailing
+        }
+        var keys: [RemoteNavKey] = [.back, .home, .apps, .search, .keyboard]
         if samsungLinked { keys.append(.sources) }
         return keys
+    }
+
+    /// Landscape key rails: navigation under the left thumb, text entry and input under the right.
+    static func landscapeRails(samsungLinked: Bool) -> (leading: [RemoteNavKey], trailing: [RemoteNavKey]) {
+        var trailing: [RemoteNavKey] = [.search, .keyboard]
+        if samsungLinked { trailing.append(.sources) }
+        return ([.back, .home, .apps], trailing)
     }
 
     var title: String {
