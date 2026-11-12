@@ -112,13 +112,21 @@ final class RemediationVolumeTests: XCTestCase {
         XCTAssertTrue(SamsungHostDefaults.restoredLinkEnabled(stored: true, host: ""), "user's choice kept")
     }
 
-    func testNoPrivateAddressIsHardCodedInTheModel() throws {
+    /// BUG-005 is about the Samsung TV only: its address and link come from SamsungHostDefaults, never
+    /// a literal. (The Android TV box's own saved-host default is a separate, pre-existing setting.)
+    func testNoSamsungAddressIsHardCodedInTheModel() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("GlassRemote/RemoteModel.swift")
         let text = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertNil(text.range(of: #""192\.168\.\d+\.\d+""#, options: .regularExpression))
         XCTAssertFalse(text.contains("defaultSamsungHost"))
+        guard let start = text.range(of: "@Published var samsungHost"),
+              let end = text.range(of: "samsungHostChangeTask", range: start.upperBound..<text.endIndex) else {
+            return XCTFail("samsungHost declaration not found")
+        }
+        let declaration = text[start.lowerBound..<end.lowerBound]
+        XCTAssertTrue(declaration.contains("SamsungHostDefaults.restoredHost("))
+        XCTAssertNil(declaration.range(of: #""\d+\.\d+\.\d+\.\d+""#, options: .regularExpression))
     }
 
     // MARK: BUG-001: one shared slider position
