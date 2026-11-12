@@ -10,11 +10,11 @@ import Network
 /// HTTP) is never involved and no Info.plist change is needed.
 ///
 /// Phase 9 recovery §5: replies are accepted only when complete and confirmed (UPnPHTTP.swift); a
-/// partial reply, an empty 200 or a SOAP fault is a failure, never a silent success. Buttons can
-/// step and mute through this link when the remote WebSocket is down (VolumeButtonPolicy).
+/// partial reply, an empty 200 or a SOAP fault is a failure, never a silent success. A 200 is also
+/// not proof of which speakers moved: this level drives volume only when "Volume goes to" is TV
+/// speakers (VolumeOutput.swift).
 ///
-/// UNVERIFIED ON HARDWARE. If the TV does not answer, `onAvailabilityChanged(false)` fires and the
-/// app uses the Samsung WebSocket volume keys only. Android TV volume is never used (v5 §5).
+/// UNVERIFIED ON HARDWARE. If the TV does not answer, `onAvailabilityChanged(false)` fires.
 @MainActor
 final class SamsungVolumeLink {
     /// Real volume read from the TV (0...100 on Samsung's scale).

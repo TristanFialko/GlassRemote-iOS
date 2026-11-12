@@ -100,111 +100,74 @@ extension RemoteModel {
 
     // MARK: - Volume routing
 
-    /// v5 §5: volume and mute go only to the Samsung TV. The route is `VolumeButtonPolicy`: the
-    /// TV's remote-socket key first (what its own remote sends, so a soundbar on ARC / optical
-    /// follows). A UPnP RenderingControl step / mute toggle is used with the socket down only when
-    /// UPnP is known to address the output that is playing (VolumeOutput.swift); otherwise it would
-    /// move the TV's built-in speaker level while the soundbar plays. The Android TV volume path is
-    /// gone: with no Samsung route nothing is sent and the soundbar is reported unavailable.
-    /// Returns whether a Samsung route took it.
+    /// Volume and mute go to the chosen output (VolumeOutput.swift). The default is Phase 7.2's
+    /// soundbar route: `input keyevent 24/25/164` on the TV box over ADB, which the box forwards to
+    /// the soundbar over HDMI-CEC. The Samsung remote keys and the TV's UPnP level are used only when
+    /// chosen; a route that is down is reported, never swapped for one that moves other speakers.
+    /// Returns whether the command was handed to its route (not proof the speakers changed).
     @discardableResult
     func volume(_ name: String, haptic: Bool = true, readBack: Bool = true) -> Bool {
         endpointLearner.invalidate()   // a volume key is a newer command: discard any pending endpoint attempt
-        let route = VolumeButtonPolicy.route(for: name, tvVolumeEnabled: tvVolumeEnabled,
-                                             remoteReady: samsungRemoteReady, upnpReady: volumeLinkReady,
-                                             upnpControlsOutput: upnpControlsOutput)
+        let route = VolumeButtonPolicy.route(for: name, command: volumeCommandRoute)
         let taken: Bool
         switch route {
+        case .boxKey(let code):
+            taken = commandShellReady
+            if taken { sendPersistentCommand("input keyevent \(code)") }
         case .samsungKey(let key): taken = tv.send(key)
         case .upnpStep(let delta): taken = volumeLink.step(by: delta)
         case .upnpMuteToggle: taken = volumeLink.toggleMute()
         case .unavailable: taken = false
         }
         guard taken else {
-            reportSoundbarUnavailable()
+            reportVolumeUnavailable()
             return false
         }
-        if case .samsungKey = route {
-            // Evidence for the route: does the TV's UPnP level follow its own volume keys?
-            if name == "VOLUME_UP" || name == "VOLUME_DOWN" {
-                volumeOutputProbe.keySent(direction: name == "VOLUME_UP" ? 1 : -1,
-                                          lastReading: volumeLinkReady ? volumeLink.lastVolume : nil, at: Date())
-            }
-        } else {
-            volumeOutputProbe.reset()   // a UPnP set moves the level by itself
-            GRLog.note("volume", "\(name) sent over UPnP (remote socket not ready)")
-        }
         if haptic { Haptics.soft() }
-        if readBack { scheduleVolumeReadback() }
+        if readBack, case .upnpStep = route { scheduleVolumeReadback() }
+        if readBack, case .upnpMuteToggle = route { scheduleVolumeReadback() }
         return true
     }
 
-    /// Whether volume +/−/mute can reach the TV right now (remote socket or UPnP link).
-    var volumeButtonsAvailable: Bool {
-        VolumeButtonPolicy.isAvailable(tvVolumeEnabled: tvVolumeEnabled, remoteReady: samsungRemoteReady,
-                                       upnpReady: volumeLinkReady, upnpControlsOutput: upnpControlsOutput)
-    }
+    /// Whether volume +/−/mute can reach the chosen output right now.
+    var volumeButtonsAvailable: Bool { volumeCommandRoute != .unavailable }
 
-    // MARK: - Which output the volume reaches (VolumeOutput.swift)
+    // MARK: - Which output the volume drives (VolumeOutput.swift)
 
-    /// UPnP may be used for commands and shown as the level: the user chose TV speakers, or a
-    /// volume key was seen to move the UPnP level.
-    var upnpControlsOutput: Bool {
-        VolumeRoutePolicy.upnpControlsOutput(output: samsungAudioOutput, evidence: volumeOutputEvidence)
-    }
-
-    /// The slider's route right now.
+    /// The slider's and buttons' route right now.
     var volumeCommandRoute: VolumeCommandRoute {
-        VolumeRoutePolicy.route(enabled: tvVolumeEnabled, remoteReady: samsungRemoteReady, upnpReady: volumeLinkReady,
-                                output: samsungAudioOutput, evidence: volumeOutputEvidence)
+        VolumeRoutePolicy.route(output: volumeOutput, boxConnected: connected && commandShellReady,
+                                samsungEnabled: tvVolumeEnabled, remoteReady: samsungRemoteReady,
+                                upnpReady: volumeLinkReady)
     }
 
     /// Shown in the Connection sheet.
     var volumeRouteSummary: String {
-        VolumeRoutePolicy.summary(route: volumeCommandRoute, output: samsungAudioOutput,
-                                  evidence: volumeOutputEvidence, upnpReady: volumeLinkReady)
+        VolumeRoutePolicy.summary(route: volumeCommandRoute, output: volumeOutput, samsungEnabled: tvVolumeEnabled)
     }
 
-    /// The route may have changed (setting or evidence): drop the assumed key position and, on the
-    /// absolute route, read the real level so the slider settles on it.
+    /// Short reason for the volume row when nothing can be sent.
+    var volumeUnavailableReason: String {
+        VolumeRoutePolicy.unavailableReason(output: volumeOutput, samsungEnabled: tvVolumeEnabled)
+    }
+
+    /// The output changed: drop the assumed key position and, on the absolute route, read the real level.
     func volumeRouteChanged() {
-        volumeOutputProbe.reset()
         volumePendingSteps = 0
         volumeStateReset()
         if volumeCommandRoute == .absolute { volumeLink.refresh() }
     }
 
-    /// A verdict from `VolumeOutputProbe`: remembered for this TV, and the route follows it.
-    func applyVolumeEvidence(_ verdict: VolumeOutputEvidence) {
-        guard verdict != volumeOutputEvidence else { return }
-        let before = volumeCommandRoute
-        volumeOutputEvidence = verdict
-        VolumeOutputEvidenceStore.save(verdict, host: samsungHost)
-        GRLog.note("volume", verdict == .tracksKeys
-                   ? "the TV's UPnP level followed its volume keys: absolute volume is in use"
-                   : "the TV's UPnP level ignored its volume keys: an external audio device is playing, remote keys only")
-        if volumeCommandRoute != before { volumeRouteChanged() }
+    func reportVolumeUnavailable() {
+        status = "Volume unavailable · \(volumeUnavailableReason)"
+        GRLog.note("volume", "volume command not sent: \(volumeOutput.rawValue) route is down")
     }
 
-    /// Forget what was learned about this TV's output (Connection sheet).
-    func resetVolumeEvidence() {
-        VolumeOutputEvidenceStore.save(.unknown, host: samsungHost)
-        volumeOutputEvidence = .unknown
-        volumeRouteChanged()
-    }
-
-    /// The explicit unavailable state (never a silent fallback to the Android box).
-    var soundbarUnavailableMessage: String { "Soundbar unavailable · \(samsungUnavailableMessage)" }
-
-    func reportSoundbarUnavailable() {
-        status = soundbarUnavailableMessage
-        GRLog.note("volume", "volume command not sent: no Samsung route (Android TV volume is not used)")
-    }
-
-    /// A key the TV connection accepted and then failed to deliver: reported, never re-sent over ADB.
+    /// A Samsung key the socket accepted and then failed to deliver: reported. It is not re-sent over
+    /// the box, which would move the soundbar a second time on setups where the TV key did land.
     func samsungSendFailed(_ name: String) {
-        GRLog.note("samsung", "send failed for \(name); not re-sent over ADB")
-        if VolumeKeyPolicy.isVolumeKey(name) { reportSoundbarUnavailable() } else { status = samsungUnavailableMessage }
+        GRLog.note("samsung", "send failed for \(name); not re-sent")
+        if VolumeKeyPolicy.isVolumeKey(name) { reportVolumeUnavailable() } else { status = samsungUnavailableMessage }
     }
 
     // MARK: - Real TV volume (UPnP RenderingControl)
@@ -242,13 +205,10 @@ extension RemoteModel {
                 learned.save()
                 GRLog.note("volume", "TV limit confirmed twice: \(learned.lo)...\(learned.hi) (saved)")
             }
-            if let verdict = self.volumeOutputProbe.reading(value, at: Date()) { self.applyVolumeEvidence(verdict) }
             let cal = self.volumeCalibration
-            let unusedWhy = self.volumeOutputEvidence == .ignoresKeys
-                ? "it does not follow the TV's volume keys" : "not yet seen to follow the TV's volume keys"
-            self.volumeStatus = self.upnpControlsOutput
+            self.volumeStatus = self.volumeCommandRoute == .absolute
                 ? "TV volume: \(value) (range \(cal.lo)–\(cal.hi), read from the TV)"
-                : "TV's own level (UPnP): \(value) · not used for volume (\(unusedWhy))"
+                : "TV's own level (UPnP): \(value) · not the chosen volume output"
             self.tvVolumeFraction = cal.fraction(forRaw: value)
             if self.volumeScale.route == .samsungAbsolute {
                 self.publishVolumeReading(self.volumeScale.fraction(forRaw: value))
@@ -313,8 +273,8 @@ extension RemoteModel {
     func refreshDeviceVolume() {
         switch volumeScale.route {
         case .samsungAbsolute: volumeLink.refresh()
-        case .samsungKeys: break   // the soundbar does not report its level over the remote socket
-        case .unavailable: break   // v5 §5: no Samsung route; the Android box is never asked
+        case .samsungKeys, .boxKeys: break   // key routes: the soundbar does not report its level
+        case .unavailable: break
         }
     }
 
@@ -326,16 +286,17 @@ extension RemoteModel {
     // MARK: - Slider -> volume mapping
 
     /// Number of volume-key presses a full slider sweep spans. Through the TV this is the
-    /// soundbar's own scale (`tvVolumeMax`). v5 §5: there is no ADB volume scale.
+    /// soundbar's own scale (`tvVolumeMax`); through the box, Phase 7.2's 20 steps.
     var volumeLevels: Int { volumeScale.steps }
 
     /// Continuation §C2: the current target's real range (VolumeScale.swift). Same routing as the
-    /// commands: the TV's absolute level when it reports one, then the TV's keys, otherwise
-    /// unavailable (v5 §5: never the Android box).
+    /// commands (VolumeRoutePolicy): box keys, the TV's keys or the TV's absolute level, otherwise
+    /// unavailable.
     var volumeScale: VolumeScale {
         switch volumeCommandRoute {
         case .absolute: return .samsungAbsolute(volumeCalibration)
-        case .keys: return .samsungKeys(max: tvVolumeMax)
+        case .tvKeys: return .samsungKeys(max: tvVolumeMax)
+        case .boxKeys: return .boxKeys(max: VolumeRoutePolicy.boxSteps)
         case .unavailable: return .unavailable
         }
     }
@@ -354,10 +315,9 @@ extension RemoteModel {
         lastUserVolumeInput = Date()
         volumeSync.userChanged()
         if !volumeDragActive { scheduleVolumeReconcile() }   // VoiceOver increments settle too
-        // Absolute (0...100) only when UPnP is known to address the output that is playing
+        // Absolute (0...100) only when the chosen output is the TV speakers and UPnP answers
         // (VolumeOutput.swift). The slider's full travel is then exactly that output's range.
         if volumeCommandRoute == .absolute {
-            volumeOutputProbe.reset()   // a UPnP set moves the level by itself: not evidence about the keys
             let raw = volumeScale.raw(forFraction: fraction)
             if fraction <= 0 { endpointLearner.commandSent(raw: raw, isMax: false) }
             else if fraction >= 1 { endpointLearner.commandSent(raw: raw, isMax: true) }
@@ -366,8 +326,8 @@ extension RemoteModel {
             return
         }
         let scale = volumeScale
-        // v5 §5: no Samsung route means nothing is sent (no ADB fallback) and the user is told.
-        guard scale.isAvailable else { reportSoundbarUnavailable(); return }
+        // A route that is down sends nothing (never another output) and the user is told.
+        guard scale.isAvailable else { reportVolumeUnavailable(); return }
         let levels = scale.steps
         // The real level this fraction commands (only the very ends reach 0 and the top).
         let target = scale.step(forFraction: fraction)
@@ -403,7 +363,7 @@ extension RemoteModel {
                 // The slider already ticked each level the finger crossed (VolumeHapticPolicy), so the
                 // presses stay silent; the reconcile after the drag reads the result back.
                 guard self.volume(up ? "VOLUME_UP" : "VOLUME_DOWN", haptic: false, readBack: false) else {
-                    // The Samsung link dropped mid-sweep: stop and forget the assumed level.
+                    // The route dropped mid-sweep: stop and forget the assumed level.
                     self.volumePendingSteps = 0
                     self.volumeLevelKnown = false
                     break
@@ -411,8 +371,6 @@ extension RemoteModel {
                 try? await Task.sleep(nanoseconds: 40_000_000)
             }
             self?.volumeDrainTask = nil
-            // Read the TV's own level once the keys have landed: it shows whether that level follows them.
-            if self?.volumeLinkReady == true { self?.volumeLink.refresh() }
         }
     }
 

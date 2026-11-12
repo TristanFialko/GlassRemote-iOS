@@ -72,7 +72,13 @@ struct ConnectionSheet: View {
                 }
 
                 Section("Volume") {
-                    Toggle("Route volume through Samsung TV", isOn: $remote.tvVolumeEnabled)
+                    Picker("Volume goes to", selection: $remote.volumeOutput) {
+                        ForEach(VolumeOutput.allCases) { output in
+                            Text(output.label).tag(output)
+                        }
+                    }
+                    Text(remote.volumeRouteSummary).font(.footnote).foregroundStyle(.secondary)
+                    Toggle("Samsung TV link", isOn: $remote.tvVolumeEnabled)
                     if remote.tvVolumeEnabled {
                         TextField("Samsung TV IP address", text: $remote.samsungHost)
                             .keyboardType(.numbersAndPunctuation)
@@ -84,16 +90,6 @@ struct ConnectionSheet: View {
                         Text("Remote (WebSocket): \(remote.samsungState.label)").font(.footnote).foregroundStyle(.secondary)
                         Text("Volume link (UPnP): \(remote.samsungVolumeReady ? "Ready" : "Not available") · the two work independently")
                             .font(.footnote).foregroundStyle(.secondary)
-                        Picker("Sound comes from", selection: $remote.samsungAudioOutput) {
-                            ForEach(SamsungAudioOutput.allCases) { output in
-                                Text(output.label).tag(output)
-                            }
-                        }
-                        Text(remote.volumeRouteSummary).font(.footnote).foregroundStyle(.secondary)
-                        if remote.samsungAudioOutput == .automatic, remote.volumeOutputEvidence != .unknown {
-                            Button("Check the sound output again") { remote.resetVolumeEvidence() }
-                                .accessibilityHint("Forgets what was learned about this TV's volume, then learns it again from the next volume key")
-                        }
                         Text(remote.samsungDiagnostics).font(.footnote).foregroundStyle(.secondary)
                         if !remote.samsungPairingDiagnostics.isEmpty {
                             Text(remote.samsungPairingDiagnostics).font(.footnote).foregroundStyle(.secondary)

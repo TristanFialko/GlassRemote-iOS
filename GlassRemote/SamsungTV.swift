@@ -21,10 +21,10 @@ private final class TVTrustDelegate: NSObject, URLSessionDelegate {
     }
 }
 
-/// Samsung Tizen TV remote WebSocket (port 8002) used only for volume and mute.
+/// Samsung Tizen TV remote WebSocket (port 8002): TV keys, power, and volume when chosen.
 ///
 /// UNVERIFIED on the actual TV. Whether the TV forwards volume to the soundbar over ARC/CEC
-/// must be confirmed on hardware. There is no Android/ADB volume fallback (v5 §5).
+/// must be confirmed on hardware; it is used for volume only when "Volume goes to" picks the TV.
 /// Pairing decisions (token, events, deadline, reset) live in SamsungPairing.swift.
 @MainActor
 final class SamsungTV {

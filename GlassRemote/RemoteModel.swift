@@ -70,7 +70,7 @@ final class RemoteModel: ObservableObject {
     let volumeLink = SamsungVolumeLink()
     /// Last time the user touched the slider; TV readings are not pushed onto it right after.
     var lastUserVolumeInput = Date.distantPast
-    // On by default: the TV route is what controls the soundbar. Only an explicit "off" is kept.
+    // The Samsung TV link (keys, power, and volume when "Volume goes to" picks the TV). On by default.
     @Published var tvVolumeEnabled: Bool = {
         let d = UserDefaults.standard
         return d.object(forKey: "glassRemote.tvVolumeEnabled") == nil ? true : d.bool(forKey: "glassRemote.tvVolumeEnabled")
@@ -88,28 +88,18 @@ final class RemoteModel: ObservableObject {
     }() {
         didSet {
             UserDefaults.standard.set(samsungHost, forKey: "glassRemote.samsungHost")
-            // What was learned about one TV's volume says nothing about another.
-            volumeOutputProbe.reset()
-            volumeOutputEvidence = VolumeOutputEvidenceStore.load(host: samsungHost)
         }
     }
 
-    /// What the TV's sound comes out of (Connection settings). Automatic decides from evidence.
-    @Published var samsungAudioOutput: SamsungAudioOutput = {
-        SamsungAudioOutput(rawValue: UserDefaults.standard.string(forKey: "glassRemote.samsungAudioOutput") ?? "") ?? .automatic
-    }() {
+    /// What the volume controls drive (Connection settings). Defaults to the Phase 7.2 soundbar route.
+    @Published var volumeOutput: VolumeOutput = VolumeOutput.restored(
+        from: UserDefaults.standard.string(forKey: VolumeOutput.defaultsKey)
+    ) {
         didSet {
-            UserDefaults.standard.set(samsungAudioOutput.rawValue, forKey: "glassRemote.samsungAudioOutput")
+            UserDefaults.standard.set(volumeOutput.rawValue, forKey: VolumeOutput.defaultsKey)
             volumeRouteChanged()
         }
     }
-    /// Whether the TV's UPnP level has been seen to follow its remote volume keys (VolumeOutput.swift).
-    @Published var volumeOutputEvidence: VolumeOutputEvidence = {
-        let saved = (UserDefaults.standard.string(forKey: "glassRemote.samsungHost") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return VolumeOutputEvidenceStore.load(host: saved.isEmpty ? RemoteModel.defaultSamsungHost : saved)
-    }()
-    var volumeOutputProbe = VolumeOutputProbe()
 
     /// Highest level of the soundbar's own volume scale (what one full slider sweep covers).
     /// Each VOLUP/VOLDOWN press moves the soundbar one level, so the slider must span this
@@ -154,6 +144,8 @@ final class RemoteModel: ObservableObject {
 
     var adb: AdbConnection?
     private var commandStream: AdbStream?
+    /// The box's persistent ADB shell is open (volume keys for the soundbar go through it).
+    var commandShellReady: Bool { commandStream != nil }
     private var commandReaderTask: Task<Void, Never>?
     var mouseStream: AdbStream?
     var mouseReady = false
@@ -607,7 +599,7 @@ final class RemoteModel: ObservableObject {
     }
 
     func key(_ key: String) {
-        // v5 §5: volume and mute never reach the Android box; they go to the Samsung TV or nowhere.
+        // Volume and mute follow the chosen volume output (VolumeOutput.swift), whatever sent them.
         if VolumeKeyPolicy.isVolumeKey(key) { volume(key, haptic: false); return }
         // Samsung-only keys (power, source) go to the TV, not the Android box.
         if SamsungTV.tvOnlyKeys.contains(key) {

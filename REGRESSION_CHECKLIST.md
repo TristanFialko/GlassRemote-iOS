@@ -26,7 +26,7 @@
 - [ ] Restart box: shell `reboot` works for the shell user; app reconnects by itself (~1–2 min)
 - [ ] Media: Nuvio play/pause; title and position correct; Spotify enables prev/next
 - [ ] Keyboard: text, spaces, quotes, URLs, `%s`, newline, Backspace, Paste button
-- [ ] Samsung TV: pairing prompt, token reuse, VOLUP/VOLDOWN/MUTE, does the soundbar respond? With the TV off, volume is unavailable (never sent to the Android box)
+- [ ] Samsung TV: pairing prompt, token reuse, VOLUP/VOLDOWN/MUTE, does the soundbar respond when Volume goes to the Samsung TV?
 - [ ] Siri/Shortcuts intents launch the app and perform the action
 
 ## Added in this pass
@@ -103,17 +103,15 @@
 - [ ] Play / pause sends explicit Play or Pause; buffering pauses. Rewind / fast-forward only when the session advertises them; Nuvio and other video apps never show previous / next.
 - [ ] Timeline: the elapsed time ticks once a second while playing and freezes when stale; the track never fills and there is no scrubber or remaining time (no duration is reported). The caption under it shows Paused / Buffering / Waiting for the TV, or a confirmed seek ("+10 s") for a few seconds.
 - [ ] States: not connected, connecting, nothing playing show a one-line hint instead of the timeline; backgrounding and returning, and an ADB reconnect, recover without a stuck state.
-- [ ] Volume row: quiet speaker, neutral track, loud speaker; it drives the same Samsung route as the Remote slider and never fights a finger when a reading arrives.
+- [ ] Volume row: quiet speaker, neutral track, loud speaker; it drives the same volume route as the Remote slider and never fights a finger when a reading arrives.
 
-## Phase 9 Samsung volume (needs the real TV and soundbar; none of this has been run on hardware)
-- [ ] Soundbar on ARC / optical, remote paired, Sound comes from: Automatic. The slider and + / − / mute change the SOUNDBAR, not the TV's built-in speakers. Connection settings says "remote keys".
-- [ ] Same setup: after a few volume key presses Connection settings reports that the TV's own level did not follow its keys, and keeps using remote keys.
-- [ ] TV speakers (no soundbar), remote paired, Automatic: after one or two volume key presses the route becomes the exact level; the slider then shows the real 0–100, reaches 0 % and 100 %, and follows changes made with the TV's own remote.
-- [ ] Remote not paired, Automatic, nothing learned: volume is unavailable and says the remote must be paired. Nothing changes on the TV or the box.
-- [ ] Sound comes from: Soundbar or receiver forces remote keys; TV speakers forces the exact level. "Check the sound output again" forgets what was learned.
-- [ ] Set "Soundbar max volume" to the soundbar's top number; full slider then reaches the soundbar's maximum and the bottom reaches 0.
-- [ ] Mute toggles what is playing. No volume command ever reaches the Android box.
-- [ ] Changing the Samsung TV address starts the learning again for the new TV.
+## Samsung soundbar volume (needs the real TV box, TV and soundbar; none of this has been run on hardware)
+- [ ] Box connected, Volume goes to: Soundbar, through the TV box (the default). The Remote and Now Playing sliders and mute change the SOUNDBAR, not the TV's built-in speakers. This is the Phase 7.2 route; confirm it on the real setup.
+- [ ] Same setup with the box disconnected: the volume row is dimmed and says "Connect the TV box"; nothing changes on the TV or the soundbar.
+- [ ] A full slider sweep moves the soundbar 20 levels (Phase 7.2's span); the slider shows no number because the soundbar's level cannot be read.
+- [ ] Volume goes to: Soundbar, through the Samsung TV, remote paired: note which speakers move. With the remote unpaired volume is unavailable (never the TV's UPnP level).
+- [ ] Volume goes to: TV speakers: the slider shows the real 0–100 read from the TV and follows changes made with the TV's own remote.
+- [ ] "Soundbar max volume" (Samsung key route only): full slider reaches the soundbar's maximum.
 
 ## Phase 9 Samsung pairing
 - [ ] First connection raises the TV prompt once; allowing it stores the token and later launches connect silently.
