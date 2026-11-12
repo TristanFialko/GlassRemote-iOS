@@ -113,6 +113,7 @@ extension RemoteClusterKey where Icon == AnyView {
 /// behaviour as the old full-width selector; only smaller, so the pad gets the room.
 struct RemoteTargetSwitch: View {
     @EnvironmentObject private var remote: RemoteModel
+    @Environment(\.glassTheme) private var theme
     var showsTitles: Bool = false
     /// Width of the icon-only switch; nil lets it fill the space it is offered (landscape column).
     var fixedWidth: CGFloat? = 108
@@ -125,7 +126,8 @@ struct RemoteTargetSwitch: View {
                     Text(target.shortTitle).scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
                 }
             }
-            .foregroundStyle(selected ? Color.ink : Color.inkAlpha(0.6))
+            // Phase 9 recovery §2B: the selected TV icon takes the accent; the bubble stays clear.
+            .foregroundStyle(SelectorInk.color(selected: selected, theme: theme))
         }
         .frame(width: showsTitles ? nil : fixedWidth)
         .frame(maxWidth: (showsTitles || fixedWidth == nil) ? .infinity : nil)

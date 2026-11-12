@@ -90,10 +90,11 @@ private struct ThemedGlassLens<S: Shape>: ViewModifier {
     @Environment(\.glassTheme) private var theme
 
     func body(content: Content) -> some View {
-        // Fill and edge make the selected state obvious on pale glass; both are clear/faint on dark themes.
+        // Phase 9 recovery §2B: clear glass with a neutral wash. A faint neutral fill and edge keep
+        // the bubble visible on pale glass; the accent lives on the selected content, not the glass.
         content
             .background { shape.fill(theme.lensFill) }
-            .glassEffect(Glass.clear.tint(theme.lensTint.opacity(theme.lensOpacity)).interactive(), in: shape)
+            .glassEffect(Glass.clear.tint(theme.lensGlassTint).interactive(), in: shape)
             .overlay { shape.stroke(theme.lensEdge, lineWidth: 0.8).allowsHitTesting(false) }
     }
 }
@@ -364,6 +365,7 @@ struct GlassSegmented<Value: Hashable>: View {
     let items: [Item]
     @Binding var selection: Value
     var height: CGFloat = 40
+    @Environment(\.glassTheme) private var theme
 
     var body: some View {
         GlassScrubSelector(values: items.map(\.value), selection: $selection, height: height) { value, selected in
@@ -372,7 +374,9 @@ struct GlassSegmented<Value: Hashable>: View {
                 if let symbol = item?.symbol { Image(systemName: symbol).scaledFont(13, .semibold) }
                 Text(item?.title ?? "").scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
             }
-            .foregroundStyle(selected ? Color.ink : Color.inkAlpha(0.68))
+            // Phase 9 recovery §2A: the selected filter (Discover All / Movies / Series and every
+            // other segmented control) takes the theme accent; the bubble above it stays clear.
+            .foregroundStyle(SelectorInk.color(selected: selected, theme: theme))
         }
     }
 }
@@ -440,7 +444,7 @@ struct ModeSelector: View {
         ) { mouse, selected in
             // v5 §6: icons only (no "Mouse" / "D-pad" captions); the selected half takes the theme
             // accent (v5 §9). The names stay available to VoiceOver below.
-            let tint = ModeSelectorStyle.iconColor(selected: selected, accent: theme.accent)
+            let tint = ModeSelectorStyle.iconColor(selected: selected, accent: SelectorInk.selected(theme))
             Group {
                 if mouse { MouseGlyph(color: tint) }
                 else { Image(systemName: "circle.grid.cross").scaledFont(17, .semibold) }
@@ -585,5 +589,25 @@ enum ModeSelectorStyle {
 
     static func iconColor(selected: Bool, accent: Color) -> Color {
         selected ? accent : Color.inkAlpha(unselectedOpacity)
+    }
+}
+
+/// Phase 9 recovery §2A / §2B: ink for the content of a scrub selector (the Discover All / Movies /
+/// Series filter and other segmented controls, the Android TV / Samsung TV switch, Mouse / D-pad).
+/// The bubble stays clear glass; the selected item takes the theme accent whenever it is readable on
+/// the bar (WCAG 1.4.11, 3:1), otherwise full-strength ink. Unselected items stay muted ink.
+enum SelectorInk {
+    static let unselectedOpacity = 0.68
+
+    static func selected(_ theme: GlassTheme) -> Color {
+        let accent = theme.lensTint
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard UIColor(accent).getRed(&r, green: &g, blue: &b, alpha: &a) else { return Color.ink }
+        let luminance = ColorMath.luminance(r: Double(r), g: Double(g), b: Double(b))
+        return DockStyle.usesAccent(accentLuminance: luminance, light: theme.isLight) ? accent : Color.ink
+    }
+
+    static func color(selected isSelected: Bool, theme: GlassTheme) -> Color {
+        isSelected ? selected(theme) : Color.inkAlpha(unselectedOpacity)
     }
 }

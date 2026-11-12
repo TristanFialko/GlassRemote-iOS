@@ -211,15 +211,19 @@ extension GlassTheme {
     var dockInk: Color { isLight ? Color(white: 0.08) : .white }
     var dockInkInactive: Color { isLight ? Color(white: 0.08).opacity(0.62) : Color.white.opacity(0.70) }
 
-    /// Accent used to tint selected lenses. Adaptive clamps its luminance so a very bright artwork
-    /// colour can never wash out the selected label; fixed themes use their accent unchanged.
+    /// Accent for the selected icon or label beneath a lens (the glass itself stays clear). Adaptive
+    /// clamps its luminance so a very bright artwork colour can never wash out the selected label;
+    /// fixed themes use their accent unchanged.
     var lensTint: Color {
         guard id == .adaptive else { return accent }
         return ColorMath.clamped(accent, maxLuminance: isLight ? 0.30 : 0.36)
     }
-    /// Selected-lens fill and edge: obvious on light surfaces, a faint rim on dark ones.
-    var lensFill: Color { isLight ? lensTint.opacity(0.14) : .clear }
-    var lensEdge: Color { isLight ? lensTint.opacity(0.55) : rim.opacity(0.18) }
+    /// Phase 9 recovery §2B: the selection bubble itself is clear glass on every theme. A faint
+    /// neutral wash and edge (ink on light themes, the rim on dark) show where it sits; the accent
+    /// goes on the selected icon or label beneath it (SelectorInk / DockStyle), never on the glass.
+    var lensGlassTint: Color { isLight ? Color(white: 0.10).opacity(0.04) : Color.white.opacity(0.04) }
+    var lensFill: Color { isLight ? Color(white: 0.10).opacity(0.05) : .clear }
+    var lensEdge: Color { isLight ? Color(white: 0.10).opacity(0.24) : rim.opacity(0.18) }
 
     /// Outline drawn on ordinary glass: light themes only (dark glass already carries its own rim).
     var controlEdge: Color { isLight ? edge : .clear }
