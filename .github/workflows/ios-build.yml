@@ -21,11 +21,50 @@ jobs:
       # Only used by the final report step, which comments on the open PR for this branch.
       pull-requests: write
       issues: write
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+      ANDROID_SDK_ROOT: /opt/homebrew/share/android-commandlinetools
+      ANDROID_HOME: /opt/homebrew/share/android-commandlinetools
+      NDK_VERSION: 27.2.12479018
     steps:
       - uses: actions/checkout@v4
 
       - name: Show Xcode version
         run: xcodebuild -version
+
+      - name: Select iPhone simulator and start booting it
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The first simulator boot on a fresh runner takes several minutes and previously happened
+          # inside `xcodebuild test`, after everything else. Kick it off now so it boots while the
+          # toolchain installs and the simulator build run; the test step waits for it to finish.
+          SELECTED="$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          def version(key):
+              return [int(p) if p.isdigit() else 0 for p in key.rsplit("-", 2)[-2:]]
+          # Newest iOS runtime first, then the first available iPhone in it.
+          for runtime in sorted((k for k in data if ".iOS-" in k), key=version, reverse=True):
+              for device in data[runtime]:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      print(device["udid"], device["name"], runtime.rsplit(".", 1)[-1], sep="\t")
+                      raise SystemExit
+          raise SystemExit("No available iPhone simulator found.")
+          ')"
+          UDID="${SELECTED%%$'\t'*}"
+          echo "Simulator (udid | name | runtime): ${SELECTED//$'\t'/ | }"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
+          # An explicit id avoids xcodebuild's "multiple matching destinations" lookup, and both
+          # simulator steps use this exact device so the tests run what build-for-testing produced.
+          echo "SIMULATOR_DESTINATION=platform=iOS Simulator,id=$UDID" >> "$GITHUB_ENV"
+          echo "SIMULATOR_BOOT_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+          # CoreSimulatorService owns the boot, so it carries on after this step ends.
+          nohup xcrun simctl boot "$UDID" > "$RUNNER_TEMP/simulator-boot.log" 2>&1 &
 
       - name: Capture toolchain version for cache keys
         id: toolchain
@@ -47,27 +86,15 @@ jobs:
           fi
 
       - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Install Android command-line tools
         shell: bash
         run: |
           set -euo pipefail
-          brew install --cask android-commandlinetools
-          SDK_ROOT="/opt/homebrew/share/android-commandlinetools"
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          # sdkmanager exits successfully after accepting all licences. The
-          # upstream `yes` process then receives SIGPIPE; do not let that
-          # harmless exit code fail this step under pipefail.
-          set +o pipefail
-          yes | sdkmanager --sdk_root="$SDK_ROOT" --licenses
-          LICENSE_STATUS=${PIPESTATUS[1]}
-          set -o pipefail
-          if [ "$LICENSE_STATUS" -ne 0 ]; then
-            echo "sdkmanager licence acceptance failed with exit code $LICENSE_STATUS"
-            exit "$LICENSE_STATUS"
+          if command -v xcodegen >/dev/null 2>&1; then
+            echo "XcodeGen already installed: $(command -v xcodegen)"
+          else
+            brew install xcodegen
           fi
+          xcodegen --version
 
       - name: Restore Android NDK cache
         id: ndk-cache
@@ -85,13 +112,12 @@ jobs:
           NDK_CACHE_HIT: ${{ steps.ndk-cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
-          SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/homebrew/share/android-commandlinetools}"
-          NDK_ROOT="$SDK_ROOT/ndk/27.2.12479018"
+          NDK_ROOT="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
           # A restored NDK is used only if it is exactly the pinned revision and both helper
           # compilers run. Anything else is discarded and reinstalled cleanly by sdkmanager.
           ndk_is_valid() {
             [ -f "$NDK_ROOT/source.properties" ] || return 1
-            grep -Eq '^Pkg\.Revision[[:space:]]*=[[:space:]]*27\.2\.12479018[[:space:]]*$' \
+            grep -Eq "^Pkg\.Revision[[:space:]]*=[[:space:]]*${NDK_VERSION//./\\.}[[:space:]]*$" \
               "$NDK_ROOT/source.properties" || return 1
             local triple cc
             for triple in armv7a-linux-androideabi23 aarch64-linux-android23; do
@@ -101,20 +127,40 @@ jobs:
             done
           }
           if [ "${NDK_CACHE_HIT:-}" = "true" ] && ndk_is_valid; then
-            echo "Using cached Android NDK 27.2.12479018"
+            # The command-line tools exist only to run sdkmanager, so a valid cached NDK makes
+            # the Homebrew cask, licence acceptance and sdkmanager unnecessary on this run.
+            echo "Using cached Android NDK $NDK_VERSION; skipping command-line tools and sdkmanager."
             echo "save-cache=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -e "$NDK_ROOT" ]; then
+            echo "Discarding a restored NDK that failed validation"
+            rm -rf "$NDK_ROOT"
+          fi
+          if command -v sdkmanager >/dev/null 2>&1 && [ -d "$ANDROID_SDK_ROOT/cmdline-tools" ]; then
+            echo "Android command-line tools already installed: $(command -v sdkmanager)"
           else
-            if [ -e "$NDK_ROOT" ]; then
-              echo "Discarding a restored NDK that failed validation"
-              rm -rf "$NDK_ROOT"
-            fi
-            sdkmanager --sdk_root="$SDK_ROOT" "ndk;27.2.12479018"
-            if ndk_is_valid; then
-              echo "save-cache=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "::warning title=Android NDK cache::Fresh NDK did not pass cache validation, so it will not be cached."
-              echo "save-cache=false" >> "$GITHUB_OUTPUT"
-            fi
+            brew install --cask android-commandlinetools
+          fi
+          sdkmanager --version
+          # sdkmanager exits successfully after accepting all licences. The
+          # upstream `yes` process then receives SIGPIPE; do not let that
+          # harmless exit code fail this step under pipefail.
+          set +o pipefail
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses
+          LICENSE_STATUS=${PIPESTATUS[1]}
+          set -o pipefail
+          if [ "$LICENSE_STATUS" -ne 0 ]; then
+            echo "sdkmanager licence acceptance failed with exit code $LICENSE_STATUS"
+            exit "$LICENSE_STATUS"
+          fi
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "ndk;$NDK_VERSION"
+          grep -E '^Pkg\.Revision' "$NDK_ROOT/source.properties"
+          if ndk_is_valid; then
+            echo "save-cache=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Android NDK cache::Fresh NDK did not pass cache validation, so it will not be cached."
+            echo "save-cache=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Save Android NDK cache
@@ -276,31 +322,33 @@ jobs:
               print(f"Patched {path}")
           PY
 
-      - name: Select iPhone simulator
-        shell: bash
-        run: |
-          DEVICE="$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [0-9A-Za-z ]+' | sed 's/ *$//')"
-          if [ -z "$DEVICE" ]; then
-            echo "No available iPhone simulator found."
-            exit 1
-          fi
-          echo "Testing on: $DEVICE"
-          # Both simulator steps use this exact destination, so the tests run the products
-          # that build-for-testing produced.
-          echo "SIMULATOR_DESTINATION=platform=iOS Simulator,name=$DEVICE" >> "$GITHUB_ENV"
-
       - name: Build for testing on iPhone simulator
         shell: bash
         run: |
           set -o pipefail
           mkdir -p build/ci-logs
+          # COMPILER_INDEX_STORE_ENABLE=NO skips the IDE index store, which nothing in CI reads.
           xcodebuild build-for-testing -project GlassRemote.xcodeproj \
             -scheme GlassRemote \
             -destination "$SIMULATOR_DESTINATION" \
             -configuration Debug \
             -derivedDataPath build \
             -showBuildTimingSummary \
-            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ci-logs/simulator-build.log
+            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO 2>&1 | tee build/ci-logs/simulator-build.log
+
+      - name: Wait for the iPhone simulator to finish booting
+        shell: bash
+        run: |
+          set -euo pipefail
+          started="$(date +%s)"
+          # `-b` boots the device if the background boot never started, so this is also the fallback.
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          now="$(date +%s)"
+          echo "Waited $((now - started))s here; the boot began $((now - SIMULATOR_BOOT_STARTED))s ago, during the earlier steps."
+          echo "SIMULATOR_BOOT_WAIT_SECONDS=$((now - started))" >> "$GITHUB_ENV"
+          echo "SIMULATOR_BOOT_TOTAL_SECONDS=$((now - SIMULATOR_BOOT_STARTED))" >> "$GITHUB_ENV"
+          cat "$RUNNER_TEMP/simulator-boot.log" 2>/dev/null || true
+          xcrun simctl list devices | grep "$SIMULATOR_UDID"
 
       - name: Run unit tests
         shell: bash
@@ -326,7 +374,7 @@ jobs:
             -configuration Release \
             -derivedDataPath build \
             -showBuildTimingSummary \
-            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build/ci-logs/device-build.log
+            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build 2>&1 | tee build/ci-logs/device-build.log
 
       - name: Bundle and verify helpers
         run: |
@@ -432,6 +480,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          NDK_CACHE_HIT: ${{ steps.ndk-cache.outputs.cache-hit }}
+          NDK_CACHE_SAVED: ${{ steps.ndk.outputs.save-cache }}
+          SPM_CACHE_HIT: ${{ steps.spm-cache.outputs.cache-hit }}
         run: |
           # Diagnostics only: records each step's duration plus Xcode's build timing summaries,
           # so future runs show where CI time goes. Never fails the job.
@@ -486,6 +537,14 @@ jobs:
               print()
               print("Slowest steps: " + ", ".join(f"{name} ({fmt(seconds)})" for name, seconds, _ in slowest))
           PY
+          {
+            echo
+            echo "#### Cache and simulator"
+            echo
+            echo "- Android NDK cache hit: ${NDK_CACHE_HIT:-false}; saved this run: ${NDK_CACHE_SAVED:-false}"
+            echo "- Swift package cache hit: ${SPM_CACHE_HIT:-false}"
+            echo "- Simulator boot: ${SIMULATOR_BOOT_TOTAL_SECONDS:-?}s from job start to booted, of which ${SIMULATOR_BOOT_WAIT_SECONDS:-?}s was spent waiting before the tests"
+          } >> "$timing"
           for log in build/ci-logs/simulator-build.log build/ci-logs/device-build.log; do
             [ -s "$log" ] || continue
             section="$(awk '/Build Timing Summary/ {found=1} found {print} found && /^\*\* .* \*\*/ {exit}' "$log" | head -n 80)"
