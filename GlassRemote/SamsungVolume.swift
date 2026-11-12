@@ -9,8 +9,12 @@ import Network
 /// Plain HTTP is written over `NWConnection` so iOS App Transport Security (which blocks cleartext
 /// HTTP) is never involved and no Info.plist change is needed.
 ///
-/// UNVERIFIED ON HARDWARE (no network access where this was written). If the TV does not answer,
-/// `onAvailabilityChanged(false)` fires and the app keeps using the WebSocket/ADB key paths.
+/// Phase 9 recovery §5: replies are accepted only when complete and confirmed (UPnPHTTP.swift); a
+/// partial reply, an empty 200 or a SOAP fault is a failure, never a silent success. Buttons can
+/// step and mute through this link when the remote WebSocket is down (VolumeButtonPolicy).
+///
+/// UNVERIFIED ON HARDWARE. If the TV does not answer, `onAvailabilityChanged(false)` fires and the
+/// app uses the Samsung WebSocket volume keys only. Android TV volume is never used (v5 §5).
 @MainActor
 final class SamsungVolumeLink {
     /// Real volume read from the TV (0...100 on Samsung's scale).
@@ -21,6 +25,11 @@ final class SamsungVolumeLink {
     var isActive: () -> Bool = { true }
 
     private(set) var isAvailable = false
+    /// The last level the TV confirmed (read back, or a SetVolume it acknowledged). Steps start here.
+    private(set) var lastVolume: Int?
+    /// The last mute state the TV confirmed, if it has been read or set.
+    private(set) var isMuted: Bool?
+    var onMute: ((Bool) -> Void)?
 
     private var host = ""
     private var loop: Task<Void, Never>?
@@ -30,10 +39,9 @@ final class SamsungVolumeLink {
     private var wakeToken = 0
     private var readbackDue = false
     private var consecutiveFailures = 0
-
-    private static let port: UInt16 = 9197
-    private static let path = "/upnp/control/RenderingControl1"
-    private static let service = "urn:schemas-upnp-org:service:RenderingControl:1"
+    private var muteToggleRequested = false
+    /// Why the last request failed (shown in the Connection sheet diagnostics).
+    private(set) var lastFailure: String?
 
     // MARK: Lifecycle
 
@@ -53,6 +61,9 @@ final class SamsungVolumeLink {
         generation += 1
         loop?.cancel(); loop = nil
         pendingTarget = nil
+        muteToggleRequested = false
+        lastVolume = nil
+        isMuted = nil
         resumeWake()
         setAvailable(false)
     }
@@ -63,6 +74,25 @@ final class SamsungVolumeLink {
         pendingTarget = min(max(value, 0), 100)
         fastPollUntil = Date().addingTimeInterval(8)
         resumeWake()
+    }
+
+    /// One button step (±delta) from the last confirmed level, or from the target still queued so
+    /// rapid presses add up. False when the link is not ready (the caller reports it).
+    @discardableResult
+    func step(by delta: Int) -> Bool {
+        guard isAvailable, let base = pendingTarget ?? lastVolume else { return false }
+        setVolume(base + delta)
+        return true
+    }
+
+    /// Mute toggle over RenderingControl: reads the TV's real mute state, then sets the opposite.
+    @discardableResult
+    func toggleMute() -> Bool {
+        guard isAvailable else { return false }
+        muteToggleRequested = true
+        fastPollUntil = Date().addingTimeInterval(8)
+        resumeWake()
+        return true
     }
 
     /// Ask for an immediate re-read (e.g. after a key press or when the app becomes active).
@@ -84,12 +114,32 @@ final class SamsungVolumeLink {
                 continue
             }
 
+            if muteToggleRequested {
+                muteToggleRequested = false
+                do {
+                    let reply = try await soap("GetMute", arguments: UPnPRenderingControl.master)
+                    guard let current = UPnPRenderingControl.currentMute(in: reply) else { throw LinkError.badReply }
+                    try await soap("SetMute", arguments: UPnPRenderingControl.setMuteArguments(!current))
+                    if gen != generation { return }
+                    consecutiveFailures = 0
+                    isMuted = !current
+                    onMute?(!current)
+                    readbackDue = true
+                } catch {
+                    noteFailure(error)
+                }
+                continue
+            }
+
             if let target = pendingTarget {
                 // Collapse everything the slider produced while the last request was running.
                 pendingTarget = nil
                 do {
-                    try await soap("SetVolume", body: "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>\(target)</DesiredVolume>")
+                    // Throws unless the TV returned a complete 200 SetVolumeResponse without a fault.
+                    try await soap("SetVolume", arguments: UPnPRenderingControl.setVolumeArguments(target))
+                    if gen != generation { return }
                     consecutiveFailures = 0
+                    lastVolume = target
                     readbackDue = true
                 } catch {
                     noteFailure(error)
@@ -100,10 +150,12 @@ final class SamsungVolumeLink {
             }
 
             do {
-                let reply = try await soap("GetVolume", body: "<InstanceID>0</InstanceID><Channel>Master</Channel>")
+                let reply = try await soap("GetVolume", arguments: UPnPRenderingControl.master)
                 if gen != generation { return }
-                if let value = Self.extract("CurrentVolume", from: reply) {
+                if let value = UPnPRenderingControl.currentVolume(in: reply) {
                     consecutiveFailures = 0
+                    lastFailure = nil
+                    lastVolume = value
                     setAvailable(true)
                     // A newer slider target arrived while we were reading: do not let a stale
                     // read overwrite what the user is doing.
@@ -124,6 +176,8 @@ final class SamsungVolumeLink {
 
     private func noteFailure(_ error: Error) {
         consecutiveFailures += 1
+        lastFailure = String(describing: error)
+        GRLog.note("volume", "UPnP RenderingControl request failed (\(consecutiveFailures)): \(error)")
         if consecutiveFailures >= 3 {
             if isAvailable { onStatus?("TV volume: no answer · using key presses") }
             setAvailable(false)
@@ -138,7 +192,7 @@ final class SamsungVolumeLink {
 
     /// Sleeps, but returns early on `setVolume` / `refresh` / `stop`.
     private func sleepOrWake(seconds: Double) async {
-        if pendingTarget != nil || readbackDue { readbackDue = false; return }
+        if pendingTarget != nil || readbackDue || muteToggleRequested { readbackDue = false; return }
         wakeToken += 1
         let token = wakeToken
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -159,43 +213,38 @@ final class SamsungVolumeLink {
 
     // MARK: SOAP over a raw TCP connection
 
-    private enum LinkError: Error { case badReply, timeout, http(Int) }
-
-    @discardableResult
-    private func soap(_ action: String, body: String) async throws -> String {
-        let envelope = """
-        <?xml version="1.0" encoding="utf-8"?>\
-        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">\
-        <s:Body><u:\(action) xmlns:u="\(Self.service)">\(body)</u:\(action)></s:Body></s:Envelope>
-        """
-        let payload = Data(envelope.utf8)
-        let head = "POST \(Self.path) HTTP/1.1\r\n"
-            + "HOST: \(host):\(Self.port)\r\n"
-            + "CONTENT-TYPE: text/xml; charset=\"utf-8\"\r\n"
-            + "SOAPACTION: \"\(Self.service)#\(action)\"\r\n"
-            + "CONTENT-LENGTH: \(payload.count)\r\n"
-            + "CONNECTION: close\r\n\r\n"
-        var request = Data(head.utf8)
-        request.append(payload)
-
-        let response = try await Self.exchange(host: host, port: Self.port, request: request, timeout: 2.5)
-        let text = String(decoding: response, as: UTF8.self)
-        guard let statusLine = text.split(separator: "\r\n", maxSplits: 1).first,
-              let code = statusLine.split(separator: " ").dropFirst().first.flatMap({ Int($0) }) else {
-            throw LinkError.badReply
-        }
-        guard code == 200 else { throw LinkError.http(code) }
-        return text
+    enum LinkError: Error, Equatable {
+        case badReply, timeout, incomplete, http(Int), fault(Int?)
     }
 
-    /// One request, read until the TV closes the connection (or the timeout).
-    private nonisolated static func exchange(host: String, port: UInt16, request: Data, timeout: Double) async throws -> Data {
+    /// One RenderingControl action. Returns the reply body only when the TV confirmed the action
+    /// (complete reply, HTTP 200, no SOAP fault, `<Action>Response` present).
+    @discardableResult
+    private func soap(_ action: String, arguments: String) async throws -> String {
+        let request = UPnPRenderingControl.request(host: host, action: action, arguments: arguments)
+        let response = try await Self.exchange(host: host, port: UPnPRenderingControl.port,
+                                               request: request, timeout: 2.5)
+        try Self.check(response, action: action)
+        return response.body
+    }
+
+    /// Pure acceptance rule for one reply (unit tested).
+    nonisolated static func check(_ response: UPnPHTTPResponse, action: String) throws {
+        if response.isSOAPFault { throw LinkError.fault(response.upnpErrorCode) }
+        guard response.status == 200 else { throw LinkError.http(response.status) }
+        guard response.confirms(action) else { throw LinkError.badReply }
+    }
+
+    /// One request. Finishes as soon as the reply is complete by its framing; a reply cut short by
+    /// an error, the timeout or an early close is a failure (never partial-data success).
+    private nonisolated static func exchange(host: String, port: UInt16, request: Data,
+                                             timeout: Double) async throws -> UPnPHTTPResponse {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw LinkError.badReply }
         let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)
         let box = ExchangeBox()
 
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-            func finish(_ result: Result<Data, Error>) {
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<UPnPHTTPResponse, Error>) in
+            func finish(_ result: Result<UPnPHTTPResponse, Error>) {
                 guard box.finish() else { return }
                 connection.cancel()
                 continuation.resume(with: result)
@@ -203,9 +252,18 @@ final class SamsungVolumeLink {
             func receive() {
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { data, _, isComplete, error in
                     if let data, !data.isEmpty { box.append(data) }
-                    if let error { finish(box.isEmpty ? .failure(error) : .success(box.snapshot)); return }
-                    if isComplete { finish(.success(box.snapshot)); return }
-                    receive()
+                    let closedCleanly = isComplete && error == nil
+                    switch UPnPHTTPResponse.parse(box.snapshot, connectionClosed: closedCleanly) {
+                    case .complete(let response): finish(.success(response)); return
+                    case .malformed: finish(.failure(LinkError.badReply)); return
+                    case .incomplete:
+                        if let error {
+                            if box.isEmpty { finish(.failure(error)) } else { finish(.failure(LinkError.incomplete)) }
+                            return
+                        }
+                        if isComplete { finish(.failure(LinkError.incomplete)); return }
+                        receive()
+                    }
                 }
             }
             connection.stateUpdateHandler = { state in
@@ -221,15 +279,9 @@ final class SamsungVolumeLink {
             }
             connection.start(queue: .global(qos: .userInitiated))
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                finish(box.isEmpty ? .failure(LinkError.timeout) : .success(box.snapshot))
+                finish(.failure(box.isEmpty ? LinkError.timeout : LinkError.incomplete))
             }
         }
-    }
-
-    private nonisolated static func extract(_ tag: String, from text: String) -> Int? {
-        guard let open = text.range(of: "<\(tag)>"),
-              let close = text.range(of: "</\(tag)>", range: open.upperBound..<text.endIndex) else { return nil }
-        return Int(text[open.upperBound..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }
 

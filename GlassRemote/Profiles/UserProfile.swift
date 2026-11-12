@@ -20,23 +20,29 @@ enum PosterOrientation: String, Codable, CaseIterable, Identifiable {
 struct ProfileSettings: Codable, Equatable {
     /// `ThemeID` raw value. Nil keeps whichever theme is currently active.
     var themeID: String?
+    /// `AmbientStyle` raw value (Continuation §G3). Nil keeps whichever ambient is currently active.
+    var ambientID: String?
     var posterOrientation: PosterOrientation = .automatic
     var reduceInterfaceMotion = false
     var showContinueWatching = true
 
     init() {}
 
+    /// The profile's ambient with the Phase 8 Mountains to Dusk migration applied; nil keeps the current one.
+    var ambient: AmbientStyle? { ambientID.map { AmbientStyle.migrated($0) } }
+
     // Tolerant decoding: settings added in later versions fall back to their defaults.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         themeID = try? c.decodeIfPresent(String.self, forKey: .themeID)
+        ambientID = try? c.decodeIfPresent(String.self, forKey: .ambientID)
         posterOrientation = (try? c.decodeIfPresent(PosterOrientation.self, forKey: .posterOrientation)) ?? .automatic
         reduceInterfaceMotion = (try? c.decodeIfPresent(Bool.self, forKey: .reduceInterfaceMotion)) ?? false
         showContinueWatching = (try? c.decodeIfPresent(Bool.self, forKey: .showContinueWatching)) ?? true
     }
 
     private enum CodingKeys: String, CodingKey {
-        case themeID, posterOrientation, reduceInterfaceMotion, showContinueWatching
+        case themeID, ambientID, posterOrientation, reduceInterfaceMotion, showContinueWatching
     }
 }
 

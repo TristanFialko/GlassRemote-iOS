@@ -4,8 +4,11 @@ import UIKit
 /// Themed glass styling shared by the app's surfaces. Every colour comes from the active
 /// `GlassTheme` (environment), so a theme change restyles every surface at once.
 ///
-/// iOS 26+ uses Apple's real glass material, tinted by the theme; earlier systems get a
-/// material-based fallback built from the same tokens.
+/// Phase 9: the deployment target is iOS 26, so every surface is Apple's native Liquid Glass
+/// (`glassEffect`), tinted by the theme. The Phase 5 to 8 material fallbacks are gone. Native glass
+/// already lenses its backdrop at the rim; controls that need a visible optical response (the scrub
+/// selector bubble, the volume thumb) add the bounded refraction lens from
+/// `DesignSystem/Refraction.swift` to the content directly beneath them (PHASE-7-NOTES.md, Phase 9 §0).
 ///
 /// Light-theme visibility: glass over a pale canvas has little to separate it, so light themes add a
 /// hairline edge and a soft contact shadow (tokens in `Theme.swift`). Dark themes get neither, so
@@ -27,18 +30,9 @@ extension View {
         modifier(ThemedGlassLens(shape: shape))
     }
 
-    /// Lets two glass shapes in one `GlassGroup` morph into each other on iOS 26. No-op earlier.
-    @ViewBuilder
+    /// Lets two glass shapes in one `GlassGroup` morph into each other.
     func glassMorph(_ id: String, in namespace: Namespace.ID) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            self.glassEffectID(id, in: namespace)
-        } else {
-            self
-        }
-        #else
-        self
-        #endif
+        glassEffectID(id, in: namespace)
     }
 
     /// One look for a disabled control in every theme: dimmed, but never invisible on pale glass.
@@ -67,41 +61,11 @@ private struct ThemedGlassSurface<S: Shape>: ViewModifier {
         return theme.glassTint.opacity(theme.glassTintOpacity * (elevated ? 0.6 : 1))
     }
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            let glass = Glass.regular.tint(tint)
-            content.glassEffect(interactive ? glass.interactive() : glass, in: shape)
-                .overlay { shape.stroke(theme.controlEdge, lineWidth: 0.8).allowsHitTesting(false) }
-                .shadow(color: theme.separationShadow, radius: elevated ? 10 : 7, y: elevated ? 5 : 3)
-        } else {
-            legacy(content)
-        }
-        #else
-        legacy(content)
-        #endif
-    }
-
-    private func legacy(_ content: Content) -> some View {
-        let light = theme.isLight
-        let rim: [Color] = light
-            ? [theme.edgeStrong, theme.edge.opacity(0.6), theme.edge.opacity(0.5), theme.edge]
-            : [theme.rim.opacity(0.46), theme.rim.opacity(0.11), theme.rim.opacity(0.025), theme.rim.opacity(0.24)]
-        return content
-            .background {
-                ZStack {
-                    shape.fill(.ultraThinMaterial)
-                    shape.fill(light ? Color.white.opacity(elevated || accent ? 0.30 : 0.42) : Color.black.opacity(elevated || accent ? 0.13 : 0.26))
-                    shape.fill(tint)
-                    shape.fill(LinearGradient(colors: [Color.white.opacity(light ? 0.5 : (elevated || accent ? 0.24 : 0.16)), Color.white.opacity(0.025), Color.white.opacity(0.075)],
-                                              startPoint: .topLeading, endPoint: .bottomTrailing))
-                }
-            }
-            .overlay {
-                shape.stroke(LinearGradient(colors: rim, startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.9)
-            }
-            .shadow(color: .black.opacity(light ? 0.14 : 0.40), radius: elevated ? 12 : 8, y: elevated ? 7 : 4)
+        let glass = Glass.regular.tint(tint)
+        return content.glassEffect(interactive ? glass.interactive() : glass, in: shape)
+            .overlay { shape.stroke(theme.controlEdge, lineWidth: 0.8).allowsHitTesting(false) }
+            .shadow(color: theme.separationShadow, radius: elevated ? 10 : 7, y: elevated ? 5 : 3)
     }
 }
 
@@ -111,41 +75,13 @@ private struct ThemedGlassBar<S: Shape>: ViewModifier {
     let drawsEdge: Bool
     @Environment(\.glassTheme) private var theme
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            // Untinted for the neutral themes (refraction carries the look); a light wash for coloured ones.
-            let tint = theme.id == .defaultDark || theme.isLight ? Color.clear : theme.glassTint.opacity(theme.glassTintOpacity * 0.5)
-            let glass = Glass.regular.tint(tint)
-            content.glassEffect(interactive ? glass.interactive() : glass, in: shape)
-                .overlay { shape.stroke(drawsEdge ? theme.controlEdge : .clear, lineWidth: 0.8).allowsHitTesting(false) }
-                .shadow(color: drawsEdge ? theme.separationShadow : .clear, radius: 8, y: 3)
-        } else {
-            legacy(content)
-        }
-        #else
-        legacy(content)
-        #endif
-    }
-
-    private func legacy(_ content: Content) -> some View {
-        let light = theme.isLight
-        let rim: [Color] = light
-            ? (drawsEdge ? [theme.edgeStrong, theme.edge.opacity(0.5), theme.edge] : [.clear, .clear])
-            : [theme.rim.opacity(0.55), theme.rim.opacity(0.08), theme.rim.opacity(0.30)]
-        return content
-            .background {
-                ZStack {
-                    shape.fill(.thinMaterial)
-                    shape.fill(light ? Color.white.opacity(0.35) : Color.black.opacity(0.18))
-                    shape.fill(theme.glassTint.opacity(theme.glassTintOpacity * 0.5))
-                    shape.fill(LinearGradient(colors: [Color.white.opacity(light ? 0.5 : 0.22), Color.white.opacity(0.03), Color.white.opacity(light ? 0.25 : 0.10)],
-                                              startPoint: .top, endPoint: .bottom))
-                }
-            }
-            .overlay { shape.stroke(LinearGradient(colors: rim, startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1) }
-            .shadow(color: .black.opacity(light ? 0.16 : 0.45), radius: 16, y: 9)
+        // Untinted for the neutral themes (the glass itself carries the look); a light wash for coloured ones.
+        let tint = theme.id == .defaultDark || theme.isLight ? Color.clear : theme.glassTint.opacity(theme.glassTintOpacity * 0.5)
+        let glass = Glass.regular.tint(tint)
+        return content.glassEffect(interactive ? glass.interactive() : glass, in: shape)
+            .overlay { shape.stroke(drawsEdge ? theme.controlEdge : .clear, lineWidth: 0.8).allowsHitTesting(false) }
+            .shadow(color: drawsEdge ? theme.separationShadow : .clear, radius: 8, y: 3)
     }
 }
 
@@ -153,32 +89,13 @@ private struct ThemedGlassLens<S: Shape>: ViewModifier {
     let shape: S
     @Environment(\.glassTheme) private var theme
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            // Fill and edge make the selected state obvious on pale glass; both are clear/faint on dark themes.
-            content
-                .background { shape.fill(theme.lensFill) }
-                .glassEffect(Glass.clear.tint(theme.lensTint.opacity(theme.lensOpacity)).interactive(), in: shape)
-                .overlay { shape.stroke(theme.lensEdge, lineWidth: 0.8).allowsHitTesting(false) }
-        } else {
-            legacy(content)
-        }
-        #else
-        legacy(content)
-        #endif
-    }
-
-    private func legacy(_ content: Content) -> some View {
+        // Phase 9 recovery §2B: clear glass with a neutral wash. A faint neutral fill and edge keep
+        // the bubble visible on pale glass; the accent lives on the selected content, not the glass.
         content
-            .background {
-                ZStack {
-                    shape.fill(theme.lensTint.opacity(theme.isLight ? 0.18 : max(theme.lensOpacity, 0.16)))
-                    shape.fill(LinearGradient(colors: [Color.white.opacity(theme.isLight ? 0.55 : 0.30), Color.white.opacity(0.04)], startPoint: .top, endPoint: .bottom))
-                }
-            }
-            .overlay { shape.stroke(theme.isLight ? theme.lensEdge : theme.rim.opacity(0.45), lineWidth: 0.8) }
+            .background { shape.fill(theme.lensFill) }
+            .glassEffect(Glass.clear.tint(theme.lensGlassTint).interactive(), in: shape)
+            .overlay { shape.stroke(theme.lensEdge, lineWidth: 0.8).allowsHitTesting(false) }
     }
 }
 
@@ -220,6 +137,12 @@ enum ScrubSelectorRole {
 /// Glass (iOS 26) refracts and lights itself; before iOS 26 the material bubble gets drawn light: a rim
 /// highlight that follows its position, a faint chromatic fringe and a sheen. `axis: .vertical` stands
 /// the whole control on end for the landscape page rail; touch rules are identical on both axes.
+///
+/// Phase 9 recovery §2: `commitOnRelease` (the page dock) keeps the moving bubble but commits only on
+/// release: while the finger is down the bubble and the highlighted icon follow it and nothing is
+/// navigated; lifting commits the segment under the bubble's centre (even the current one, which the
+/// dock uses to close the full player), and lifting well away from the bar cancels
+/// (`ScrubGeometry.releaseCommits`). The refraction is clipped to the bar (`ScrubGeometry.boundedLens`).
 struct GlassScrubSelector<Value: Hashable, Label: View>: View {
     let values: [Value]
     @Binding var selection: Value
@@ -229,6 +152,8 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
     var haptic: Bool = true
     var role: ScrubSelectorRole = .control
     var axis: Axis = .horizontal
+    /// Release-to-commit instead of live selection (see the type's documentation).
+    var commitOnRelease: Bool = false
     @ViewBuilder var label: (Value, Bool) -> Label
 
     @Environment(\.glassTheme) private var theme
@@ -244,6 +169,8 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
         var location: CGFloat
         var time: Date
         var speed: CGFloat = 0
+        /// Release-to-commit only: the segment currently under the bubble's centre.
+        var hover: Int = -1
     }
 
     private var vertical: Bool { axis == .vertical }
@@ -259,14 +186,21 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
             let offset: CGFloat = drag?.offset ?? rest
             let dragging: Bool = drag != nil
             let stretch: CGFloat = reduceMotion ? 1 : ScrubGeometry.stretch(speed: drag?.speed ?? 0)
-            let grow: CGFloat = dragging && !reduceMotion ? 1.10 : 1
-            let along: CGFloat = grow * stretch
-            let across: CGFloat = grow / stretch.squareRoot()
+            let scale = ScrubGeometry.lensScale(dragging: dragging, speed: drag?.speed ?? 0, reduceMotion: reduceMotion)
+            let along: CGFloat = scale.along
+            let across: CGFloat = scale.across
             let lensSize: CGSize = vertical ? CGSize(width: thickness - inset * 2, height: seg)
                                             : CGSize(width: seg, height: thickness - inset * 2)
             let lensOffset: CGSize = vertical ? CGSize(width: 0, height: offset) : CGSize(width: offset, height: 0)
             let lens = LensFrame(size: lensSize, offset: lensOffset,
                                  scaleX: vertical ? across : along, scaleY: vertical ? along : across)
+            let bar = CGRect(x: 0, y: 0, width: vertical ? thickness : length, height: vertical ? length : thickness)
+            let lensRect: CGRect = ScrubGeometry.boundedLens(
+                ScrubGeometry.lensRect(offset: offset, segment: seg, thickness: thickness, inset: inset,
+                                       vertical: vertical, along: along, across: across),
+                in: bar)
+            // Release-to-commit: the icon under the moving bubble is highlighted; the committed one otherwise.
+            let highlighted: Int = commitOnRelease ? (drag.map { $0.hover >= 0 ? $0.hover : index } ?? index) : index
             let progress: CGFloat = ScrubGeometry.progress(offset: offset, inset: inset, length: length, segment: seg)
             let scrim: Color = role == .dock ? theme.dockScrim : theme.controlScrim
             let outline: Color = role == .dock ? theme.dockEdge : theme.controlEdge
@@ -292,13 +226,6 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
 
                 Capsule().stroke(outline, lineWidth: 0.9).allowsHitTesting(false)
 
-                if !GlassSupport.isNative {
-                    LensSpecular(progress: progress, vertical: vertical, active: dragging, light: theme.isLight)
-                        .frame(width: lens.size.width, height: lens.size.height)
-                        .lensPlacement(lens)
-                        .allowsHitTesting(false)
-                }
-
                 // Phase 7 dock light: a rim reflection that slides with the bubble plus an inner depth
                 // shade. There is no magnification; the glass bubble itself carries the selection.
                 if role == .dock {
@@ -306,8 +233,10 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
                         .allowsHitTesting(false)
                 }
 
-                // Labels sit above the glass, untouched by refraction.
-                labels(index: index, thickness: thickness, seg: seg)
+                // Labels sit above the glass container (native glass sampling them drew ghost copies). Phase 9:
+                // the bubble bends only the labels it covers, through the bounded refraction lens.
+                labels(highlighted: highlighted, selected: index, thickness: thickness, seg: seg)
+                    .refractiveLens(lensRect, cornerRadius: .infinity, style: .selector)
             }
             .modifier(LensMotion(offset: offset, dragging: dragging, stretch: stretch))
             .contentShape(Capsule())
@@ -327,17 +256,34 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
                             let onSelected = p >= rest && p <= rest + seg
                             let start = onSelected ? rest : ScrubGeometry.clamp(p - seg / 2, inset: inset, length: length, segment: seg)
                             state = Drag(grab: p - start, offset: start, location: p, time: now)
+                            state.hover = index
                         }
                         state.offset = ScrubGeometry.clamp(p - state.grab, inset: inset, length: length, segment: seg)
                         state.location = p
                         state.time = now
-                        drag = state
-                        if abs(state.speed) > 1 { relaxStretch(after: now) }
-                        // Selection follows the bubble's centre: it flips as the bubble crosses a midpoint.
                         let i = ScrubGeometry.index(forOffset: state.offset, inset: inset, segment: seg, count: count)
-                        if i < values.count, values[i] != selection { choose(values[i]) }
+                        if commitOnRelease {
+                            // The bubble and highlight follow the finger; nothing is committed until release.
+                            if i != state.hover {
+                                state.hover = i
+                                if haptic { Haptics.soft() }
+                            }
+                            drag = state
+                        } else {
+                            drag = state
+                            // Selection follows the bubble's centre: it flips as the bubble crosses a midpoint.
+                            if i < values.count, values[i] != selection { choose(values[i]) }
+                        }
+                        if abs(state.speed) > 1 { relaxStretch(after: now) }
                     }
-                    .onEnded { _ in drag = nil }
+                    .onEnded { value in
+                        guard commitOnRelease, let ended = drag else { drag = nil; return }
+                        drag = nil
+                        let cross: CGFloat = vertical ? value.location.x : value.location.y
+                        guard ScrubGeometry.releaseCommits(cross: cross, thickness: thickness) else { return }
+                        let i = ScrubGeometry.index(forOffset: ended.offset, inset: inset, segment: seg, count: count)
+                        if i < values.count { commit(values[i]) }
+                    }
             )
         }
         .frame(width: vertical ? height : nil, height: vertical ? nil : height)
@@ -345,15 +291,15 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
         .background { PagerExclusionZone() }
     }
 
-    private func labels(index: Int, thickness: CGFloat, seg: CGFloat) -> some View {
+    private func labels(highlighted: Int, selected: Int, thickness: CGFloat, seg: CGFloat) -> some View {
         let stack: AnyLayout = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
         return stack {
             ForEach(Array(values.enumerated()), id: \.offset) { offset, value in
-                label(value, offset == index)
+                label(value, offset == highlighted)
                     .frame(width: vertical ? thickness : seg, height: vertical ? seg : thickness)
                     .accessibilityElement(children: .combine)
-                    .accessibilityAddTraits(offset == index ? [.isButton, .isSelected] : .isButton)
-                    .accessibilityAction { choose(value) }
+                    .accessibilityAddTraits(offset == selected ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityAction { commitOnRelease ? commit(value) : choose(value) }
             }
         }
         .padding(vertical ? Edge.Set.vertical : Edge.Set.horizontal, inset)
@@ -363,7 +309,7 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
     /// The finger can stop without lifting: once events stop arriving, the stretch relaxes.
     private func relaxStretch(after stamp: Date) {
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 90_000_000)
+            try? await Task.sleep(nanoseconds: InteractionTiming.lensIdleNanos)
             guard var current = drag, current.time == stamp, current.speed != 0 else { return }
             current.speed = 0
             drag = current
@@ -373,6 +319,12 @@ struct GlassScrubSelector<Value: Hashable, Label: View>: View {
     private func choose(_ value: Value) {
         guard value != selection else { return }
         if haptic { Haptics.soft() }
+        selection = value
+    }
+
+    /// Release-to-commit: always reports the value, even the current one, so the owner decides what a
+    /// repeat means (the dock closes the full player over the page that is already selected).
+    private func commit(_ value: Value) {
         selection = value
     }
 }
@@ -401,50 +353,9 @@ private struct LensMotion: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .animation(dragging ? .interactiveSpring(response: 0.16, dampingFraction: 0.86)
-                                : .spring(response: 0.38, dampingFraction: 0.80), value: offset)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: dragging)
-            .animation(.interactiveSpring(response: 0.22, dampingFraction: 0.8), value: stretch)
-    }
-}
-
-/// Pre-iOS 26 light on the material bubble (native Liquid Glass lights itself): a rim highlight whose
-/// bright arc slides round the lens as it travels, a faint chromatic fringe where the rim bends light,
-/// a sheen on the lit side and a darker rim on the far side for depth.
-private struct LensSpecular: View {
-    let progress: CGFloat
-    let vertical: Bool
-    let active: Bool
-    let light: Bool
-
-    var body: some View {
-        let peak: Double = light ? 0.85 : 0.6
-        let angle = Angle.degrees(Double(progress) * 140 - 70 + (vertical ? 90 : 0))
-        let fringe: CGFloat = active ? 1.0 : 0.6
-        let litSide: UnitPoint = vertical ? .leading : .top
-        let farSide: UnitPoint = vertical ? .trailing : .bottom
-        let fringeA = CGSize(width: vertical ? 0 : -fringe, height: vertical ? -fringe : 0)
-        let fringeB = CGSize(width: vertical ? 0 : fringe, height: vertical ? fringe : 0)
-        let rim = Gradient(stops: [
-            .init(color: Color.white.opacity(peak), location: 0.00),
-            .init(color: Color.white.opacity(0.04), location: 0.22),
-            .init(color: Color.white.opacity(peak * 0.45), location: 0.50),
-            .init(color: Color.white.opacity(0.04), location: 0.78),
-            .init(color: Color.white.opacity(peak), location: 1.00),
-        ])
-        return ZStack {
-            Capsule()
-                .fill(LinearGradient(colors: [Color.white.opacity(active ? 0.30 : 0.18), Color.white.opacity(0)],
-                                     startPoint: litSide, endPoint: .center))
-                .padding(1.5)
-            Capsule().strokeBorder(Color.cyan.opacity(active ? 0.24 : 0.12), lineWidth: 0.8).offset(fringeA)
-            Capsule().strokeBorder(Color.pink.opacity(active ? 0.20 : 0.10), lineWidth: 0.8).offset(fringeB)
-            Capsule().strokeBorder(AngularGradient(gradient: rim, center: .center, angle: angle), lineWidth: active ? 1.4 : 1.0)
-            Capsule()
-                .strokeBorder(Color.black.opacity(light ? 0.10 : 0.24), lineWidth: 0.8)
-                .mask { LinearGradient(colors: [.clear, .black], startPoint: .center, endPoint: farSide) }
-        }
-        .compositingGroup()
+            .animation(dragging ? Motion.tracking : Motion.adaptive(Motion.lensSettle), value: offset)
+            .animation(Motion.unlessReduced(Motion.lensLift, reduceMotion: UIAccessibility.isReduceMotionEnabled), value: dragging)
+            .animation(Motion.unlessReduced(Motion.lensStretch, reduceMotion: UIAccessibility.isReduceMotionEnabled), value: stretch)
     }
 }
 
@@ -454,6 +365,7 @@ struct GlassSegmented<Value: Hashable>: View {
     let items: [Item]
     @Binding var selection: Value
     var height: CGFloat = 40
+    @Environment(\.glassTheme) private var theme
 
     var body: some View {
         GlassScrubSelector(values: items.map(\.value), selection: $selection, height: height) { value, selected in
@@ -462,26 +374,20 @@ struct GlassSegmented<Value: Hashable>: View {
                 if let symbol = item?.symbol { Image(systemName: symbol).scaledFont(13, .semibold) }
                 Text(item?.title ?? "").scaledFont(13, .semibold).lineLimit(1).minimumScaleFactor(0.8)
             }
-            .foregroundStyle(selected ? Color.ink : Color.inkAlpha(0.68))
+            // Phase 9 recovery §2A: the selected filter (Discover All / Movies / Series and every
+            // other segmented control) takes the theme accent; the bubble above it stays clear.
+            .foregroundStyle(SelectorInk.color(selected: selected, theme: theme))
         }
     }
 }
 
-/// Groups nearby glass elements so native Liquid Glass can blend their silhouettes.
+/// Groups nearby glass elements so Liquid Glass renders them in one pass and blends their silhouettes.
 struct GlassGroup<Content: View>: View {
     let spacing: CGFloat
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) { content() }
-        } else {
-            content()
-        }
-        #else
-        content()
-        #endif
+        GlassEffectContainer(spacing: spacing) { content() }
     }
 }
 
@@ -493,8 +399,8 @@ struct PressStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .opacity(configuration.isPressed ? 0.88 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-            .onChange(of: configuration.isPressed) { pressed in
+            .animation(Motion.adaptive(configuration.isPressed ? Motion.press : Motion.snappy), value: configuration.isPressed)
+            .onChange(of: configuration.isPressed) { _, pressed in
                 if pressed && haptic { Haptics.soft() }
             }
     }
@@ -519,6 +425,7 @@ struct ModeSelector: View {
     var onTouchChange: ((Bool) -> Void)?
     private let inset: CGFloat = 4
     @GestureState private var touching = false
+    @Environment(\.glassTheme) private var theme
 
     init(isMouse: Binding<Bool>, segmentHeight: CGFloat = 38, onTouchChange: ((Bool) -> Void)? = nil) {
         self._isMouse = isMouse
@@ -530,38 +437,53 @@ struct ModeSelector: View {
         GlassScrubSelector(
             values: [true, false],
             selection: Binding(get: { isMouse }, set: { newValue in
-                withAnimation(.easeInOut(duration: 0.18)) { isMouse = newValue }
+                withAnimation(Motion.adaptive(Motion.snappy)) { isMouse = newValue }
             }),
             height: segmentHeight + inset * 2,
             inset: inset
         ) { mouse, selected in
-            HStack(spacing: 7) {
-                if mouse { MouseGlyph(color: selected ? Color.ink : Color.inkAlpha(0.72)) }
-                else { Image(systemName: "circle.grid.cross").scaledFont(15, .semibold) }
-                Text(mouse ? "Mouse" : "D-pad").scaledFont(14, .semibold)
+            // v5 §6: icons only (no "Mouse" / "D-pad" captions); the selected half takes the theme
+            // accent (v5 §9). The names stay available to VoiceOver below.
+            let tint = ModeSelectorStyle.iconColor(selected: selected, accent: SelectorInk.selected(theme))
+            Group {
+                if mouse { MouseGlyph(color: tint) }
+                else { Image(systemName: "circle.grid.cross").scaledFont(17, .semibold) }
             }
-            .foregroundStyle(selected ? Color.ink : Color.inkAlpha(0.72))
+            .foregroundStyle(tint)
+            .frame(maxWidth: .infinity)
         }
         .simultaneousGesture(
             DragGesture(minimumDistance: 0).updating($touching) { _, state, _ in state = true }
         )
-        .onChange(of: touching) { active in onTouchChange?(active) }
+        .onChange(of: touching) { _, active in onTouchChange?(active) }
         .onDisappear { onTouchChange?(false) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Mouse or D-pad")
         .accessibilityValue(isMouse ? "Mouse" : "D-pad")
+        .accessibilityHint("Swipe up or down to switch between the mouse trackpad and the D-pad")
         .accessibilityAdjustableAction { direction in
             // Swipe up / increment moves to D-pad, matching page order.
             let wantMouse = direction == .decrement
             guard wantMouse != isMouse else { return }
             Haptics.soft()
-            withAnimation(.easeInOut(duration: 0.18)) { isMouse = wantMouse }
+            withAnimation(Motion.adaptive(Motion.snappy)) { isMouse = wantMouse }
         }
     }
 }
 
 /// The themed canvas: a gradient with a soft glow behind the controls, plus an optional ambient picture.
 struct AmbientBackdrop: View {
+    var body: some View {
+        AmbientCanvas()
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+    }
+}
+
+/// The backdrop's picture with no safe-area handling, so it can also be drawn at an exact size and
+/// position (`ContinuousBackdrop`). Always laid out left-to-right: it is decoration, and every copy
+/// must match the root one exactly.
+struct AmbientCanvas: View {
     @Environment(\.glassTheme) private var theme
     @ObservedObject private var store = ThemeStore.shared
 
@@ -573,8 +495,56 @@ struct AmbientBackdrop: View {
                 AmbientArtwork(style: store.ambient).transition(.opacity)
             }
         }
+        .environment(\.layoutDirection, .leftToRight)
+    }
+}
+
+/// Continuation §G2: the backdrop for a page that needs its own opaque background (Profile and its
+/// sub-pages, so a navigation push covers the page below). It draws the window-sized canvas shifted
+/// onto the window origin and clipped to the page, so it lines up exactly with the root backdrop that
+/// runs under the dock and the rail: no seam where the page meets the rail, and the picture stays put
+/// while the page pages or scrolls. Without a known window size (outside the pager) it fills the page.
+struct ContinuousBackdrop: View {
+    @Environment(\.windowCanvasSize) private var canvas
+
+    var body: some View {
+        GeometryReader { geo in
+            if let rect = BackdropAlignment.placement(pageFrame: geo.frame(in: .global), canvas: canvas) {
+                AmbientCanvas()
+                    .frame(width: rect.width, height: rect.height)
+                    .offset(x: rect.minX, y: rect.minY)
+            } else {
+                AmbientCanvas()
+            }
+        }
+        .clipped()
         .ignoresSafeArea()
         .allowsHitTesting(false)
+    }
+}
+
+/// Pure placement maths for `ContinuousBackdrop` (unit tested).
+enum BackdropAlignment {
+    /// The window canvas in the page's own coordinates; nil when the window size is unknown.
+    static func placement(pageFrame: CGRect, canvas: CGSize) -> CGRect? {
+        guard canvas.width > 0, canvas.height > 0, pageFrame.minX.isFinite, pageFrame.minY.isFinite else { return nil }
+        return CGRect(x: -pageFrame.minX, y: -pageFrame.minY, width: canvas.width, height: canvas.height)
+    }
+
+    /// The whole window, measured from a view that respects the safe area: its size plus every inset.
+    static func canvasSize(size: CGSize, insets: EdgeInsets) -> CGSize {
+        CGSize(width: max(size.width + insets.leading + insets.trailing, 0),
+               height: max(size.height + insets.top + insets.bottom, 0))
+    }
+}
+
+private struct WindowCanvasSizeKey: EnvironmentKey { static let defaultValue: CGSize = .zero }
+
+extension EnvironmentValues {
+    /// Size of the window the root backdrop fills (zero outside the pager).
+    var windowCanvasSize: CGSize {
+        get { self[WindowCanvasSizeKey.self] }
+        set { self[WindowCanvasSizeKey.self] = newValue }
     }
 }
 
@@ -610,5 +580,34 @@ extension RemoteKeyButton where Icon == AnyView {
         self.enabled = enabled
         self.action = action
         self.icon = { AnyView(Image(systemName: symbol).scaledFont(19, .medium)) }
+    }
+}
+
+/// v5 §6 / §9: the Mouse / D-pad selector shows icons only; the selected icon takes the theme accent.
+enum ModeSelectorStyle {
+    static let unselectedOpacity = 0.72
+
+    static func iconColor(selected: Bool, accent: Color) -> Color {
+        selected ? accent : Color.inkAlpha(unselectedOpacity)
+    }
+}
+
+/// Phase 9 recovery §2A / §2B: ink for the content of a scrub selector (the Discover All / Movies /
+/// Series filter and other segmented controls, the Android TV / Samsung TV switch, Mouse / D-pad).
+/// The bubble stays clear glass; the selected item takes the theme accent whenever it is readable on
+/// the bar (WCAG 1.4.11, 3:1), otherwise full-strength ink. Unselected items stay muted ink.
+enum SelectorInk {
+    static let unselectedOpacity = 0.68
+
+    static func selected(_ theme: GlassTheme) -> Color {
+        let accent = theme.lensTint
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard UIColor(accent).getRed(&r, green: &g, blue: &b, alpha: &a) else { return Color.ink }
+        let luminance = ColorMath.luminance(r: Double(r), g: Double(g), b: Double(b))
+        return DockStyle.usesAccent(accentLuminance: luminance, light: theme.isLight) ? accent : Color.ink
+    }
+
+    static func color(selected isSelected: Bool, theme: GlassTheme) -> Color {
+        isSelected ? selected(theme) : Color.inkAlpha(unselectedOpacity)
     }
 }

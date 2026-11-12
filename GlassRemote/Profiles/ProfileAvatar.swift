@@ -59,3 +59,31 @@ struct ProfileAvatar: View {
             }
     }
 }
+
+/// Continuation §G3: the active profile in the dock and the landscape rail. Observes the store, so a
+/// new photo, a rename or a profile switch shows at once; the dock item keeps its page label.
+struct DockProfileAvatar: View {
+    let size: CGFloat
+    let selected: Bool
+    @ObservedObject private var store = ProfileStore.shared
+    @Environment(\.glassTheme) private var theme
+
+    var body: some View {
+        let profile = store.active
+        let identity = DockAvatarIdentity(id: profile.id, initials: profile.initials, revision: store.imageRevision)
+        AvatarCircle(image: store.image(for: profile.id), initials: profile.initials, tint: profile.tint, size: size)
+            .overlay {
+                Circle().strokeBorder(selected ? DockStyle.selectedInk(theme) : theme.dockInkInactive, lineWidth: selected ? 2 : 1)
+            }
+            .id(identity)
+            .transition(.opacity)
+            .animation(Motion.adaptive(Motion.fade), value: identity)
+    }
+}
+
+/// What makes the dock avatar a different picture: another profile, new initials or a new photo.
+struct DockAvatarIdentity: Hashable {
+    let id: UUID
+    let initials: String
+    let revision: Int
+}

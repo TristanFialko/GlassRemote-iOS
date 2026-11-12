@@ -40,7 +40,8 @@ struct ProfilePage: View {
                 .frame(maxWidth: 920)
                 .frame(maxWidth: .infinity)
             }
-            .background { AmbientBackdrop() }
+            // §G2: aligned with the root backdrop, so there is no seam at the landscape rail.
+            .background { ContinuousBackdrop() }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: ProfileRoute.self) { route in
                 destination(route).environmentObject(remote)
@@ -48,7 +49,7 @@ struct ProfilePage: View {
         }
         .sheet(item: $editor) { target in ProfileEditorSheet(target: target) }
         .onAppear { consumePendingRoute() }
-        .onChange(of: navigator.pendingProfileRoute) { _ in consumePendingRoute() }
+        .onChange(of: navigator.pendingProfileRoute) { _, _ in consumePendingRoute() }
     }
 
     /// Opens a sub-page requested from another tab (Phase 8: settings moved out of the Remote menu).

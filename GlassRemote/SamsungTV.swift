@@ -24,7 +24,8 @@ private final class TVTrustDelegate: NSObject, URLSessionDelegate {
 /// Samsung Tizen TV remote WebSocket (port 8002) used only for volume and mute.
 ///
 /// UNVERIFIED on the actual TV. Whether the TV forwards volume to the soundbar over ARC/CEC
-/// must be confirmed on hardware; the ADB volume path stays available as the fallback.
+/// must be confirmed on hardware. There is no Android/ADB volume fallback (v5 §5).
+/// Pairing decisions (token, events, deadline, reset) live in SamsungPairing.swift.
 @MainActor
 final class SamsungTV {
     static let keyNames = [
@@ -42,7 +43,7 @@ final class SamsungTV {
     private(set) var stats = SamsungCommandStats()
     var onStats: ((SamsungCommandStats) -> Void)?
     var onReadyChanged: ((Bool) -> Void)?
-    /// A key accepted for sending failed afterwards; the caller re-sends it over ADB.
+    /// A key accepted for sending failed afterwards. The caller reports it; it is never re-sent over ADB.
     var onSendFailed: ((String) -> Void)?
 
     private(set) var isReady = false
@@ -53,17 +54,39 @@ final class SamsungTV {
     /// leaves the TV alone until the user asks to reconnect, so the prompt is not re-shown over
     /// and over. Cleared by an explicit `connect(host:userInitiated: true)`.
     private(set) var pairingBlocked = false
-    var hasStoredToken: Bool { !(storedToken() ?? "").isEmpty }
+    var hasStoredToken: Bool { !(tokens.token() ?? "").isEmpty }
+    /// Why the TV refused (nil unless the state is `.denied`). Phase 9 recovery §3.
+    private(set) var denialReason: SamsungDenialReason?
+    var onDenial: ((SamsungDenialReason?) -> Void)?
+    /// Whether the saved token was sent with the current/last attempt.
+    private(set) var tokenPresented = false
+    /// Last channel event name from the TV (diagnostics only; never the token).
+    private(set) var lastAnswer: String?
+    private(set) var attempts = 0
+    private var currentHost = ""
+    private let tokens: SamsungTokenStore
+
+    init(tokens: SamsungTokenStore = .live) {
+        self.tokens = tokens
+    }
+
+    /// Token-free diagnostics line for the Connection sheet.
+    var pairingDiagnostics: String {
+        SamsungPairingPolicy.diagnostics(tokenSaved: hasStoredToken, tokenPresented: tokenPresented,
+                                         lastAnswer: lastAnswer, attempts: attempts)
+    }
     private(set) var state: SamsungLinkState = .off
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
     private var receiveTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
     private var generation = 0
-    private let tokenKey = "glassRemote.samsungToken"
 
     func connect(host rawHost: String, userInitiated: Bool = false) {
-        if userInitiated { pairingBlocked = false }
+        if userInitiated {
+            pairingBlocked = false
+            setDenial(nil)
+        }
         stop(report: false, keepState: true)
         let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { report("Samsung TV: enter the TV's IP address"); return }
@@ -71,17 +94,13 @@ final class SamsungTV {
         generation += 1
         let gen = generation
 
-        var components = URLComponents()
-        components.scheme = "wss"
-        components.host = host
-        components.port = 8002
-        components.path = "/api/v2/channels/samsung.remote.control"
-        var items = [URLQueryItem(name: "name", value: Data("GlassRemote".utf8).base64EncodedString())]
-        if let token = storedToken(), !token.isEmpty {
-            items.append(URLQueryItem(name: "token", value: token))
-        }
-        components.queryItems = items
-        guard let url = components.url else { report("Samsung TV: invalid address"); return }
+        // Phase 9 recovery §3: the saved token goes only to the TV that issued it.
+        let token = SamsungPairingPolicy.tokenToPresent(storedToken: tokens.token(), tokenHost: tokens.tokenHost, host: host)
+        guard let url = SamsungPairingPolicy.url(host: host, token: token) else { report("Samsung TV: invalid address"); return }
+        tokenPresented = token != nil
+        currentHost = host
+        attempts += 1
+        GRLog.note("samsung", "connect attempt \(attempts) userInitiated=\(userInitiated) savedApproval=\(hasStoredToken) sent=\(tokenPresented)")
 
         let urlSession = URLSession(configuration: .default, delegate: TVTrustDelegate(host: host), delegateQueue: nil)
         let socket = urlSession.webSocketTask(with: url)
@@ -89,7 +108,7 @@ final class SamsungTV {
         task = socket
         isAttempting = true
         socket.resume()
-        let firstPairing = !hasStoredToken
+        let firstPairing = token == nil
         setState(firstPairing ? .pairing : .connecting)
         report(firstPairing ? "Samsung TV: approve Glass Remote on the TV" : "Samsung TV: connecting…")
 
@@ -103,21 +122,27 @@ final class SamsungTV {
                     guard let self, self.generation == gen else { return }
                     self.isAttempting = false
                     self.setReady(false)
-                    if !self.pairingBlocked { self.setState(.unreachable) }
-                    self.report("Samsung TV: remote not connected (retrying)")
+                    // After a denial the TV closes the socket itself: keep the denial visible.
+                    if SamsungPairingPolicy.reportsDropAsUnreachable(state: self.state, pairingBlocked: self.pairingBlocked) {
+                        self.setState(.unreachable)
+                        self.report("Samsung TV: remote not connected (retrying)")
+                    }
                     return
                 }
             }
         }
 
         timeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 45_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(SamsungPairingPolicy.approvalDeadline * 1_000_000_000))
             guard let self, self.generation == gen, !self.isReady else { return }
-            // No answer at all while a first pairing prompt was showing: treat it as declined so the
-            // prompt is not re-raised every few seconds.
-            if self.state == .pairing { self.pairingBlocked = true; self.setState(.denied) }
-            else { self.setState(.unreachable) }
-            self.report("Samsung TV: no response from the remote service")
+            // No answer while a first pairing prompt was showing counts as timed out (so the prompt
+            // is not re-raised every few seconds); a denial already reported is never overwritten.
+            let outcome = SamsungPairingPolicy.stateAfterDeadline(self.state)
+            if outcome.blocksAutoConnect { self.pairingBlocked = true }
+            if let reason = outcome.reason { self.setDenial(reason) }
+            self.setState(outcome.state)
+            if let reason = outcome.reason { self.report(reason.statusText) }
+            else if outcome.state == .unreachable { self.report("Samsung TV: no response from the remote service") }
             self.stop(report: false, keepState: true)
         }
     }
@@ -199,45 +224,59 @@ final class SamsungTV {
         case .data(let d): text = String(data: d, encoding: .utf8) ?? ""
         @unknown default: return
         }
-        guard let data = text.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let event = json["event"] as? String else { return }
+        guard let event = SamsungPairingPolicy.event(from: text) else { return }
 
         switch event {
-        case "ms.channel.connect":
-            if let payload = json["data"] as? [String: Any], let token = payload["token"] {
-                let value = "\(token)"
-                if !value.isEmpty { KeychainStore.set(value, for: tokenKey) }
-            }
+        case .connected(let token):
+            lastAnswer = "ms.channel.connect"
+            if let token { tokens.save(token: token, host: currentHost) }
+            else if tokenPresented { tokens.recordHostIfMissing(currentHost) }
             timeoutTask?.cancel()
             isAttempting = false
             pairingBlocked = false
+            setDenial(nil)
             setState(.connected)
             setReady(true)
             report("Samsung TV: remote connected")
-        case "ms.channel.unauthorized":
-            pairingBlocked = true
-            setState(.denied)
-            report("Samsung TV: not allowed · allow Glass Remote on the TV, then tap Reconnect")
-        case "ms.channel.timeout":
-            pairingBlocked = true
-            setState(.denied)
-            report("Samsung TV: approval timed out · tap Reconnect to try again")
-        default:
-            break
+        case .unauthorized:
+            lastAnswer = "ms.channel.unauthorized"
+            let reason = SamsungPairingPolicy.denialReason(unauthorizedWithTokenPresented: tokenPresented)
+            GRLog.note("samsung", "unauthorized (saved approval sent=\(tokenPresented)) -> \(reason)")
+            deny(reason)
+        case .timeout:
+            lastAnswer = "ms.channel.timeout"
+            deny(.approvalTimedOut)
+        case .other(let name):
+            lastAnswer = name
         }
     }
 
-    /// The pairing token lives in the Keychain. A token saved by an older build in UserDefaults is
-    /// moved there on first read.
-    private func storedToken() -> String? {
-        if let token = KeychainStore.string(for: tokenKey) { return token }
-        if let legacy = UserDefaults.standard.string(forKey: tokenKey), !legacy.isEmpty {
-            KeychainStore.set(legacy, for: tokenKey)
-            UserDefaults.standard.removeObject(forKey: tokenKey)
-            return legacy
-        }
-        return nil
+    /// The TV refused: stop this attempt completely (socket and deadline), so nothing later can
+    /// overwrite the denial, and keep the auto-connect supervisor away until the user acts.
+    private func deny(_ reason: SamsungDenialReason) {
+        pairingBlocked = true
+        setDenial(reason)
+        setState(.denied)
+        report(reason.statusText)
+        stop(report: false, keepState: true)
+    }
+
+    /// Phase 9 recovery §3: explicit, user-confirmed reset. Forgets only the Samsung token (and the
+    /// TV it was issued by); the next connection carries no token, so the TV shows its Allow prompt.
+    func resetPairing() {
+        stop(report: false)
+        tokens.reset()
+        pairingBlocked = false
+        tokenPresented = false
+        lastAnswer = nil
+        setDenial(nil)
+        report("Samsung TV: pairing reset · connecting; choose Allow on the TV")
+    }
+
+    private func setDenial(_ reason: SamsungDenialReason?) {
+        guard denialReason != reason else { return }
+        denialReason = reason
+        onDenial?(reason)
     }
 
     private func setReady(_ ready: Bool) {

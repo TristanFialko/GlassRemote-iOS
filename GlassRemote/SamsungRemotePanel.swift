@@ -60,6 +60,16 @@ enum SamsungRemoteLayout {
     }
 
     /// The status banner is shown whenever the TV link is not fully up (or the TV is not set up).
+    /// Phase 9 §1.1: Samsung keys are icon-only like the Android cluster. Only the channel keys keep
+    /// a short caption, because a bare chevron does not say "channel". Titles stay the VoiceOver names.
+    static func caption(for key: SamsungKey) -> String? {
+        switch key {
+        case .channelUp: return "Ch +"
+        case .channelDown: return "Ch −"
+        default: return nil
+        }
+    }
+
     static func showsBanner(enabled: Bool, state: SamsungLinkState) -> Bool {
         !enabled || state != .connected
     }
@@ -92,6 +102,8 @@ struct SamsungRemotePanel: View {
 /// Says exactly why the Samsung controls are unavailable, with the one action that fixes it.
 struct SamsungLinkBanner: View {
     @EnvironmentObject private var remote: RemoteModel
+    /// Landscape column: the action sits under the message instead of squeezing it.
+    var stacked: Bool = false
 
     var body: some View {
         let state = remote.samsungState
@@ -100,7 +112,14 @@ struct SamsungLinkBanner: View {
         } else if state == .pairing {
             bannerRow("hand.tap", "Approve Glass Remote on the TV", nil, nil)
         } else if state == .denied {
-            bannerRow("xmark.shield", "The TV didn't allow Glass Remote", "Reconnect") { remote.reconnectTV() }
+            let reason = remote.samsungDenial
+            if reason?.suggestsReset == true {
+                // Phase 9 recovery §3: a refused saved approval cannot be fixed by Reconnect alone; the
+                // confirmed reset lives in the Connection sheet.
+                bannerRow("xmark.shield", reason?.bannerText ?? "The TV didn't allow Glass Remote", "Fix") { remote.showConnection = true }
+            } else {
+                bannerRow("xmark.shield", reason?.bannerText ?? "The TV didn't allow Glass Remote", "Reconnect") { remote.reconnectTV() }
+            }
         } else if state == .unreachable || state == .off {
             bannerRow("wifi.exclamationmark", state.label, "Reconnect") { remote.reconnectTV() }
         } else if state == .connecting {
@@ -110,14 +129,18 @@ struct SamsungLinkBanner: View {
 
     /// `symbol == nil` shows a small spinner instead, for a state that is still in progress.
     private func bannerRow(_ symbol: String?, _ text: String, _ action: String?, _ run: (() -> Void)?) -> some View {
-        HStack(spacing: 10) {
-            if let symbol {
-                Image(systemName: symbol).scaledFont(15, .medium)
-            } else {
-                ProgressView().controlSize(.small).tint(Color.ink)
+        let layout = stacked ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                             : AnyLayout(HStackLayout(spacing: 10))
+        return layout {
+            HStack(spacing: 10) {
+                if let symbol {
+                    Image(systemName: symbol).scaledFont(15, .medium)
+                } else {
+                    ProgressView().controlSize(.small).tint(Color.ink)
+                }
+                Text(text).scaledFont(13, .semibold).lineLimit(stacked ? 3 : 2).minimumScaleFactor(0.8)
+                Spacer(minLength: 0)
             }
-            Text(text).scaledFont(13, .semibold).lineLimit(2).minimumScaleFactor(0.8)
-            Spacer(minLength: 0)
             if let action, let run {
                 Button(action: run) {
                     Text(action).scaledFont(13, .semibold).lineLimit(1).padding(.horizontal, 12).frame(height: 28)
@@ -127,7 +150,7 @@ struct SamsungLinkBanner: View {
         }
         .foregroundStyle(Color.ink)
         .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+        .padding(.vertical, stacked ? 10 : 6)
         .frame(minHeight: 40)
         .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .accessibilityElement(children: .combine)
@@ -155,22 +178,20 @@ struct SamsungKeyRow: View {
                                          action: { remote.samsungKey(item.key) }) { HomeGlyph() }
                     } else {
                         RemoteClusterKey(symbol: item.symbol, label: item.title, caption: caption(item),
-                                         enabled: ready, height: height) { remote.samsungKey(item.key) }
+                                         enabled: enabled(item.key), height: height) { remote.samsungKey(item.key) }
                     }
                 }
             }
         }
     }
 
+    /// Volume keys stay usable over the UPnP volume link while the remote socket is down (§5).
+    private func enabled(_ key: SamsungKey) -> Bool {
+        key.legacyVolumeName != nil ? remote.volumeButtonsAvailable : ready
+    }
+
     private func caption(_ item: SamsungRemoteLayout.Item) -> String? {
-        guard captions else { return nil }
-        switch item.key {
-        case .play: return "Play"
-        case .fastForward: return "Forward"
-        case .channelUp: return "Ch +"
-        case .channelDown: return "Ch −"
-        default: return item.title
-        }
+        captions ? SamsungRemoteLayout.caption(for: item.key) : nil
     }
 
     /// Combined Play/Pause. Shows the generic play-pause glyph until a key has been sent; after that
@@ -179,9 +200,9 @@ struct SamsungKeyRow: View {
         let guess = remote.samsungPlayPause
         let symbol = guess == .sentPlay ? "pause.fill" : (guess == .sentPause ? "play.fill" : "playpause.fill")
         let label = guess == .sentPlay ? "Pause (last sent: Play)" : (guess == .sentPause ? "Play (last sent: Pause)" : "Play or pause")
-        return RemoteClusterKey(label: label, caption: captions ? "Play" : nil, enabled: ready, height: height, action: {
+        return RemoteClusterKey(label: label, caption: captions ? SamsungRemoteLayout.caption(for: .play) : nil, enabled: ready, height: height, action: {
             Haptics.light()
-            withAnimation(.easeInOut(duration: 0.2)) { remote.samsungTogglePlayPause() }
+            withAnimation(Motion.adaptive(Motion.snappy)) { remote.samsungTogglePlayPause() }
         }) {
             Image(systemName: symbol).scaledFont(19, .medium)
                 .modifier(SymbolReplace())
@@ -193,7 +214,6 @@ struct SamsungKeyRow: View {
 
 private struct SymbolReplace: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 17.0, *) { content.contentTransition(.symbolEffect(.replace)) }
-        else { content }
+        content.contentTransition(.symbolEffect(.replace))
     }
 }

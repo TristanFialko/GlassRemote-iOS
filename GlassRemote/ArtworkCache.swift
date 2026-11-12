@@ -87,7 +87,7 @@ struct CachedArtwork<Placeholder: View>: View {
                 if let hit = ArtworkCache.shared.cached(candidate) { image = hit; return }
                 if let loaded = await ArtworkCache.shared.image(for: candidate) {
                     if Task.isCancelled { return }
-                    withAnimation(.easeOut(duration: 0.25)) { image = loaded }
+                    withAnimation(Motion.adaptive(Motion.fade)) { image = loaded }
                     return
                 }
             }

@@ -3,7 +3,7 @@ name: GlassRemote
 options:
   bundleIdPrefix: com.glassremote
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "26.0"
 
 settings:
   base:

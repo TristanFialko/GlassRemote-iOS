@@ -21,7 +21,7 @@ struct KeyboardSheet: View {
             Form {
                 Section {
                     Toggle("Live typing", isOn: $remote.liveTyping)
-                        .onChange(of: remote.liveTyping) { _ in lastSent = text }
+                        .onChange(of: remote.liveTyping) { _, _ in lastSent = text }
                     TextField(remote.liveTyping ? "Typing goes straight to the TV" : "Type here, then Send", text: $text, axis: .vertical)
                         .lineLimit(1...4)
                         .textInputAutocapitalization(.never)
@@ -29,7 +29,7 @@ struct KeyboardSheet: View {
                         .focused($focused)
                         .submitLabel(remote.liveTyping ? .return : .send)
                         .onSubmit(send)
-                        .onChange(of: text) { newValue in syncLive(newValue) }
+                        .onChange(of: text) { _, newValue in syncLive(newValue) }
 
                     HStack(spacing: 10) {
                         PasteButton(payloadType: String.self) { strings in

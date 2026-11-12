@@ -9,7 +9,7 @@ struct ProfileSubpage: ViewModifier {
     func body(content: Content) -> some View {
         content
             .scrollContentBackground(.hidden)
-            .background { AmbientBackdrop() }
+            .background { ContinuousBackdrop() }
             .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: clearance) }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)

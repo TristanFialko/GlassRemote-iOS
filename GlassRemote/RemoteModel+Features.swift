@@ -70,7 +70,16 @@ extension RemoteModel {
             (try? await self.runShell(connection, ["sh", "-c", "cat /proc/uptime; dumpsys media_session"])) ?? ""
         } ?? ""
         guard connected, !output.isEmpty else { return }
-        media = MediaParser.parse(output) ?? .idle
+        // Phase 9 recovery §4: an unreadable PlaybackState no longer resets Now Playing to idle.
+        let sample = MediaParser.read(output)
+        if sample == .unreadable {
+            let line = output.split(whereSeparator: { $0.isNewline })
+                .first(where: { $0.contains("PlaybackState {") })
+                .map { String($0.trimmingCharacters(in: .whitespaces).prefix(160)) } ?? ""
+            GRLog.note("media", "active session with an unreadable PlaybackState: \(line)")
+        }
+        let next = MediaPollPolicy.next(current: media, read: sample)
+        if next != media { media = next }
     }
 
     /// Android media key codes: 85 play/pause, 87 next, 88 previous, 89 rewind, 90 fast-forward.
@@ -91,17 +100,51 @@ extension RemoteModel {
 
     // MARK: - Volume routing
 
-    /// Volume and mute go to the Samsung TV when that connection is ready, otherwise
-    /// through the existing ADB path.
-    func volume(_ name: String, haptic: Bool = true) {
+    /// v5 §5: volume and mute go only to the Samsung TV. Phase 9 recovery §5: the route is
+    /// `VolumeButtonPolicy` — the TV's remote-socket key first (what its own remote sends, so an
+    /// ARC soundbar follows), else a UPnP RenderingControl step / mute toggle when the socket is down
+    /// but the volume link is up. The Android TV volume path is gone: with no Samsung route nothing
+    /// is sent and the soundbar is reported unavailable. Returns whether a Samsung route took it.
+    @discardableResult
+    func volume(_ name: String, haptic: Bool = true, readBack: Bool = true) -> Bool {
         endpointLearner.invalidate()   // a volume key is a newer command: discard any pending endpoint attempt
-        if tvVolumeEnabled, tv.send(name) {
-            if haptic { Haptics.soft() }
-            scheduleVolumeReadback()
-            return
+        let route = VolumeButtonPolicy.route(for: name, tvVolumeEnabled: tvVolumeEnabled,
+                                             remoteReady: samsungRemoteReady, upnpReady: volumeLinkReady)
+        let taken: Bool
+        switch route {
+        case .samsungKey(let key): taken = tv.send(key)
+        case .upnpStep(let delta): taken = volumeLink.step(by: delta)
+        case .upnpMuteToggle: taken = volumeLink.toggleMute()
+        case .unavailable: taken = false
         }
+        guard taken else {
+            reportSoundbarUnavailable()
+            return false
+        }
+        if case .samsungKey = route {} else { GRLog.note("volume", "\(name) sent over UPnP (remote socket not ready)") }
         if haptic { Haptics.soft() }
-        key(name)
+        if readBack { scheduleVolumeReadback() }
+        return true
+    }
+
+    /// Whether volume +/−/mute can reach the TV right now (remote socket or UPnP link).
+    var volumeButtonsAvailable: Bool {
+        VolumeButtonPolicy.isAvailable(tvVolumeEnabled: tvVolumeEnabled, remoteReady: samsungRemoteReady,
+                                       upnpReady: volumeLinkReady)
+    }
+
+    /// The explicit unavailable state (never a silent fallback to the Android box).
+    var soundbarUnavailableMessage: String { "Soundbar unavailable · \(samsungUnavailableMessage)" }
+
+    func reportSoundbarUnavailable() {
+        status = soundbarUnavailableMessage
+        GRLog.note("volume", "volume command not sent: no Samsung route (Android TV volume is not used)")
+    }
+
+    /// A key the TV connection accepted and then failed to deliver: reported, never re-sent over ADB.
+    func samsungSendFailed(_ name: String) {
+        GRLog.note("samsung", "send failed for \(name); not re-sent over ADB")
+        if VolumeKeyPolicy.isVolumeKey(name) { reportSoundbarUnavailable() } else { status = samsungUnavailableMessage }
     }
 
     // MARK: - Real TV volume (UPnP RenderingControl)
@@ -114,6 +157,9 @@ extension RemoteModel {
             self.volumeLinkReady = available
             self.volumeStateReset()
             if !available { self.tvVolumeFraction = nil }
+        }
+        volumeLink.onMute = { [weak self] muted in
+            self?.volumeStatus = muted ? "TV volume: muted (confirmed by the TV)" : "TV volume: unmuted (confirmed by the TV)"
         }
         volumeLink.onVolume = { [weak self] value in
             guard let self else { return }
@@ -139,6 +185,9 @@ extension RemoteModel {
             let cal = self.volumeCalibration
             self.volumeStatus = "TV volume: \(value) (range \(cal.lo)–\(cal.hi), read from the TV)"
             self.tvVolumeFraction = cal.fraction(forRaw: value)
+            if self.volumeScale.route == .samsungAbsolute {
+                self.publishVolumeReading(self.volumeScale.fraction(forRaw: value))
+            }
         }
         if tvVolumeEnabled { volumeLink.start(host: samsungHost) }
     }
@@ -157,7 +206,14 @@ extension RemoteModel {
     /// Called by the slider when a finger lands / lifts. A touch discards any pending endpoint attempt.
     func volumeDragChanged(_ active: Bool) {
         volumeDragActive = active
-        if active { endpointLearner.invalidate() }
+        if active {
+            endpointLearner.invalidate()
+            volumeSync.dragBegan()
+            volumeReconcileTask?.cancel()
+        } else {
+            volumeSync.dragEnded()
+            scheduleVolumeReconcile()
+        }
     }
 
     func resetVolumeCalibration() {
@@ -168,15 +224,54 @@ extension RemoteModel {
 
     /// Readings from the TV never move the slider while a finger is on it, nor for 2 s after the
     /// last change (the TV can lag behind a command, and a stale reading would pull the thumb back).
-    var volumeSliderAcceptsExternal: Bool {
-        !volumeDragActive && Date().timeIntervalSince(lastUserVolumeInput) > 2.0
+    var volumeSliderAcceptsExternal: Bool { volumeSync.acceptsReading() }
+
+    /// Continuation §C2: a device reading, gated by `VolumeSync`. Returns the slider value to show,
+    /// or nil while the user owns the slider (or when it would not move the thumb).
+    func sliderValue(forReading fraction: Double, showing current: Double) -> Double? {
+        volumeSync.reading(fraction, showing: current)
+    }
+
+    /// Continuation §C2: once the hold-off after the user's last change has passed, read the device
+    /// again so the slider settles on what it really did (readings inside the window were ignored).
+    func scheduleVolumeReconcile() {
+        volumeReconcileTask?.cancel()
+        let delay = volumeSync.holdoff + 0.1
+        volumeReconcileTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !Task.isCancelled, self.volumeSync.reconcileDue() else { return }
+            self.refreshDeviceVolume()
+        }
+    }
+
+    /// Reads the current target's real level, where it can report one.
+    func refreshDeviceVolume() {
+        switch volumeScale.route {
+        case .samsungAbsolute: volumeLink.refresh()
+        case .samsungKeys: break   // the soundbar does not report its level over the remote socket
+        case .unavailable: break   // v5 §5: no Samsung route; the Android box is never asked
+        }
+    }
+
+    func publishVolumeReading(_ fraction: Double) {
+        volumeReadingSerial &+= 1
+        volumeReading = VolumeReadingEvent(fraction: fraction, serial: volumeReadingSerial)
     }
 
     // MARK: - Slider -> volume mapping
 
     /// Number of volume-key presses a full slider sweep spans. Through the TV this is the
-    /// soundbar's own scale (`tvVolumeMax`); over ADB it stays at the original 20 steps.
-    var volumeLevels: Int { volumeLinkReady ? 100 : ((tvVolumeEnabled && samsungRemoteReady) ? tvVolumeMax : 20) }
+    /// soundbar's own scale (`tvVolumeMax`). v5 §5: there is no ADB volume scale.
+    var volumeLevels: Int { volumeScale.steps }
+
+    /// Continuation §C2: the current target's real range (VolumeScale.swift). Same routing as the
+    /// commands: the TV's absolute level when it reports one, then the TV's keys, otherwise
+    /// unavailable (v5 §5: never the Android box).
+    var volumeScale: VolumeScale {
+        if tvVolumeEnabled, volumeLinkReady { return .samsungAbsolute(volumeCalibration) }
+        if tvVolumeEnabled, samsungRemoteReady { return .samsungKeys(max: tvVolumeMax) }
+        return .unavailable
+    }
 
     /// Forget what we assumed about the real volume (range or route changed).
     func volumeStateReset() {
@@ -190,20 +285,24 @@ extension RemoteModel {
     /// agree exactly at that end and every later move is an exact press count.
     func setVolumeFraction(_ fraction: Double) {
         lastUserVolumeInput = Date()
+        volumeSync.userChanged()
+        if !volumeDragActive { scheduleVolumeReconcile() }   // VoiceOver increments settle too
         // Preferred: the TV reports its real level, so set it absolutely (0...100). The slider's
         // full travel is then exactly the TV's full range and nothing is assumed.
         if tvVolumeEnabled, volumeLinkReady {
-            let cal = volumeCalibration
-            let raw = cal.raw(forFraction: fraction)
+            let raw = volumeScale.raw(forFraction: fraction)
             if fraction <= 0 { endpointLearner.commandSent(raw: raw, isMax: false) }
             else if fraction >= 1 { endpointLearner.commandSent(raw: raw, isMax: true) }
             else { endpointLearner.invalidate() }   // a mid-range command can never teach an end
             volumeLink.setVolume(raw)
             return
         }
-        let levels = volumeLevels
-        let clamped = min(max(fraction, 0), 1)
-        let target = Int((clamped * Double(levels)).rounded())
+        let scale = volumeScale
+        // v5 §5: no Samsung route means nothing is sent (no ADB fallback) and the user is told.
+        guard scale.isAvailable else { reportSoundbarUnavailable(); return }
+        let levels = scale.steps
+        // The real level this fraction commands (only the very ends reach 0 and the top).
+        let target = scale.step(forFraction: fraction)
 
         if volumeLevelsInUse != levels {
             // Range changed: rescale the assumed position, and stop trusting it.
@@ -233,8 +332,14 @@ extension RemoteModel {
             while let self, self.volumePendingSteps != 0, !Task.isCancelled {
                 let up = self.volumePendingSteps > 0
                 self.volumePendingSteps += up ? -1 : 1
-                // Feel each step for small moves; stay quiet during long sweeps.
-                self.volume(up ? "VOLUME_UP" : "VOLUME_DOWN", haptic: abs(self.volumePendingSteps) < 3)
+                // The slider already ticked each level the finger crossed (VolumeHapticPolicy), so the
+                // presses stay silent; the reconcile after the drag reads the result back.
+                guard self.volume(up ? "VOLUME_UP" : "VOLUME_DOWN", haptic: false, readBack: false) else {
+                    // The Samsung link dropped mid-sweep: stop and forget the assumed level.
+                    self.volumePendingSteps = 0
+                    self.volumeLevelKnown = false
+                    break
+                }
                 try? await Task.sleep(nanoseconds: 40_000_000)
             }
             self?.volumeDrainTask = nil
@@ -289,6 +394,15 @@ extension RemoteModel {
     func reconnectTV() {
         guard tvVolumeEnabled, !samsungHost.trimmingCharacters(in: .whitespaces).isEmpty else { applyTVSettings(); return }
         tv.connect(host: samsungHost, userInitiated: true)
+    }
+
+    /// Phase 9 recovery §3: explicit, confirmed reset (Connection sheet). Forgets ONLY the Samsung
+    /// pairing token and the TV it was issued by, then connects without a token so the TV shows its
+    /// Allow prompt again. ADB keys, the TV address, volume calibration and all other settings stay.
+    func resetSamsungPairing() {
+        GRLog.note("samsung", "user reset Samsung pairing (Samsung token only)")
+        tv.resetPairing()
+        reconnectTV()
     }
 
     /// Restarts ONLY the UPnP volume link; the remote WebSocket is not touched.

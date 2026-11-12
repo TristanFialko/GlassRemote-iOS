@@ -27,7 +27,7 @@ final class PagerExclusionRegistry {
         return PagerGesturePolicy.visibleZones(frames, in: host.bounds)
     }
 
-    private static func isShown(_ view: UIView) -> Bool {
+    static func isShown(_ view: UIView) -> Bool {
         var current: UIView? = view
         while let candidate = current {
             if candidate.isHidden || candidate.alpha < 0.01 { return false }
@@ -53,6 +53,48 @@ final class PagerExclusionView: UIView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil { PagerExclusionRegistry.shared.add(self) } else { PagerExclusionRegistry.shared.remove(self) }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }
+}
+
+/// Continuation §D: the opposite of an exclusion zone. In landscape the Remote is almost all controls,
+/// so a vertical page swipe may start on it only inside these areas: the free space in its side columns
+/// (placed by `RemoteStageLayout`). Off-screen and hidden areas never count.
+@MainActor
+final class PagerSwipeAreaRegistry {
+    static let shared = PagerSwipeAreaRegistry()
+    private let views = NSHashTable<UIView>.weakObjects()
+
+    func add(_ view: UIView) { views.add(view) }
+    func remove(_ view: UIView) { views.remove(view) }
+
+    /// Frames of every area on the same window as `host`, in `host`'s coordinates.
+    func frames(in host: UIView) -> [CGRect] {
+        let frames: [CGRect] = views.allObjects.compactMap { view in
+            guard let window = view.window, window === host.window, PagerExclusionRegistry.isShown(view) else { return nil }
+            return view.convert(view.bounds, to: host)
+        }
+        return PagerGesturePolicy.visibleZones(frames, in: host.bounds)
+    }
+}
+
+/// Invisible marker for a page-swipe area. Never takes touches.
+struct PagerSwipeArea: UIViewRepresentable {
+    func makeUIView(context: Context) -> PagerSwipeAreaView {
+        let view = PagerSwipeAreaView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: PagerSwipeAreaView, context: Context) {}
+}
+
+final class PagerSwipeAreaView: UIView {
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { PagerSwipeAreaRegistry.shared.add(self) } else { PagerSwipeAreaRegistry.shared.remove(self) }
     }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }

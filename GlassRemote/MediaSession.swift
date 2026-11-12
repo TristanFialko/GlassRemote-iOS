@@ -49,12 +49,52 @@ struct MediaState: Equatable {
     }
 }
 
+/// Phase 9 recovery §4: the outcome of one `dumpsys media_session` read. `unreadable` means an
+/// active session is listed but its PlaybackState is in a shape the parser does not understand; the
+/// poller then keeps the last good sample (it goes stale and hides on its own) instead of reporting
+/// "nothing playing".
+enum MediaRead: Equatable {
+    case session(MediaState)
+    case none
+    case unreadable
+}
+
+/// Phase 9 recovery §4: the fields of one printed PlaybackState.
+struct PlaybackFields: Equatable {
+    var state: Int
+    var position: Int64
+    var speed: Double
+    var updated: Int64
+    var actions: Int64
+}
+
+/// Phase 9 recovery §4: how a poll result replaces the published media state (pure, unit tested).
+enum MediaPollPolicy {
+    static func next(current: MediaState, read: MediaRead) -> MediaState {
+        switch read {
+        case .session(let state): return state
+        case .none: return .idle
+        // An unreadable sample is not evidence that playback stopped. The last good sample keeps
+        // its own `sampledAt`, so it still expires after `PlayerSessionPhase.staleAfter`.
+        case .unreadable: return current
+        }
+    }
+}
+
 enum MediaParser {
     /// `output` is `cat /proc/uptime` followed by `dumpsys media_session`.
-    /// Returns nil when no session is active.
+    /// Returns nil when no session is active (or none could be read).
     static func parse(_ output: String, now: Date = Date()) -> MediaState? {
+        if case .session(let state) = read(output, now: now) { return state }
+        return nil
+    }
+
+    /// Reads one sample. Android 13 and earlier print `PlaybackState {state=3, position=...}`; Android 14
+    /// and later print `PlaybackState {state=PLAYING(3), position=...}`. Both are accepted, and each field
+    /// is read on its own so added or reordered fields do not hide a session.
+    static func read(_ output: String, now: Date = Date()) -> MediaRead {
         let lines = output.split(whereSeparator: { $0.isNewline }).map { String($0) }
-        guard !lines.isEmpty else { return nil }
+        guard !lines.isEmpty else { return .none }
 
         // Device elapsedRealtime (ms) ~ /proc/uptime, used to extrapolate position.
         var uptimeMs: Int64?
@@ -70,20 +110,25 @@ enum MediaParser {
         }
 
         var best: MediaState?
+        var unreadable = false
         for (n, start) in starts.enumerated() {
             let end = n + 1 < starts.count ? starts[n + 1] : lines.count
             let block = lines[start..<end].joined(separator: "\n")
 
             guard let active = match(#"active=(true|false)"#, block), active[1] == "true",
-                  let package = match(#"package=(\S+)"#, block)?[1],
-                  let st = match(#"PlaybackState \{state=(\d+), position=(\d+), buffered position=\d+, speed=([-0-9.]+), updated=(\d+), actions=(\d+)"#, block),
-                  let state = Int(st[1]), [2, 3, 6].contains(state)
+                  let package = match(#"package=(\S+)"#, block)?[1]
             else { continue }
+            guard let fields = playbackFields(in: block) else {
+                if block.contains("PlaybackState {") { unreadable = true }
+                continue
+            }
+            let state = fields.state
+            guard [2, 3, 6].contains(state) else { continue }
 
-            var position = Int64(st[2]) ?? 0
-            let speed = Double(st[3]) ?? 1
-            let updated = Int64(st[4]) ?? 0
-            let actions = Int64(st[5]) ?? 0
+            var position = fields.position
+            let speed = fields.speed
+            let updated = fields.updated
+            let actions = fields.actions
 
             if state == 3, let uptimeMs, updated > 0, uptimeMs > updated {
                 position += Int64(Double(uptimeMs - updated) * speed)
@@ -107,7 +152,26 @@ enum MediaParser {
             // Sessions are listed by priority; prefer the first, but a playing one beats a paused one.
             if best == nil || (!best!.isPlaying && candidate.isPlaying) { best = candidate }
         }
-        return best
+        if let best { return .session(best) }
+        return unreadable ? .unreadable : .none
+    }
+
+    /// The fields of the block's printed PlaybackState, or nil when there is none or its state cannot
+    /// be read. Fields are matched one by one inside the braces (`buffered position` never counts as
+    /// `position`).
+    static func playbackFields(in block: String) -> PlaybackFields? {
+        guard let body = match(#"PlaybackState \{([^}\n]*)"#, block)?[1],
+              let stateText = match(#"(?:^|,\s*)state=(?:[A-Za-z_]+\()?(\d+)"#, body)?[1],
+              let state = Int(stateText)
+        else { return nil }
+        func field(_ name: String, _ value: String) -> String? {
+            match("(?:^|,\\s*)" + name + "=(" + value + ")", body)?[1]
+        }
+        return PlaybackFields(state: state,
+                              position: field("position", "-?\\d+").flatMap { Int64($0) }.map { max(0, $0) } ?? 0,
+                              speed: field("speed", "-?[0-9.]+(?:[eE][-+]?[0-9]+)?").flatMap { Double($0) } ?? 1,
+                              updated: field("updated", "\\d+").flatMap { Int64($0) } ?? 0,
+                              actions: field("actions", "\\d+").flatMap { Int64($0) } ?? 0)
     }
 
     /// Splits "title, subtitle, description". Needs the three-part shape to treat anything as a

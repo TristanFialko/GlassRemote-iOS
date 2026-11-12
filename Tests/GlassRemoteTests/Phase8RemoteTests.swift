@@ -39,8 +39,9 @@ final class Phase8RemoteLayoutTests: XCTestCase {
             XCTAssertLessThanOrEqual(c.leading + c.trailing, width * 0.6 + 0.001, "width \(width)")
         }
         let wide = RemoteLayoutPolicy.columnWidths(for: 2000)
-        XCTAssertEqual(wide.leading, 270)
-        XCTAssertEqual(wide.trailing, 240)
+        // Phase 9 §1.2 raised the caps (the landscape columns had oversized gutters on wide screens).
+        XCTAssertEqual(wide.leading, 280)
+        XCTAssertEqual(wide.trailing, 252)
         let none = RemoteLayoutPolicy.columnWidths(for: 0)
         XCTAssertEqual(none.leading, 0)
         XCTAssertEqual(none.trailing, 0)
@@ -107,10 +108,10 @@ final class Phase8LauncherTests: XCTestCase {
     }
 
     func testGridColumnsFollowWidth() {
-        XCTAssertEqual(AppLauncherPolicy.columns(for: 320), 3)
-        XCTAssertEqual(AppLauncherPolicy.columns(for: 393), 3)
-        XCTAssertEqual(AppLauncherPolicy.columns(for: 600), 5)
-        XCTAssertEqual(AppLauncherPolicy.columns(for: 932), 6)
+        // Phase 9 continuation §A3: a fixed three-column grid at every width (tiles scale instead).
+        for width: CGFloat in [280, 320, 393, 600, 932, 1366] {
+            XCTAssertEqual(AppLauncherPolicy.columns(for: width), 3, "\(width)")
+        }
     }
 }
 

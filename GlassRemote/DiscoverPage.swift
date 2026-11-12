@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Page 3: Discover. Always-visible search, Continue Watching and Recently watched from the signed-in
 /// Nuvio account's synced watch progress, Cinemeta catalogue carousels (Cinemeta is Nuvio's default
@@ -9,6 +10,9 @@ import SwiftUI
 struct DiscoverPage: View {
     @Environment(\.dockClearance) private var dockClearance
     @Environment(\.layoutContext) private var layoutContext
+    @Environment(\.pageBleed) private var pageBleed
+    /// Continuation §F3: sheet in portrait, full screen in landscape; only re-chosen while nothing is open.
+    @State private var detailStyle: DetailPresentation = .sheet
     @EnvironmentObject private var navigator: PageNavigator
     @Environment(\.glassTheme) private var theme
     @StateObject private var model = DiscoverModel()
@@ -30,6 +34,14 @@ struct DiscoverPage: View {
     @State private var headerBottom: CGFloat = 0
     @ObservedObject private var profiles = ProfileStore.shared
     @Namespace private var zoom
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    /// v6 §8: the header hides on downward scroll and returns on upward scroll (DiscoverHeaderReveal).
+    /// The tracker is a reference, so scroll frames never re-render the page; only `headerHidden` does.
+    @State private var headerTracker = DiscoverHeaderTracker()
+    @State private var headerHidden = false
+    /// v6 §8: how much of the screen the search keyboard covers (the page itself never resizes for it).
+    @State private var keyboardOverlap: CGFloat = 0
 
     private var settings: ProfileSettings { profiles.active.settings }
     private var metrics: DiscoverMetrics { DiscoverMetrics(isLandscape: layoutContext.isLandscape) }
@@ -78,6 +90,20 @@ struct DiscoverPage: View {
                 }
                 .coordinateSpace(name: DiscoverHero.space)
                 .scrollDismissesKeyboard(.interactively)
+                // v6 §8: the scroll direction drives the header.
+                .onScrollGeometryChange(for: DiscoverScrollSample.self) { geometry in
+                    DiscoverScrollSample(geometry: geometry)
+                } action: { _, sample in
+                    feedHeader(sample)
+                }
+                // v6 §8: rows the keyboard covers can still be scrolled into view; nothing resizes.
+                .contentMargins(.bottom, DiscoverKeyboardPolicy.contentMargin(keyboardOverlap: keyboardOverlap,
+                                                                              dockClearance: dockClearance),
+                                for: .scrollContent)
+                // Continuation §F2: in landscape the hero artwork also covers the safe areas beside the page.
+                // The clip only widens sideways, so rows still stop at the page's own top and bottom edges.
+                .scrollClipDisabled(layoutContext.isLandscape)
+                .clipShape(HorizontalBleedClip(bleed: layoutContext.isLandscape ? pageBleed.symmetric : 0))
                 // The hero runs under the status bar and, in landscape, under the glass rail.
                 .padding(.leading, -railClearance)
                 .ignoresSafeArea(.container, edges: .top)
@@ -85,11 +111,19 @@ struct DiscoverPage: View {
                 headerBar
                     .background {
                         GeometryReader { g in
-                    Color.clear
-                        .preference(key: DiscoverHeaderHeightKey.self, value: g.size.height)
-                        .preference(key: DiscoverHeaderBottomKey.self, value: g.frame(in: .global).maxY)
-                }
+                            Color.clear
+                                .preference(key: DiscoverHeaderHeightKey.self, value: g.size.height)
+                                .preference(key: DiscoverHeaderBottomKey.self, value: g.frame(in: .global).maxY)
+                        }
                     }
+                    // v6 §8: slides up out of view on downward scroll (only fades with Reduce Motion) and
+                    // comes back on upward scroll. While hidden it takes no touches and VoiceOver skips it.
+                    .offset(y: DiscoverHeaderReveal.offset(hidden: headerHidden, travel: insets.top + headerHeight + 12,
+                                                           reduceMotion: reduceMotion || MotionPreference.reduced))
+                    .opacity(headerHidden ? 0 : 1)
+                    .allowsHitTesting(!headerHidden)
+                    .accessibilityHidden(headerHidden)
+                    .animation(Motion.resolve(Motion.snappy, reduceMotion: reduceMotion), value: headerHidden)
             }
             .onPreferenceChange(DiscoverHeaderHeightKey.self) { headerHeight = $0 }
             .onPreferenceChange(DiscoverHeaderBottomKey.self) { if abs($0 - headerBottom) > 0.5 { headerBottom = $0 } }
@@ -98,15 +132,19 @@ struct DiscoverPage: View {
                 if solid != headerSolid { headerSolid = solid }
             }
         }
+        // v6 §8: the search keyboard never resizes Discover (the hero and header keep their size and the
+        // dock stays anchored); the scroll content's bottom margin makes room instead.
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .foregroundStyle(Color.ink)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-        .sheet(item: $target) { item in
-            TitleDetailView(title: item.title, libraryItem: item.libraryItem, onShowRemote: {
-                target = nil
-                navigator.go(.remote)
-            }, onClose: { target = nil })
-            .environmentObject(RemoteModel.shared)
-            .modifier(DetailZoomDestination(id: item.sourceID, namespace: zoom))
+        // Continuation §F3: a full-width page in landscape, the sheet in portrait (see DetailPresentation).
+        .sheet(item: detailBinding(.sheet)) { item in detailPage(item) }
+        .fullScreenCover(item: detailBinding(.fullScreen)) { item in detailPage(item) }
+        .onChange(of: layoutContext.isLandscape, initial: true) { _, landscape in
+            detailStyle = DetailPresentation.next(current: detailStyle, isPresenting: target != nil, isLandscape: landscape)
+        }
+        .onChange(of: target == nil) { _, closed in
+            if closed { detailStyle = DetailPresentation.style(isLandscape: layoutContext.isLandscape) }
         }
         .sheet(item: $playTarget) { title in
             StreamPickerSheet(title: title, onHandoff: { launchNote = $0 })
@@ -118,32 +156,43 @@ struct DiscoverPage: View {
         }
         .task { await model.loadHomeIfNeeded() }
         // Adaptive theme: the featured artwork (or the title being viewed) feeds the ONE shared palette.
-        .onChange(of: model.featured?.id) { _ in publishArtwork() }
-        .onChange(of: target?.id) { _ in publishArtwork() }
-        .onChange(of: heroID) { _ in publishArtwork() }
+        .onChange(of: model.featured?.id) { _, _ in publishArtwork() }
+        .onChange(of: target?.id) { _, _ in publishArtwork() }
+        .onChange(of: heroID) { _, _ in publishArtwork() }
         .task { if account.state == .signedIn, account.libraryPhase == .idle { await account.refresh() } }
         // Phase 7.4: Search shortcut from the Remote page. The navigator fires only once Discover has
         // finished sliding in and the field is mounted (SearchFocusPolicy); no fixed delay.
-        .onChange(of: navigator.searchFocusFire) { _ in searching = true }
-        .onChange(of: scenePhase) { navigator.sceneActiveChanged($0 == .active) }
+        .onChange(of: navigator.searchFocusFire) { _, _ in searching = true }
+        .onChange(of: scenePhase) { _, phase in navigator.sceneActiveChanged(phase == .active) }
+        // v6 §8: the header comes back whenever search is wanted or the content changes under it.
+        .onChange(of: searching) { _, focused in if focused { revealHeader() } }
+        .onChange(of: voiceOverEnabled) { _, enabled in if enabled { revealHeader() } }
+        .onChange(of: model.filter) { _, _ in revealHeader() }
+        .onChange(of: model.isSearching) { _, _ in revealHeader() }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            keyboardChanged(note)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            if keyboardOverlap != 0 { keyboardOverlap = 0 }
+        }
     }
 
     /// Floating glass header over the hero. Search stays reachable at all times; in landscape the filter
-    /// sits beside it (one row). AnyLayout keeps the field's identity, so focus survives rotation.
+    /// sits beside it (one row). DiscoverHeaderLayout keeps each control's identity, so focus survives rotation (§F1).
     /// Once rows scroll beneath it a canvas-coloured veil fades in behind it for legibility.
     private var headerBar: some View {
         let solid = headerSolid || !showsHero
-        return header {
-            HStack(spacing: 10) {
+        // §G1: the header's glass renders as one group (spacing 0: the shapes never merge).
+        return GlassGroup(spacing: 0) {
+            DiscoverHeaderLayout(isLandscape: layoutContext.isLandscape) {
                 searchField
                 accountButton
+                GlassSegmented(
+                    items: [GlassSegmented<DiscoverModel.Filter>.Item(value: .all, title: "All", symbol: nil),
+                            GlassSegmented<DiscoverModel.Filter>.Item(value: .movies, title: "Movies", symbol: nil),
+                            GlassSegmented<DiscoverModel.Filter>.Item(value: .series, title: "Series", symbol: nil)],
+                    selection: $model.filter, height: DiscoverHeaderLayout.filterHeight)
             }
-            GlassSegmented(
-                items: [GlassSegmented<DiscoverModel.Filter>.Item(value: .all, title: "All", symbol: nil),
-                        GlassSegmented<DiscoverModel.Filter>.Item(value: .movies, title: "Movies", symbol: nil),
-                        GlassSegmented<DiscoverModel.Filter>.Item(value: .series, title: "Series", symbol: nil)],
-                selection: $model.filter, height: 36)
-            .frame(maxWidth: layoutContext.isLandscape ? 300 : .infinity)
         }
         .padding(.horizontal, 16).padding(.top, layoutContext.isLandscape ? 6 : 10).padding(.bottom, 8)
         // Phase 7.1: taps in the gaps of the floating header stop here instead of reaching the hero below.
@@ -156,14 +205,28 @@ struct DiscoverPage: View {
                 .padding(.bottom, -18)
                 .ignoresSafeArea(.container, edges: .top)
                 .opacity(solid ? 1 : 0)
-                .animation(.easeInOut(duration: 0.2), value: solid)
+                .animation(Motion.adaptive(Motion.fade), value: solid)
                 .allowsHitTesting(false)
         }
     }
 
-    /// Portrait: search row above the filter. Landscape: one row, so more of the catalogue is visible.
-    private var header: AnyLayout {
-        layoutContext.isLandscape ? AnyLayout(HStackLayout(spacing: 12)) : AnyLayout(VStackLayout(spacing: 10))
+    private func feedHeader(_ sample: DiscoverScrollSample) {
+        let changed = headerTracker.state.update(offset: sample.offset, maxOffset: sample.maxOffset,
+                                                 topZone: DiscoverHeaderReveal.topZone(headerHeight: headerHeight),
+                                                 pinned: searching || voiceOverEnabled)
+        if changed { headerHidden = headerTracker.state.hidden }
+    }
+
+    private func revealHeader() {
+        headerTracker.state.reveal()
+        if headerHidden { headerHidden = false }
+    }
+
+    private func keyboardChanged(_ note: Notification) {
+        guard let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+        let screenHeight = (note.object as? UIScreen)?.bounds.height ?? frame.maxY
+        let overlap = DiscoverKeyboardPolicy.overlap(keyboardFrame: frame, screenHeight: screenHeight)
+        if abs(overlap - keyboardOverlap) > 0.5 { keyboardOverlap = overlap }
     }
 
     private func publishArtwork() {
@@ -181,7 +244,7 @@ struct DiscoverPage: View {
                 .submitLabel(.search)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.words)
-                .onChange(of: model.query) { _ in model.queryChanged() }
+                .onChange(of: model.query) { _, _ in model.queryChanged() }
                 .onSubmit { searching = false }
             if !model.query.isEmpty {
                 Button { model.query = ""; model.queryChanged(); searching = true } label: {
@@ -246,7 +309,8 @@ struct DiscoverPage: View {
                          onPlay: { title in
                              if title.kind == .movie { searching = false; playTarget = title } else { open(title) }
                          },
-                         headerBottom: headerBottom)
+                         headerBottom: headerHidden ? 0 : headerBottom,
+                         bleed: layoutContext.isLandscape ? pageBleed : .zero)
         }
     }
 
@@ -599,6 +663,20 @@ struct DiscoverPage: View {
         }
     }
 
+    private func detailBinding(_ style: DetailPresentation) -> Binding<DetailTarget?> {
+        Binding(get: { detailStyle == style ? target : nil },
+                set: { if $0 == nil && detailStyle == style { target = nil } })
+    }
+
+    private func detailPage(_ item: DetailTarget) -> some View {
+        TitleDetailView(title: item.title, libraryItem: item.libraryItem, onShowRemote: {
+            target = nil
+            navigator.go(.remote)
+        }, onClose: { target = nil })
+        .environmentObject(RemoteModel.shared)
+        .modifier(DetailZoomDestination(id: item.sourceID, namespace: zoom))
+    }
+
     private func open(_ title: MediaTitle, zoomID: String? = nil) {
         searching = false; launchNote = ""
         target = DetailTarget(title: title, libraryItem: account.item(id: title.id), sourceID: zoomID)
@@ -718,7 +796,7 @@ struct PosterButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.965 : 1)
             .opacity(configuration.isPressed ? 0.9 : 1)
-            .animation(configuration.isPressed ? .easeOut(duration: 0.12) : Motion.snappy, value: configuration.isPressed)
+            .animation(Motion.adaptive(configuration.isPressed ? Motion.press : Motion.snappy), value: configuration.isPressed)
     }
 }
 
@@ -744,7 +822,7 @@ struct UnclippedHScroll<Content: View>: View {
 
 private struct ScrollClipOff: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 17.0, *) { content.scrollClipDisabled() } else { content }
+        content.scrollClipDisabled()
     }
 }
 

@@ -26,6 +26,7 @@ final class ProfileStore: ObservableObject {
     private let appliesGlobally: Bool
     private var images: [UUID: UIImage] = [:]
     private var themeWatch: AnyCancellable?
+    private var ambientWatch: AnyCancellable?
 
     init(directory: URL? = nil, defaults: UserDefaults = .standard, appliesGlobally: Bool = true) {
         let folder = directory ?? Self.defaultDirectory()
@@ -34,7 +35,10 @@ final class ProfileStore: ObservableObject {
         var initial = stored
         if initial.isEmpty {
             var settings = ProfileSettings()
-            if appliesGlobally { settings.themeID = ThemeStore.shared.selected.rawValue }
+            if appliesGlobally {
+                settings.themeID = ThemeStore.shared.selected.rawValue
+                settings.ambientID = ThemeStore.shared.ambient.rawValue
+            }
             initial = [UserProfile(name: "Me", settings: settings)]
         }
         let saved = defaults.string(forKey: Self.activeKey).flatMap(UUID.init(uuidString:))
@@ -53,6 +57,13 @@ final class ProfileStore: ObservableObject {
             .sink { [weak self] theme in
                 Task { @MainActor [weak self] in self?.recordTheme(theme) }
             }
+        // §G3: so are ambient changes; each profile keeps its own.
+        ambientWatch = ThemeStore.shared.$ambient
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] style in
+                Task { @MainActor [weak self] in self?.recordAmbient(style) }
+            }
     }
 
     var active: UserProfile { profiles.first { $0.id == activeID } ?? profiles[0] }
@@ -65,6 +76,7 @@ final class ProfileStore: ObservableObject {
         guard canAddProfile, let name = UserProfile.cleanedName(raw) else { return nil }
         var settings = ProfileSettings()
         settings.themeID = active.settings.themeID
+        settings.ambientID = active.settings.ambientID
         settings.posterOrientation = active.settings.posterOrientation
         let profile = UserProfile(name: name, tint: nextTint(), settings: settings)
         profiles.append(profile)
@@ -165,12 +177,27 @@ final class ProfileStore: ObservableObject {
                 ThemeStore.shared.selected = theme
             }
         }
+        // §G3: the profile's ambient. Appearance only: TV connections, input and helpers live in
+        // models above the themed views and are never touched here.
+        if let style = profile.settings.ambient, ThemeStore.shared.ambient != style {
+            if animated && !MotionPreference.reduced {
+                withAnimation(Motion.theme) { ThemeStore.shared.ambient = style }
+            } else {
+                ThemeStore.shared.ambient = style
+            }
+        }
         AddonStore.shared.load(profile: profile.id)
     }
 
     private func recordTheme(_ theme: ThemeID) {
         guard let i = index(of: activeID), profiles[i].settings.themeID != theme.rawValue else { return }
         profiles[i].settings.themeID = theme.rawValue
+        save()
+    }
+
+    private func recordAmbient(_ style: AmbientStyle) {
+        guard let i = index(of: activeID), profiles[i].settings.ambientID != style.rawValue else { return }
+        profiles[i].settings.ambientID = style.rawValue
         save()
     }
 

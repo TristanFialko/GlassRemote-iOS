@@ -37,23 +37,6 @@ final class Phase6Tests: XCTestCase {
         XCTAssertFalse(PagerGesturePolicy.inRail(x: 10, width: 393, railZone: 0, rightToLeft: false))
     }
 
-    @MainActor func testPageDepth() {
-        let pages = AppPage.allCases
-        XCTAssertGreaterThanOrEqual(pages.count, 2)
-        let a = pages[0], b = pages[1]
-        let delta = CGFloat(b.rawValue - a.rawValue)
-        XCTAssertEqual(PageDepth.distance(of: a, current: a, travel: 0, width: 400), 0, accuracy: 0.0001)
-        XCTAssertEqual(PageDepth.distance(of: b, current: a, travel: 0, width: 400), 1, accuracy: 0.0001)
-        // Halfway through a swipe towards `b`, both pages are half a page from the centre.
-        XCTAssertEqual(PageDepth.distance(of: b, current: a, travel: -200 * delta, width: 400), 0.5, accuracy: 0.0001)
-        XCTAssertEqual(PageDepth.distance(of: a, current: a, travel: -200 * delta, width: 400), 0.5, accuracy: 0.0001)
-        XCTAssertEqual(PageDepth.scale(0, reduceMotion: false), 1, accuracy: 0.0001)
-        XCTAssertLessThan(PageDepth.scale(1, reduceMotion: false), 1)
-        XCTAssertEqual(PageDepth.scale(1, reduceMotion: true), 1, accuracy: 0.0001)
-        XCTAssertEqual(PageDepth.opacity(1, reduceMotion: true), 1, accuracy: 0.0001)
-        XCTAssertEqual(PageDepth.opacity(0, reduceMotion: false), 1, accuracy: 0.0001)
-    }
-
     @MainActor func testScrubGeometry() {
         let seg = ScrubGeometry.segment(length: 300, inset: 6, count: 3)
         XCTAssertEqual(seg, 96, accuracy: 0.001)

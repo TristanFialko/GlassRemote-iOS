@@ -211,15 +211,19 @@ extension GlassTheme {
     var dockInk: Color { isLight ? Color(white: 0.08) : .white }
     var dockInkInactive: Color { isLight ? Color(white: 0.08).opacity(0.62) : Color.white.opacity(0.70) }
 
-    /// Accent used to tint selected lenses. Adaptive clamps its luminance so a very bright artwork
-    /// colour can never wash out the selected label; fixed themes use their accent unchanged.
+    /// Accent for the selected icon or label beneath a lens (the glass itself stays clear). Adaptive
+    /// clamps its luminance so a very bright artwork colour can never wash out the selected label;
+    /// fixed themes use their accent unchanged.
     var lensTint: Color {
         guard id == .adaptive else { return accent }
         return ColorMath.clamped(accent, maxLuminance: isLight ? 0.30 : 0.36)
     }
-    /// Selected-lens fill and edge: obvious on light surfaces, a faint rim on dark ones.
-    var lensFill: Color { isLight ? lensTint.opacity(0.14) : .clear }
-    var lensEdge: Color { isLight ? lensTint.opacity(0.55) : rim.opacity(0.18) }
+    /// Phase 9 recovery §2B: the selection bubble itself is clear glass on every theme. A faint
+    /// neutral wash and edge (ink on light themes, the rim on dark) show where it sits; the accent
+    /// goes on the selected icon or label beneath it (SelectorInk / DockStyle), never on the glass.
+    var lensGlassTint: Color { isLight ? Color(white: 0.10).opacity(0.04) : Color.white.opacity(0.04) }
+    var lensFill: Color { isLight ? Color(white: 0.10).opacity(0.05) : .clear }
+    var lensEdge: Color { isLight ? Color(white: 0.10).opacity(0.24) : rim.opacity(0.18) }
 
     /// Outline drawn on ordinary glass: light themes only (dark glass already carries its own rim).
     var controlEdge: Color { isLight ? edge : .clear }
@@ -601,6 +605,12 @@ enum AmbientStyle: String, CaseIterable, Identifiable {
     }
 }
 
+/// What a piece of Adaptive-theme artwork belongs to.
+enum ArtworkSource: Hashable {
+    case discover
+    case nowPlaying
+}
+
 @MainActor
 final class ThemeStore: ObservableObject {
     static let shared = ThemeStore()
@@ -619,8 +629,9 @@ final class ThemeStore: ObservableObject {
     /// The ONE shared Adaptive palette. Pages only submit artwork; none derives its own colours.
     @Published private(set) var palette: ArtworkPalette = .neutral
 
-    private var sources: [AppPage: URL] = [:]
+    private var sources: [ArtworkSource: URL] = [:]
     private var page: AppPage = .remote
+    private var playerPresented = false
     private var cache: [URL: ArtworkPalette] = [:]
     private var task: Task<Void, Never>?
     private var settleTask: Task<Void, Never>?
@@ -639,10 +650,17 @@ final class ThemeStore: ObservableObject {
         return selected == .adaptive ? base.adapted(to: palette) : base
     }
 
-    /// A page tells the store which artwork it is currently showing (nil = none).
-    func submitArtwork(_ url: URL?, for page: AppPage) {
-        guard sources[page] != url else { return }
-        sources[page] = url
+    /// Discover (its hero) or Now Playing (the session's artwork) reports what it is showing (nil = none).
+    func submitArtwork(_ url: URL?, for source: ArtworkSource) {
+        guard sources[source] != url else { return }
+        sources[source] = url
+        recompute()
+    }
+
+    /// v5 §2: Now Playing is presented over the pages rather than being one.
+    func playerPresentationChanged(_ presented: Bool) {
+        guard playerPresented != presented else { return }
+        playerPresented = presented
         recompute()
     }
 
@@ -652,11 +670,15 @@ final class ThemeStore: ObservableObject {
         recompute()
     }
 
-    /// Discover and Player prefer their own artwork; Remote follows what is playing, else Discover.
-    private var activeURL: URL? {
+    private var activeURL: URL? { Self.resolveActiveURL(page: page, playerPresented: playerPresented, sources: sources) }
+
+    /// Now Playing (when open) and Discover prefer their own artwork; Remote and Profile follow what is
+    /// playing, else Discover.
+    static func resolveActiveURL(page: AppPage, playerPresented: Bool, sources: [ArtworkSource: URL]) -> URL? {
+        if playerPresented { return sources[.nowPlaying] ?? sources[.discover] }
         switch page {
-        case .discover: return sources[.discover] ?? sources[.player]
-        case .player, .remote, .profile: return sources[.player] ?? sources[.discover]
+        case .discover: return sources[.discover] ?? sources[.nowPlaying]
+        case .remote, .profile: return sources[.nowPlaying] ?? sources[.discover]
         }
     }
 
@@ -694,7 +716,7 @@ final class ThemeStore: ObservableObject {
 
     private func commit(_ new: ArtworkPalette) {
         guard new != palette else { return }
-        withAnimation(.easeInOut(duration: 0.8)) { palette = new }
+        withAnimation(Motion.adaptive(Motion.ambient)) { palette = new }
     }
 }
 
@@ -906,7 +928,7 @@ struct ThemePickerSheet: View {
         let preview = preview(for: id)
         let on = store.selected == id
         return Button {
-            withAnimation(.easeInOut(duration: 0.35)) { store.selected = id }
+            withAnimation(Motion.adaptive(Motion.theme)) { store.selected = id }
             Haptics.soft()
         } label: {
             VStack(spacing: 8) {
@@ -941,7 +963,7 @@ struct ThemePickerSheet: View {
                 HStack(spacing: 10) {
                     ForEach(AmbientStyle.allCases) { style in
                         let on = store.ambient == style
-                        Button { withAnimation(.easeInOut(duration: 0.35)) { store.ambient = style }; Haptics.soft() } label: {
+                        Button { withAnimation(Motion.adaptive(Motion.theme)) { store.ambient = style }; Haptics.soft() } label: {
                             VStack(spacing: 6) {
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.ink.opacity(0.08))

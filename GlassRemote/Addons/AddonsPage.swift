@@ -216,7 +216,7 @@ struct AddAddonSheet: View {
         Task {
             do {
                 let addon = try await store.install(from: text, replacing: replacing)
-                withAnimation(Motion.snappy) {
+                withAnimation(Motion.adaptive(Motion.snappy)) {
                     installed = addon
                     link = ""
                 }
@@ -224,7 +224,7 @@ struct AddAddonSheet: View {
             } catch is CancellationError {
                 // The profile changed while installing; nothing to report.
             } catch {
-                withAnimation(Motion.snappy) {
+                withAnimation(Motion.adaptive(Motion.snappy)) {
                     failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 }
             }

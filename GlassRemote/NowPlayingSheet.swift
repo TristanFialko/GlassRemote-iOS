@@ -35,19 +35,22 @@ struct NowPlayingSheet: View {
 
                 timeline(media: media)
 
+                // Phase 9 §A4: the same capability rules as the Player page. Track skip only for explicit
+                // audio-track sessions (never video, never Nuvio episode navigation); otherwise relative seek.
+                let controls = PlayerControls.resolve(media: media)
                 HStack(spacing: 26) {
-                    if media.canPrevious || media.canRewind {
-                        control(media.canPrevious ? "backward.end.fill" : "backward.fill", media.canPrevious ? "Previous" : "Rewind", 56) {
-                            remote.sendMedia(media.canPrevious ? .previous : .rewind)
-                        }
+                    if controls.previousTrack {
+                        control("backward.end.fill", "Previous track", 56) { remote.sendMedia(.previous) }
+                    } else if controls.rewind {
+                        control("backward.fill", "Rewind", 56) { remote.sendMedia(.rewind) }
                     }
-                    control(media.isPlaying ? "pause.fill" : "play.fill", media.isPlaying ? "Pause" : "Play", 76, enabled: media.isActive && media.canPlayPause, elevated: true) {
-                        remote.sendMedia(media.isPlaying ? .pause : .play)
+                    control(media.isPlaying ? "pause.fill" : "play.fill", media.isPlaying ? "Pause" : "Play", 76, enabled: controls.playPause, elevated: true) {
+                        remote.sendMedia(PlayerControls.playPauseCommand(for: media))
                     }
-                    if media.canNext || media.canFastForward {
-                        control(media.canNext ? "forward.end.fill" : "forward.fill", media.canNext ? "Next" : "Fast forward", 56) {
-                            remote.sendMedia(media.canNext ? .next : .fastForward)
-                        }
+                    if controls.nextTrack {
+                        control("forward.end.fill", "Next track", 56) { remote.sendMedia(.next) }
+                    } else if controls.fastForward {
+                        control("forward.fill", "Fast forward", 56) { remote.sendMedia(.fastForward) }
                     }
                 }
                 Spacer(minLength: 0)
@@ -56,7 +59,7 @@ struct NowPlayingSheet: View {
             .padding(.horizontal, 24).padding(.top, 14).padding(.bottom, 12)
         }
         .themedSheet()
-        .onChange(of: media.isActive) { active in if !active { dismiss() } }  // single-parameter form: deployment target is iOS 16
+        .onChange(of: media.isActive) { _, active in if !active { dismiss() } }
     }
 
     private func artwork(app: TVApp?, media: MediaState) -> some View {

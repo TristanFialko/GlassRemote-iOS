@@ -1,16 +1,28 @@
 import SwiftUI
 
-/// Page 2: cinematic player. Independent of the Remote page: it only reads `remote.media`
-/// (the shared, read-only `dumpsys media_session` poll) and sends transport commands through
-/// `RemoteModel.sendMedia`, which uses explicit Play / Pause and confirms against the session.
+/// Now Playing (v5 §3), laid out like the Apple Music player. Independent of the Remote page: it only
+/// reads `remote.media` (the shared, read-only `dumpsys media_session` poll) and sends transport
+/// commands through `RemoteModel.sendMedia`, which uses explicit Play / Pause and confirms against the
+/// session.
 ///
-/// Real data: title, optional subtitle, playback state, position (extrapolated between polls) and
-/// the actions the session advertises. Artwork is looked up from Cinemeta by title. NOT available from the box: duration and
-/// seeking to a position. So there is no scrubber and no remaining time.
+/// Portrait: a large near-square artwork dominates the upper screen; below it one compact, left-aligned
+/// group holds the title and artist line, a thin timeline, plain transport glyphs and the compact
+/// volume row (the same Samsung volume pipeline as the Remote slider). Landscape: two columns, the
+/// artwork on the left and that group on the right, with the rail still visible.
+///
+/// Real data only: title, optional subtitle, playback state, position (extrapolated between polls) and
+/// the actions the session advertises. The box reports no duration and no way to seek to a position,
+/// so the timeline is display-only and appears only with a real duration; rewind and fast-forward use
+/// the app's own relative step (SEEKING_REPORT.md). The full-screen artwork background, and its
+/// no-artwork fallback, are drawn once by `RootPagerView` (PlayerBackdrop.swift), so they run unbroken
+/// behind the dock and the rail and are never redrawn by the playback clock.
 struct PlayerPage: View {
     @EnvironmentObject private var remote: RemoteModel
+    @EnvironmentObject private var navigator: PageNavigator
     @ObservedObject private var artwork = PlayerArtworkStore.shared
     @Environment(\.glassTheme) private var theme
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Environment(\.dockClearance) private var dockClearance
     @Environment(\.layoutContext) private var layoutContext
@@ -19,45 +31,32 @@ struct PlayerPage: View {
         let media = remote.media
         let app = remote.apps.first(where: { $0.package == media.package })
         let sessionTitle = media.headline.isEmpty ? media.title : media.headline
-        let portraitURL = media.isActive ? artwork.posterURL(forSessionTitle: sessionTitle) : nil
-        let landscapeURL = (media.isActive && portraitURL == nil) ? artwork.landscapeURL(forSessionTitle: sessionTitle) : nil
-        let poster = portraitURL ?? landscapeURL
-        let isLandscape = portraitURL == nil && landscapeURL != nil
+        let posterURL = media.isActive ? artwork.posterURL(forSessionTitle: sessionTitle) : nil
+        let landscapeURL = (media.isActive && posterURL == nil) ? artwork.landscapeURL(forSessionTitle: sessionTitle) : nil
+        let art = posterURL ?? landscapeURL
+        let scene = PlayerScene(media: media,
+                                app: app,
+                                art: art,
+                                kind: PlayerArtworkKind.resolve(posterURL: posterURL, landscapeURL: landscapeURL),
+                                controls: PlayerControls.resolve(media: media),
+                                key: PlayerTransition.key(media: media))
 
-        GeometryReader { proxy in
-            if layoutContext.isLandscape {
-                landscapeLayout(proxy: proxy, app: app, media: media, poster: poster,
-                                artworkIsLandscape: isLandscape, sessionTitle: sessionTitle)
-            } else {
-                // Phase 4.3: modestly larger than Phase 4.2 (0.38 / 0.31, max 320): 42 % of the height on tall
-                // phones (34 % on small ones), between 170 and 350 pt.
-                // The transport bar is pinned just above the dock so nothing can sit under it.
-                let posterHeight = min(max(proxy.size.height * (proxy.size.height < 700 ? 0.34 : 0.42), 170), 350)
-                VStack(spacing: 0) {
-                    ScrollView(showsIndicators: false) {
-                        VStack(spacing: 12) {
-                            artworkCard(app: app, media: media, poster: poster, height: posterHeight, landscape: isLandscape, maxWidth: proxy.size.width - 48)
-                                .padding(.top, 4)
-                            Group {
-                                titleBlock(app: app, media: media)
-                                playbackBlock(media: media)
-                            }
-                            .id(sessionTitle + media.package)        // new title = soft cross-fade
-                            .transition(.opacity)
-                            if !media.isActive { emptyHint }
-                        }
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 8)
-                        .animation(.easeInOut(duration: 0.35), value: sessionTitle)
-                    }
-                    transport(media: media)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 6)
-                        .padding(.bottom, dockClearance + 6)
+        VStack(spacing: 0) {
+            // v5 §2: Now Playing is presented over the pages; this closes it (so does any dock item).
+            if !layoutContext.isLandscape {
+                closeButton.frame(maxWidth: .infinity)
+            }
+            GeometryReader { proxy in
+                if layoutContext.isLandscape {
+                    landscapeLayout(size: proxy.size, scene: scene)
+                } else {
+                    portraitLayout(scene: scene)
                 }
             }
         }
-        .background { ambientLight }
+        .overlay(alignment: .topTrailing) {
+            if layoutContext.isLandscape { closeButton.padding(.trailing, 4) }
+        }
         .foregroundStyle(Color.ink)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         // Nuvio's media session is not known to carry artwork: look the title up so playback started in Nuvio itself
@@ -66,93 +65,147 @@ struct PlayerPage: View {
             guard media.isActive, PlayerArtworkStore.usesCatalogue(package: media.package), !sessionTitle.isEmpty else { return }
             await artwork.resolve(sessionTitle: sessionTitle, subtitle: media.subtitle)
         }
-        // Adaptive theme: this page only reports its artwork; the shared palette decides the colours.
-        .onChange(of: poster) { ThemeStore.shared.submitArtwork($0, for: .player) }
-        .onAppear { ThemeStore.shared.submitArtwork(poster, for: .player) }
-    }
-
-    /// Landscape: the artwork stands at the page's height on the leading side; title, playback state and
-    /// the transport bar sit beside it, so the controls stay in reach without scrolling.
-    private func landscapeLayout(proxy: GeometryProxy, app: TVApp?, media: MediaState, poster: URL?,
-                                 artworkIsLandscape: Bool, sessionTitle: String) -> some View {
-        let column = min(proxy.size.width * 0.5, 440)
-        let artMax = max(proxy.size.width - 48 - 28 - column, 120)
-        // Capped by the column too: app artwork is 0.72 x height wide, posters 2/3.
-        let artHeight = min(max(proxy.size.height - dockClearance - 40, 150), 320, artMax / 0.72)
-        let infoHeight = max(proxy.size.height - 12 - (dockClearance + 6) - 80 - 10, 0)
-        return HStack(spacing: 28) {
-            artworkCard(app: app, media: media, poster: poster, height: artHeight, landscape: artworkIsLandscape, maxWidth: artMax)
-                .frame(maxWidth: .infinity)
-            VStack(spacing: 10) {
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 12) {
-                        Group {
-                            titleBlock(app: app, media: media)
-                            playbackBlock(media: media)
-                        }
-                        .id(sessionTitle + media.package)        // new title = soft cross-fade
-                        .transition(.opacity)
-                        if !media.isActive { emptyHint }
-                    }
-                    // Centred while it fits, scrolls at the largest text sizes.
-                    .frame(maxWidth: .infinity, minHeight: infoHeight)
-                    .animation(.easeInOut(duration: 0.35), value: sessionTitle)
-                }
-                transport(media: media)
-            }
-            .frame(width: column)
+        // Adaptive theme: this page only reports its artwork; the shared palette decides the colours. The
+        // backdrop store makes the background once per artwork, not per poll.
+        .onChange(of: art) { _, url in
+            ThemeStore.shared.submitArtwork(url, for: .nowPlaying)
+            PlayerBackdropStore.shared.show(url)
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 12)
-        .padding(.bottom, dockClearance + 6)
+        .onAppear {
+            ThemeStore.shared.submitArtwork(art, for: .nowPlaying)
+            PlayerBackdropStore.shared.show(art)
+        }
     }
 
-    /// Soft light pooled behind the artwork, from the shared theme (the accent when Adaptive).
-    private var ambientLight: some View {
-        RadialGradient(colors: [theme.accent.opacity(theme.id == .adaptive ? 0.34 : 0.07), .clear],
-                       center: .init(x: 0.5, y: 0.2), startRadius: 10, endRadius: 360)
-            .blur(radius: 30)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
+    private var closeButton: some View {
+        Button { navigator.closePlayer() } label: {
+            Image(systemName: "chevron.down")
+                .scaledFont(18, .semibold)
+                .foregroundStyle(Color.inkAlpha(0.78))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(DockButtonStyle())
+        .accessibilityLabel("Close Now Playing")
+    }
+
+    // MARK: Layouts
+
+    /// Portrait: the artwork takes everything above the controls, so it dominates; the controls are
+    /// measured at their natural height and sit just above the dock.
+    private func portraitLayout(scene: PlayerScene) -> some View {
+        VStack(spacing: PlayerLayoutPolicy.portraitGap) {
+            GeometryReader { region in
+                let frame = PlayerLayoutPolicy.nowPlayingArtwork(kind: scene.kind, region: region.size)
+                ZStack {
+                    artworkCard(scene: scene, size: frame)
+                        .id(scene.key)                       // artwork and metadata change together
+                        .transition(.opacity)
+                }
+                .frame(width: region.size.width, height: region.size.height)
+            }
+            controlsColumn(scene: scene)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .animation(Motion.adaptive(Motion.content), value: scene.key)
+        .padding(.horizontal, PlayerLayoutPolicy.nowPlayingMargin)
+        .padding(.top, 4)
+        .padding(.bottom, dockClearance + 8)
+    }
+
+    /// Landscape: a square artwork region on the leading side; the same compact group beside it. The
+    /// rail stays visible (the page already starts after it). Not a rotated portrait layout.
+    private func landscapeLayout(size: CGSize, scene: PlayerScene) -> some View {
+        let split = PlayerLayoutPolicy.landscape(page: size, bottomClearance: dockClearance)
+        let frame = PlayerLayoutPolicy.nowPlayingArtwork(kind: scene.kind,
+                                                         region: CGSize(width: split.artSide, height: split.artSide))
+        return HStack(spacing: split.spacing) {
+            ZStack {
+                artworkCard(scene: scene, size: frame)
+                    .id(scene.key)
+                    .transition(.opacity)
+            }
+            .frame(width: split.artSide, height: split.artSide)
+            controlsColumn(scene: scene)
+                .frame(width: split.column)
+        }
+        .animation(Motion.adaptive(Motion.content), value: scene.key)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.bottom, dockClearance)
+    }
+
+    /// The compact group under (or beside) the artwork: title, timeline, transport, volume.
+    private func controlsColumn(scene: PlayerScene) -> some View {
+        VStack(alignment: .leading, spacing: PlayerLayoutPolicy.controlSpacing) {
+            ZStack(alignment: .leading) {
+                titleBlock(app: scene.app, media: scene.media)
+                    .id(scene.key)
+                    .transition(.opacity)
+            }
+            statusBlock(scene: scene)
+            if scene.media.isActive {
+                transport(media: scene.media, controls: scene.controls)
+                    .transition(.opacity)
+            }
+            PlayerVolumeBar()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Artwork
 
-    private func artworkCard(app: TVApp?, media: MediaState, poster: URL?, height: CGFloat, landscape: Bool, maxWidth: CGFloat) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
-        let portrait = poster != nil
+    private func artworkCard(scene: PlayerScene, size: CGSize) -> some View {
+        let shape = RoundedRectangle(cornerRadius: PlayerLayoutPolicy.artworkCornerRadius, style: .continuous)
+        let hasArt = scene.art != nil
+        let label: String = {
+            switch scene.kind {
+            case .poster: return "Poster"
+            case .landscape: return "Artwork"
+            case .appIcon: return "App artwork"
+            }
+        }()
+        let scale = PlayerLayoutPolicy.artworkScale(isPlaying: scene.media.isPlaying || !scene.media.isActive,
+                                                    reduceMotion: reduceMotion)
         return ZStack {
-            shape.fill(Color.black.opacity(0.55))
-            if let poster {
-                CachedArtwork(url: poster, contentMode: .fill) { fallbackIcon(app: app, media: media) }
+            if let art = scene.art {
+                shape.fill(Color.black.opacity(0.4))
+                // Filled and centre-cropped to the card's own proportions: crisp, never stretched.
+                CachedArtwork(url: art, contentMode: .fill) { fallbackArt(app: scene.app, media: scene.media, side: size.width) }
             } else {
-                fallbackIcon(app: app, media: media)
+                fallbackArt(app: scene.app, media: scene.media, side: size.width)
             }
         }
-        // Portrait 2:3 posters, 16:9 for landscape artwork (width-limited to the screen), a smaller square for
-        // app artwork. Each source gets its own frame, so nothing is stretched.
-        .frame(width: landscape ? min(maxWidth, height * 16 / 9 * 0.8) : (portrait ? height * 2 / 3 : height * 0.72),
-               height: landscape ? min(maxWidth, height * 16 / 9 * 0.8) * 9 / 16 : (portrait ? height : height * 0.72))
+        .frame(width: size.width, height: size.height)
         .clipShape(shape)
-        .overlay(shape.stroke(Color.ink.opacity(0.22), lineWidth: 0.8))
-        .shadow(color: (portrait ? theme.accent : Color.black).opacity(portrait ? 0.35 : 0.5), radius: 22, y: 12)
-        .animation(.spring(response: 0.5, dampingFraction: 0.86), value: poster)
-        .accessibilityLabel(portrait ? (landscape ? "Artwork" : "Poster") : "App artwork")
+        .overlay { shape.stroke(Color.ink.opacity(0.14), lineWidth: 0.6) }
+        .shadow(color: Color.black.opacity(hasArt ? 0.38 : 0.22), radius: 26, y: 14)
+        // Like Apple Music: the artwork eases back slightly while paused.
+        .scaleEffect(scale)
+        .animation(Motion.unlessReduced(Motion.settle, reduceMotion: reduceMotion), value: scale)
+        .animation(Motion.adaptive(Motion.poster), value: scene.art)
+        .accessibilityLabel(label)
     }
 
-    @ViewBuilder
-    private func fallbackIcon(app: TVApp?, media: MediaState) -> some View {
-        if let app {
-            Image(app.asset == "nuvio" ? "nuvio_nowplaying" : "\(app.asset)_dark")
-                .resizable().scaledToFit().padding(app.asset == "nuvio" ? 64 : 36)
-        } else {
-            Image(systemName: media.isActive ? AppPage.playerSymbolOutline : "tv")
-                .scaledFont(56, .light).foregroundStyle(Color.ink.opacity(0.4))
+    /// The no-artwork card: a soft wash of the theme accent with the app's own artwork (or a symbol).
+    private func fallbackArt(app: TVApp?, media: MediaState, side: CGFloat) -> some View {
+        ZStack {
+            LinearGradient(colors: [theme.accent.opacity(0.55), theme.accent.opacity(0.22)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            Color.ink.opacity(0.04)
+            if let app {
+                Image(app.asset == "nuvio" ? "nuvio_nowplaying" : "\(app.asset)_dark")
+                    .resizable().scaledToFit()
+                    .padding(max(side, 0) * (app.asset == "nuvio" ? 0.28 : 0.24))
+            } else {
+                Image(systemName: media.isActive ? AppPage.playerSymbolOutline : "tv")
+                    .scaledFont(56, .light).foregroundStyle(Color.ink.opacity(0.5))
+            }
         }
     }
 
     // MARK: Title
 
+    /// Left-aligned title and artist line, like Apple Music.
     private func titleBlock(app: TVApp?, media: MediaState) -> some View {
         let name = app?.name ?? (media.package.split(separator: ".").last.map(String.init) ?? "")
         let title: String = {
@@ -160,103 +213,153 @@ struct PlayerPage: View {
             if !media.headline.isEmpty { return media.headline }
             return media.title.isEmpty ? (name.isEmpty ? "Playing" : name) : media.title
         }()
-        return VStack(spacing: 4) {
-            Text(title).scaledFont(22, .bold).multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.8)
-            if media.isActive {
-                // Episode information only when the session really reports a subtitle.
-                if !media.subtitle.isEmpty {
-                    Text(media.subtitle).scaledFont(15, .medium).foregroundStyle(Color.ink.opacity(0.8))
-                        .multilineTextAlignment(.center).lineLimit(2)
-                }
-                Text(name).scaledFont(13, .medium).foregroundStyle(Color.inkAlpha(0.5))
+        // Episode information only when the session really reports a subtitle.
+        let secondary = media.isActive ? PlayerTitlePolicy.secondaryLine(subtitle: media.subtitle, appName: name, title: title) : ""
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .scaledFont(21, .bold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            if !secondary.isEmpty {
+                Text(secondary)
+                    .scaledFont(17)
+                    .foregroundStyle(Color.inkAlpha(0.62))
+                    .lineLimit(1)
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: State, elapsed time
 
-    private func playbackBlock(media: MediaState) -> some View {
-        VStack(spacing: 8) {
-            if media.isActive {
-                stateBadge(media: media)
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    let pos = media.position(at: context.date)
-                    if let dur = media.durationMs, dur > 0 {
-                        let total = Double(dur) / 1000
-                        ProgressView(value: min(pos, total), total: total).tint(theme.accent)
-                        HStack {
-                            Text(MediaState.format(pos))
-                            Spacer()
-                            Text("-" + MediaState.format(max(0, total - pos)))
-                        }
-                        .font(.system(size: 12).monospacedDigit()).foregroundStyle(Color.inkAlpha(0.65))
-                    } else {
-                        Text(MediaState.format(pos))
-                            .font(.system(size: 28, weight: .semibold, design: .rounded).monospacedDigit())
-                            .accessibilityLabel("Elapsed \(MediaState.format(pos))")
-                    }
+    /// Session state and elapsed time. The clock ticks once a second only while playing, re-checks every
+    /// few seconds otherwise, and stops entirely while Now Playing is hidden or the app is inactive.
+    private func statusBlock(scene: PlayerScene) -> some View {
+        let media = scene.media
+        let controls = scene.controls
+        let connected = remote.connected
+        let connecting = remote.isBusyConnecting
+        let interval = PlayerTimeline.refreshInterval(isPlaying: media.state == 3)
+        let paused = PlayerTimeline.isPaused(sceneActive: scenePhase == .active, presented: navigator.playerPresented)
+        return TimelineView(.animation(minimumInterval: interval, paused: paused)) { context in
+            statusContent(media: media, controls: controls,
+                          phase: PlayerSessionPhase.resolve(media: media, connected: connected, connecting: connecting, now: context.date),
+                          now: context.date)
+        }
+    }
+
+    @ViewBuilder
+    private func statusContent(media: MediaState, controls: PlayerControls, phase: PlayerSessionPhase, now: Date) -> some View {
+        let position = PlayerTimeline.position(media: media, phase: phase, at: now)
+        VStack(alignment: .leading, spacing: 6) {
+            if phase.showsSession {
+                if controls.progress, let duration = media.durationMs {
+                    timeline(position: position, total: Double(duration) / 1000)
+                } else {
+                    elapsedRow(phase: phase, position: position)
                 }
-                if media.durationMs == nil {
-                    Text("No total length is reported, so there is no progress bar or exact seeking. Rewind and fast-forward move by the app's own step.")
-                        .scaledFont(11).foregroundStyle(Color.inkAlpha(0.5)).multilineTextAlignment(.center)
+                if controls.rewind || controls.fastForward, let line = seekLine(media: media, now: now) {
+                    Text(line).scaledFont(12, .medium).foregroundStyle(Color.inkAlpha(0.62)).lineLimit(2)
                 }
-                if let line = seekLine(media: media) {
-                    Text(line).scaledFont(12, .medium).foregroundStyle(Color.inkAlpha(0.7))
-                        .multilineTextAlignment(.center).transition(.opacity)
-                }
+            } else {
+                Text(phase.hint).scaledFont(14).foregroundStyle(Color.inkAlpha(0.58))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func stateBadge(media: MediaState) -> some View {
-        let buffering = media.state == 6
-        let label = buffering ? "Buffering" : (media.isPlaying ? "Playing" : "Paused")
-        let colour: Color = buffering ? .yellow : (media.isPlaying ? .green : .orange)
-        return HStack(spacing: 7) {
-            Circle().fill(colour).frame(width: 7, height: 7)
-            Text(label).scaledFont(12, .semibold)
+    /// Thin, display-only timeline: only with a real total length (never today: the box does not
+    /// report one, see SEEKING_REPORT.md). There is no scrubber because nothing can seek to a position.
+    private func timeline(position: TimeInterval, total: TimeInterval) -> some View {
+        let fraction = PlayerTimeline.fraction(position: position, total: total)
+        return VStack(spacing: 6) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.inkAlpha(0.18))
+                    Capsule().fill(Color.inkAlpha(0.82)).frame(width: geo.size.width * fraction)
+                }
+            }
+            .frame(height: PlayerLayoutPolicy.timelineHeight)
+            HStack {
+                Text(MediaState.format(position))
+                Spacer()
+                Text("-" + MediaState.format(max(0, total - position)))
+            }
+            .font(.system(size: 12, weight: .medium).monospacedDigit())
+            .foregroundStyle(Color.inkAlpha(0.6))
         }
-        .padding(.horizontal, 14).frame(height: 28)
-        .glassSurface(Capsule())
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Elapsed \(MediaState.format(position)) of \(MediaState.format(total))")
     }
 
-    // MARK: Transport (one glass bar, one prominent lens)
+    /// Without a duration: the session state and the elapsed time on one quiet row.
+    private func elapsedRow(phase: PlayerSessionPhase, position: TimeInterval) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(stateColour(phase)).frame(width: 7, height: 7)
+            Text(phase.label).scaledFont(13, .semibold)
+            Spacer(minLength: 8)
+            Text(MediaState.format(position))
+                .font(.system(size: 13, weight: .semibold).monospacedDigit())
+        }
+        .foregroundStyle(Color.inkAlpha(0.68))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(phase.label), elapsed \(MediaState.format(position))")
+    }
 
-    private func transport(media: MediaState) -> some View {
-        let active = media.isActive
+    private func stateColour(_ phase: PlayerSessionPhase) -> Color {
+        switch phase {
+        case .playing: return .green
+        case .buffering: return .yellow
+        case .paused: return .orange
+        case .stale, .connecting, .disconnected, .idle: return .gray
+        }
+    }
+
+    // MARK: Transport (plain glyphs, like Apple Music)
+
+    /// Play / pause is primary. Rewind and fast-forward appear only when the session advertises them;
+    /// track skip only for explicit audio-track sessions (never video, never Nuvio). No inert buttons
+    /// and no glass bar: the glyphs sit directly on the artwork backdrop.
+    private func transport(media: MediaState, controls: PlayerControls) -> some View {
         let busy = remote.mediaCommandPending
         // Relabelled "10 s" only once BOTH keys have been measured, repeatedly, at about ten seconds.
         let tenSecond = remote.seekLearner.isTenSecond(package: media.package)
-        return ZStack {
-            // Glass only (bar + centre bubble); the buttons sit above it so they are never refracted.
-            GlassGroup(spacing: 12) {
-                ZStack {
-                    Color.clear.frame(height: 80).glassBar(Capsule(), interactive: false)
-                    Color.clear.frame(width: 62, height: 62).glassLens(Circle())
+        return HStack(spacing: 0) {
+            if controls.previousTrack {
+                control("backward.end.fill", "Previous track", enabled: !busy) { remote.sendMedia(.previous) }
+            }
+            if controls.rewind {
+                control(tenSecond ? "gobackward.10" : "backward.fill", tenSecond ? "Back 10 seconds" : "Rewind", enabled: !busy) {
+                    remote.sendMedia(.rewind)
                 }
             }
-            HStack(spacing: 6) {
-                control("backward.end.fill", "Previous", enabled: active && media.canPrevious && !busy) { remote.sendMedia(.previous) }
-                control(tenSecond ? "gobackward.10" : "backward.fill", tenSecond ? "Back 10 seconds" : "Rewind", enabled: active && media.canRewind && !busy) { remote.sendMedia(.rewind) }
-                playButton(media: media, enabled: active && media.canPlayPause && !busy, busy: busy)
-                control(tenSecond ? "goforward.10" : "forward.fill", tenSecond ? "Forward 10 seconds" : "Fast forward", enabled: active && media.canFastForward && !busy) { remote.sendMedia(.fastForward) }
-                control("forward.end.fill", "Next", enabled: active && media.canNext && !busy) { remote.sendMedia(.next) }
+            playButton(media: media, enabled: controls.playPause && !busy, busy: busy)
+            if controls.fastForward {
+                control(tenSecond ? "goforward.10" : "forward.fill", tenSecond ? "Forward 10 seconds" : "Fast forward", enabled: !busy) {
+                    remote.sendMedia(.fastForward)
+                }
             }
-            .padding(.horizontal, 10)
+            if controls.nextTrack {
+                control("forward.end.fill", "Next track", enabled: !busy) { remote.sendMedia(.next) }
+            }
         }
-        .frame(height: 80)
+        .frame(maxWidth: .infinity)
+        .frame(height: PlayerLayoutPolicy.transportHeight)
     }
 
     private func playButton(media: MediaState, enabled: Bool, busy: Bool) -> some View {
-        Button { remote.sendMedia(media.isPlaying ? .pause : .play) } label: {
+        Button { remote.sendMedia(PlayerControls.playPauseCommand(for: media)) } label: {
             ZStack {
                 if busy { ProgressView().tint(Color.ink) }
-                else { Image(systemName: media.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 28, weight: .semibold)) }
+                else {
+                    Image(systemName: media.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: PlayerLayoutPolicy.playGlyph, weight: .semibold))
+                        .contentTransition(.symbolEffect(.replace))
+                }
             }
-            .frame(width: 62, height: 62)
-            .contentShape(Circle())
+            .frame(maxWidth: .infinity).frame(height: PlayerLayoutPolicy.transportHeight)
+            .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
         .disabled(!enabled)
@@ -266,8 +369,8 @@ struct PlayerPage: View {
 
     private func control(_ icon: String, _ label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon).font(.system(size: 19, weight: .semibold))
-                .frame(maxWidth: .infinity).frame(height: 56)
+            Image(systemName: icon).font(.system(size: PlayerLayoutPolicy.secondaryGlyph, weight: .semibold))
+                .frame(maxWidth: .infinity).frame(height: PlayerLayoutPolicy.transportHeight)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
@@ -276,8 +379,8 @@ struct PlayerPage: View {
     }
 
     /// Honest seek feedback: only what the TV's session confirmed, for a few seconds after the key.
-    private func seekLine(media: MediaState) -> String? {
-        if let report = remote.lastSeek, Date().timeIntervalSince(report.at) < 8 {
+    private func seekLine(media: MediaState, now: Date) -> String? {
+        if let report = remote.lastSeek, now.timeIntervalSince(report.at) < 8 {
             let name = report.command == .rewind ? "Rewind" : "Fast-forward"
             switch report.outcome {
             case .confirmed(let seconds): return "\(name): \(seconds < 0 ? "−" : "+")\(Int(abs(seconds).rounded())) s, confirmed by the TV"
@@ -291,9 +394,44 @@ struct PlayerPage: View {
         func text(_ v: Double?) -> String { v.map { "≈\(Int($0.rounded())) s" } ?? "not measured" }
         return "Measured steps: rewind \(text(back)), fast-forward \(text(forward))"
     }
+}
 
-    private var emptyHint: some View {
-        Text(remote.connected ? "Start something in Nuvio and it appears here." : "Connect to your TV box to see what's playing.")
-            .scaledFont(14).foregroundStyle(Color.inkAlpha(0.55)).multilineTextAlignment(.center)
+/// Everything one render of the Player needs, resolved once per body.
+private struct PlayerScene {
+    let media: MediaState
+    let app: TVApp?
+    let art: URL?
+    let kind: PlayerArtworkKind
+    let controls: PlayerControls
+    let key: String
+}
+
+/// The compact volume row (v5 §3), like Apple Music's small volume slider. It is not a separate volume
+/// system: the same thin slider, the same Samsung target, mapping, commands and feedback as the Remote
+/// page, so TV readings never fight a finger and a value shown from a reading is never sent back.
+private struct PlayerVolumeBar: View {
+    @EnvironmentObject private var remote: RemoteModel
+    @State private var value: Double = 0.5
+    @State private var externalEcho: Double?
+
+    var body: some View {
+        GlassVolumeSlider(value: $value, scale: remote.volumeScale, thickness: ThinVolumeMetrics.minimumTouchTarget,
+                          onDragChange: { remote.volumeDragChanged($0) })
+            .onChange(of: value) { _, newValue in
+                if let echo = externalEcho, abs(newValue - echo) < 0.0001 { externalEcho = nil; return }
+                remote.setVolumeFraction(newValue)
+            }
+            .onChange(of: remote.volumeReading) { _, event in
+                guard let event, let shown = remote.sliderValue(forReading: event.fraction, showing: value) else { return }
+                externalEcho = shown
+                value = shown
+            }
+            .onAppear {
+                // Start from the last real reading (the Remote page asks the device on appear).
+                if let last = remote.volumeReading?.fraction, abs(last - value) > 0.0001 {
+                    externalEcho = last
+                    value = last
+                }
+            }
     }
 }

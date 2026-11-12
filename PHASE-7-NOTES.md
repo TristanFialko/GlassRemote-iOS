@@ -1,4 +1,3 @@
-successfully downloaded text file (SHA: a70a2eaffbac2052a90a65f66424e72ed0a4ed26)
 # Phase 7 notes (research, decisions, limitations)
 
 Branch: Phase-7 (from phase-6-ui-nuvio-rebuild at adc2ec0). PR #2 is tracking-only and must not be merged.
@@ -119,3 +118,185 @@ Phase-7.1 is left as it was. Nothing below has been checked on a physical iPhone
 
 ### Physical-device checks still needed
 - Portrait and landscape Remote on small (SE) and large (Pro Max) phones; launcher in both orientations; Samsung landscape against a real TV; D-pad and trackpad ownership while rotating; volume haptics; each new theme and ambient; Default Dark Play contrast.
+
+## Phase 9 Liquid Glass and interaction overhaul (branch Phase-9, from Phase-7.2 at a1c816f)
+
+Phase-7.2 is left as it was. PRs #2, #3 and #4 are tracking PRs and stay unmerged. Nothing below has been checked on a physical iPhone or TV.
+
+### Starting state checked
+- Phase-7.2 HEAD a1c816f (Phase 8 notes). Its CI run 43048665477 is green (check run on PR #4); run 43047444095 was cancelled.
+- The GitHub connection in the agent session has no Actions run, log or artifact tools. CI is therefore read from check runs and from the build report the workflow posts on the Phase 9 tracking PR (CI tracking only, do not merge).
+
+### CI and workflow
+- ios-build.yml: a concurrency group cancels a superseded run on the same branch; the results report step now also runs for Phase-9* branches, so compiler and test errors reach the tracking PR.
+- project.yml: deployment target iOS 26.0.
+
+
+### §0 Native Liquid Glass and refraction
+- Native only: GlassStyle's surface, bar and lens modifiers, `glassMorph` and `GlassGroup` call `glassEffect`, `glassEffectID` and `GlassEffectContainer` directly. The material fallbacks (`.ultraThinMaterial`, `.thinMaterial`, gradient rims), `GlassSupport.isNative`, the pre-iOS 26 `LensSpecular` and every `#if compiler(>=6.2)` / `#available` guard are removed (the remaining iOS 17 and 18 checks in SamsungRemotePanel, GlassVolumeSlider, DiscoverPage and DiscoverLayout became unconditional). `onChange` uses the iOS 17 two-parameter form throughout.
+- Refraction investigation:
+  - Native glass already lenses its backdrop at the rim. Over the app's smooth gradient canvas that bending is close to invisible, because a displaced smooth gradient looks like the same gradient. That is why the earlier builds read as having no refraction.
+  - A SwiftUI `layerEffect` samples only the layer it is applied to, never what is behind a view, so a shader on the glass element itself cannot refract the backdrop.
+  - What ships: `DesignSystem/Refraction.metal` (`glassRefraction`) plus `DesignSystem/Refraction.swift` (`refractiveLens`, `RefractionStyle`, `RefractionPolicy`, `RefractionGeometry`). The shader is applied to the content directly beneath a glass element and bends only the pixels inside that element's rounded shape: gentle interior magnification, an outward-bending rim band and a small per-channel spread on the rim. Pixels outside the shape are returned untouched, so there is no rectangular bound. The lens rectangle is animatable, so it tracks the springing bubble frame by frame.
+  - Where it runs: the scrub selector bubble (page dock, Mouse / D-pad, segmented controls) bends the labels it covers; the volume thumb, now native clear glass, bends the fill edge, glyph and readout under it.
+  - Where it does not: cards, sheets, bars over scrolling content and large panels keep native glass alone; a layer shader across a page would rasterise the page every frame.
+  - Off, with native glass unchanged, under Reduce Motion (system or the in-app preference), Increase Contrast, Reduce Transparency, or for lenses under 12 pt.
+  - Tests: Phase9GlassTests covers untouched pixels outside the shape (including the rounded corner), the fixed centre, magnification, rim bending, the declared sample-offset bound, the accessibility fallbacks, degenerate lenses, radius clamping and the volume thumb's lens rectangle.
+  - Needs a device check: whether the strength reads well in each theme, and frame rate while scrubbing the dock and the volume slider.
+- CI: a new "Ensure Metal toolchain" step runs `xcodebuild -downloadComponent MetalToolchain` when the runner's Xcode 26 lacks the Metal compiler.
+
+### §1 Remote redesign and §2 Apps folder (checkpoint 1, 2a7ff15; CI green: runs 43060272115, 43068283385)
+- §1.1 icon-only keys: `RemoteNavKey` lost its captions (`showsCaptions == false`) and gained `symbol` and `hint`. Every cluster key keeps a full-size hit target, its name as the VoiceOver label, a hint, a pointer tooltip (`.help`) and a Large Content Viewer entry. Samsung keys are icon-only too; only Channel + / Channel − keep a short caption (`SamsungRemoteLayout.caption(for:)`).
+- §1.2 landscape: column widths are 27 % (176–280) and 23 % (156–252) of the stage, and the pad always keeps at least 200 pt and 38 % of the width. `RemoteStageLayout` now reserves both columns (`reservesColumns`), so the pad's frame depends only on the stage size and the Android and Samsung pads are identical in the same size class. The D-pad bezel uses the same elevated glass as the mouse and Samsung pads.
+- Header: in landscape the status pill has the whole first row (no more "And..."), the device switch shares the second row with power. `RemoteLayoutPolicy.pillStyle` drops to the short name, then the chevron, before anything truncates.
+- Apps card: shows only as many preview icons as fit beside its one-line text (`launcherPreviewCount`), the count is "No apps" / "1 app" / "n apps" on one line, the trailing glyph is gone, and it is highlighted only while its folder is visible. The Samsung link banner stacks its action under the message in the landscape column.
+- §2 Apps folder (`Remote/AppsFolder.swift`): replaces the Apps sheet. `AppsFolderState` (closed / opening / open / closing, with a generation counter so stale animation completions are ignored), `AppsFolderLayout` (portrait: centred above the Apps key, at most 72 % of the height; landscape: beside the Apps card over the pad, bottom-aligned; always inside 12 pt margins; centred when there is no usable anchor) and `AppsFolderGesture` (pull down 90 pt or flick 200 pt). The shell grows out of the Apps control's frame and collapses back into it with `Motion.folderOpen` / `folderClose` (reduced under Reduce Motion), floats over the page with a light scrim, and closes on an outside tap, the close button, a downward swipe, Escape, launching an app, switching device, leaving the Remote page or the view disappearing. Tiles launch only once it is fully open. Any pad touch, drag or mouse session is ended when it opens. VoiceOver: the folder is modal, focus moves to its title and returns to the Apps control on close.
+- `AppLauncherPolicy` moved into AppsFolder.swift unchanged; AppLauncherSheet.swift is emptied in this commit and deleted once CI is green.
+- Tests: new Phase9RemoteTests (icon-only keys, Samsung captions, pad minimum across widths 454–1100, identical Android/Samsung pad frames, pill styles, preview fit and count label, folder lifecycle incl. stale completions and every dismiss path, folder geometry in portrait / landscape / small landscape / no anchor / empty, swipe thresholds, favourites-first search). Phase8RemoteTests: wide column caps 270/240 → 280/252.
+- Needs a device check: the folder animation's feel and frame rate, the anchor position after rotation, and the keyboard with the folder's search field in landscape.
+- Next: continuation brief §A–§I (below).
+
+## Phase 9 continuation (brief: GlassRemote_Phase_9_Continuation.md)
+Scope: every section of the continuation brief, §A–§L. Order: A Apps folder, B refraction, C volume slider, then D navigation, E motion, F Discover, G glass/background/profile avatar, H Profile, Add-ons and Torrentio, I performance. CI-verified and device-verified results are kept apart: nothing below has been checked on a device by the agent.
+
+### §A Apps folder refinements (checkpoint A: 9561e3e + 200ed5b; CI pending)
+- A1: the close button and the "Tap to open on the TV box" / "TV box offline" subtitle are gone (the offline banner already says it). A compact "Apps" title shares one row with the search field; a small grabber pill at the top shows the folder can be pulled down. Dismissal: outside tap, pull on the grabber or title, Escape on a hardware keyboard (hidden `.cancelAction` shortcut), the VoiceOver escape gesture plus a "Close Apps" custom action, launching an app, and every context change. `DismissReason.closeButton` was removed.
+- A2: search is case- and diacritic-insensitive with favourites first among the matches (`AppLauncherPolicy.visible`). Return only puts the keyboard away (`AppsFolderInteraction.submitLaunchesFirstMatch == false`). While the keyboard is up, an outside tap only ends editing (`AppsFolderInteraction.outsideTap`). Clear button and empty state ("No apps" / "No apps match …" with Clear search) kept.
+- A3: a fixed 3-column grid (`AppsFolderLayout.columns == 3`, `AppLauncherPolicy.columns(for:)` always 3). Width 320 in portrait and 340 in landscape (capped by the margins). `AppsFolderMetrics` scales 64 pt tiles and their spacing down (to 44 pt at the least) so three rows fit short screens before anything else changes; a fourth row scrolls inside the folder. Columns are a fixed third of the grid, so tiles sit centred with even gutters.
+- A4: `AppsFolderMotion`: open spring 0.30 s / 0.80 damping (was 0.44), close 0.22 s / 0.94 (was 0.34). Under Reduce Motion (system or in-app) the shell does not morph out of the Apps control: it cross-fades in place in 0.14 s and the content is not scaled. Interruption, rapid taps and rotation use the existing generation counter; the Apps highlight is on only while the folder is visible.
+- A5: the ordered, filtered catalogue is cached in `@State` and rebuilt only when the query, favourites or the app list change, not on animation or drag frames. Icons come from the existing downsampled `AppIconCache`. The scrim is a flat tint, no full-screen blur.
+- AppLauncherSheet.swift deleted (unreferenced since checkpoint 1).
+- Tests: new Phase9FolderRefinementTests (3 columns and fit on nine screen sizes × six app counts × banner, touch-size floor, scroll beyond nine, tile scaling on short landscape, rotation mid-transition, dismissal without a close button, rapid taps, search, empty states, no accidental launch/dismiss, motion constants and Reduce Motion). Phase9RemoteTests geometry updated (portrait 320 × 372 at y 178; landscape 340 × 316 at x 190); Phase8RemoteTests column test now expects 3 at every width.
+- Needs a device check: feel of the faster spring, pulling the grabber, Escape on an iPad keyboard, tile size on an SE-class screen.
+
+### §B Refraction without magnification (checkpoint B, CI pending)
+- The shader's `zoom` term is gone from `Refraction.metal`, `RefractionStyle` and the modifier. Everything deeper than the rim band now samples itself: the centre is fixed and text under the dock bubble, segmented controls and volume thumb keeps its real size.
+- Rim: the band is capped at 75 % of the half short side (`RefractionGeometry.rimWidth`), so even small lenses keep a still centre. Inside the band, light bends outward along the edge normal with a smoothstep profile (no crease where rim meets interior), much stronger than before: selector 12 pt rim / 9 pt bend (was 9 / 5), thumb 14 / 11 (was 10 / 6). Sample spacing along the normal never drops below pixel spacing, so the rim compresses and never enlarges.
+- Dispersion: 1.2 pt (selector) / 1.4 pt (thumb), weighted by t³ so only the outermost rim separates colour.
+- Bounds: outside the rounded shape nothing moves (including the corners of its bounding box); `maxSampleOffset` is now bend + dispersion + 1 and no longer grows with the lens size, so the rasterised margin is smaller.
+- Where: unchanged call sites (GlassStyle's scrub selector lens for the dock, rail, Mouse / D-pad switch and segmented controls; the volume thumb). The Apps folder edge does not get it: a layer effect only sees its own layer, so refracting the Remote behind the folder would mean rasterising the whole Remote page under a shader every frame of the open animation. Native glass covers the folder. Other large controls keep native glass for the same reason.
+- Accessibility: unchanged fallback to plain native glass under Reduce Motion (system or in-app), Increase Contrast and Reduce Transparency.
+- Tests: Phase9GlassTests rewritten (no magnification across three lens shapes, fixed centre, monotonic rim without enlargement, stronger outward bend, smooth profile, dispersion only on the outer rim, rim cap leaves a centre, displacements within the declared bound, bound independent of lens size, untouched pixels outside the shape, accessibility, degenerate lenses, radius clamp, thumb lens rect).
+- Needs a device check: strength in each theme, legibility of labels under the bubble, frame rate while scrubbing.
+
+
+### §C Volume slider (checkpoint C, CI pending)
+- C1 look: `GlassVolumeSlider` is one integrated piece of glass. Native clear-glass track with edge lighting (bright upper rim, faint lower rim) and a recessed inner shade; the level is a neutral luminous body in adaptive ink tones (no theme accent anywhere), lit along its top and shaded at its foot; the thumb is a substantial clear-glass lens (diameter = track height − 10) with a specular highlight, lit rim, inner edge and a contact shadow that deepens while held, sitting inside the level's rounded end. The bounded refraction lens from §B still bends the layer under the thumb, without magnification. Reduce Motion drops the settle and press springs; Reduce Transparency / Increase Contrast keep the existing glass fallbacks.
+- C1 haptics: one soft tick per real level the finger moves through (`VolumeHapticPolicy`), at the target's own resolution; TV readings and programmatic updates never tick. The ADB/soundbar key drain no longer ticks too, so a drag is not doubled.
+- C2 range per target (`VolumeScale.swift`, inspected separately):
+  - Samsung over UPnP: absolute 0…100, narrowed only by the learned calibration. A calibrated floor above raw 0 is a *minimum* (speaker glyph, "Minimum, 0 percent"); raw 0 is *mute* (slashed speaker, "Muted, 0 percent").
+  - Samsung over its remote socket only: one key per step of the soundbar scale (`tvVolumeMax`).
+  - Android over ADB: the box's own music-stream range from `cmd media_session volume --stream 3 --get` (fallback `media volume …`), parsed from "volume is N in range [lo..hi]". Until the box answers, the old 20-step assumption stands. Read on appear, on connect, 0.4 s after an ADB volume key, and after each drag.
+  - The readout is now a real percentage of that range: 0 only at the floor, 100 only at the top, 1–99 between, never the step index. Only the very ends of the slider command the ends; every other fraction is at least one step inside.
+- C2 echoes and reconcile (`VolumeSync`): no device reading moves the thumb during a drag or within 2 s of the last user change (a reading already in flight is stale); 2.1 s after the drag (or a VoiceOver increment) the device is read once more and the slider settles on what it really did. Readings are numbered (`VolumeReadingEvent`) so a repeated value still settles. Calibration, relative drag, the 1.5 % end magnet, mute, routing and the accessibility adjustable action are kept; VoiceOver steps land on real levels (one step on short scales, about 5 % on long ones).
+- C3 landscape: the slider has its own deck along the foot of the pad and the trailing column (the leading column keeps its full height). 66 pt tall (thumb 56, larger than portrait's 50), 320–806 pt long across stage widths 454–1100 (always ≥ 300 pt, ≥ 60 % of the stage, at least twice the old trailing-column slider). The deck gives way to 56 pt on short stages before the pad drops below 200 pt. Column widths are unchanged, and the pad frame is still identical for Android and Samsung (`padRect` now reserves the deck). The Samsung TV group sits directly above the deck. Portrait keeps its balanced 60 pt (56 compact) slider at the bottom.
+- Tests: new Phase9VolumeTests (0/1/25/50/75/99/100 on standard and calibrated Samsung, Android 15-level and 20-level fallback, Samsung keys, only the ends show 0/100, mute vs minimum, the ADB parser, echo gate and single reconcile, VoiceOver reconcile, one haptic tick per level, VoiceOver steps, deck length/thickness/no overlap across widths and heights, short stages, identical Android/Samsung pad and deck, portrait thickness, stages without a deck unchanged). Phase9RemoteTests' shared-pad test now uses the deck.
+- Not device-verified: the Android range read (the `cmd media_session` output differs between Android builds; a box that answers neither command keeps the 20-step behaviour), the haptic density on the 100-step Samsung scale, and how the glass reads in each theme.
+
+### §D Landscape vertical paging (checkpoint D, CI pending)
+
+- **Axis.** New `PagerAxis` (`GlassRemote/PagerAxis.swift`). Portrait stays horizontal (Remote → Player → Discover → Profile, RTL mirroring unchanged: the horizontal strip offset is the pre-§D formula). Landscape stacks the same pages top to bottom, Remote at the top and Profile at the bottom, matching the rail.
+- **Same views, new layout.** `RootPagerView` switches the strip between `HStackLayout` and `VStackLayout` through `AnyLayout`, which keeps every page's identity: rotating never recreates the Remote, never touches ADB/UHID, polling or connections. Vertical pages sit one whole screen apart (`pageStride` = height + top + bottom safe areas, `pageGap` between them) and `PagerClip` cuts neighbours at the safe-area edges, so no neighbour shows in the status-bar or home-indicator zones; content can still run sideways under the rail. `HorizontalClip` is replaced by `PagerClip` (portrait clip unchanged).
+- **Gesture ownership.** `PagerPan` takes the axis: translation and velocity use the axis component; `AppPage.target`/`resisted` work on the stride (±1 page per swipe, resistance at both ends). A page swipe begins only when clearly along the axis (`isVerticalDominant`, same 1.4 dominance). Rail taps, the dock zone and exclusion zones are rejected exactly as before.
+- **Discover scrolling and carousels.** In landscape a vertical swipe that starts inside a page's own vertical scroll view pages only when that scroll view is already at its end in the swipe direction (`scrollerYieldsVerticalPage`, insets respected) and is not decelerating; then its pan is cancelled so it does not also bounce. Horizontal carousels have no vertical range (`isVerticalScroller` false) and a horizontal drag is never vertical-dominant, so carousels keep their drags.
+- **Remote.** The landscape Remote is almost all controls, so a vertical page swipe may start only in `PagerSwipeArea`s: the free space in its side columns, laid out by `RemoteStageLayout` as `.gap` children (`Frames.leadingGap`/`trailingGap`, one spacing clear of every control, the pad and the volume deck, ≥ 44 pt or none). They take no touches (hit-test nil) and are removed while the Apps folder is open. Portrait Remote keeps its edge strips.
+- **Rotation mid-swipe.** An axis change cancels an active swipe (`cancelsOnAxisChange`) and the travel resets on the size-class change; nothing carries over to the new axis.
+- **Tests.** `Phase9NavigationTests`: axis resolution, portrait offsets equal to the old formula, vertical stride/gap/offsets, clip vs neighbours for several safe areas, vertical dominance, up/down targets, boundaries and resistance, short/cancelled swipes, rapid flicks one page at a time, Remote swipe-area acceptance (landscape) vs edge strips (portrait), rail taps, scroll-end hand-off with insets, carousel is not a vertical scroller, rotation cancel, depth on stride, Android/Samsung stage swipe areas clear of all controls and nil when too short. Existing `PagerGesturePolicy` APIs are kept for the earlier phase tests.
+- **Not device-verified.** The feel of the scroll-end hand-off, interplay with system edge gestures (Control Centre / notification pull) in landscape, and rotation while a finger is down. CI only proves it compiles and the policies hold.
+
+### §E Shared motion language (checkpoint E, CI pending)
+
+- **One source of curves.** `Motion` now describes every spring as numbers (`Motion.SpringSpec`, `Motion.Springs`) and exposes the tokens the app uses: the existing `page`, `snappy`, `expand`, `hero`, `artwork`, `tracking`, `theme`, `reduced` (unchanged curves), plus `press`, `pressBounce`, `lensSettle`, `lensLift`, `lensStretch`, `settle`, `release`, `content`, `poster`, `ambient` and `fade`. Control springs respond in ≤ 0.3 s with damping ≥ 0.7 (no wobble under the finger); spatial moves (pages, hero, posters) are slower; colour washes never overshoot.
+- **Call sites moved onto tokens.** Selection lens (glide, lift, stretch), `PressStyle`, poster buttons, repeat keys, mode selector, volume slider settle/bounce/readout, page navigator, Player title/poster, Samsung play/pause, ambient palette and theme/ambient pickers, hero swipe release, artwork fade, Discover header, profile editor and add-on rows. The only curves outside `Motion.swift` are the Apps folder springs tuned and tested in §A.
+- **Reduce Motion everywhere.** `Motion.resolve` (system + in-app preference) for views with an environment, `Motion.unlessReduced` for decorative motion that should disappear entirely, `Motion.adaptive` for stores and actions without an environment. Finger tracking still follows the finger.
+- **No animation sleeps.** Audit: no navigation, transition or presentation code waits on a timer (search focus already waits for the real page settle). The remaining timed waits are transport, polling, input or idle rules (ADB/Samsung, scans, account polling, key repeat, hold-to-drag, click release, search debounce, palette settle, hero auto-advance, lens idle); the lens idle wait is now the named `InteractionTiming.lensIdleNanos`.
+- **Interruptible by construction.** Every token is a SwiftUI spring (retargets mid-flight) or a short fade; no control waits for an animation, so remote input gets no added lag.
+- **Tests.** `Phase9MotionTests`: existing curves unchanged, control springs fast and well damped, spatial slower than controls, Reduce Motion and the in-app preference replace or remove motion, and two source audits (no one-off curves outside the motion language; no `Task.sleep`/`asyncAfter` outside the allow-listed transport/input files). The audits skip if the simulator cannot read the sources.
+- **Not measured.** No frame-rate or hitch measurements were taken; nothing here claims a performance change. Hero-to-detail and detail presentation motion are completed in §F, avatar/indicator motion in §G, profile subpage navigation in §H.
+
+### §F Discover landscape and detail (checkpoint F, CI pending)
+
+- **F1 landscape header.** The header is now `DiscoverHeaderLayout`, a custom layout with the same three children in both orientations (search, account, filter), so the search field keeps its identity and focus across rotation. Portrait is unchanged: search and account on one row, the All/Movies/Series filter full width below. Landscape is one grouped row: search leading (capped at 440 pt so it reads as a field), and the filter (200–276 pt) plus the account shortcut grouped at the trailing edge, with the filter vertically centred on the 48 pt controls. The pager exclusion zone, the tap swallow and the legibility veil are untouched.
+- **F2 hero artwork.** Diagnosis: pages sit inside the horizontal safe areas, so in landscape the hero stopped at the notch and home-indicator sides and the ambient background showed as strips. The pager now publishes the horizontal safe areas (`pageBleed`, zero in portrait). The hero and the detail backdrop draw that far past the page edges. The scroll view's clip is widened sideways only (`HorizontalBleedClip`), so rows still stop at the page's own top and bottom, and neighbouring pages never bleed in during vertical paging.
+- **Crop policy (`HeroArtworkPolicy`, `FocalArtwork`).** Art is always scaled uniformly (never stretched) and always covers its region. Crops keep the upper third (backdrops, focal y 0.3) or the top (posters, focal y 0.2) instead of the centre, which keeps faces and title treatments in frame more often. A portrait poster that would lose more than 45 % of its height in a wide landscape hero is shown whole on the trailing side, clear of the text column, over a soft wash of its own colours. The wash is a 24 px copy drawn enlarged, with no live blur filter. Missing art keeps the accent gradient placeholder. The text scrims are unchanged.
+- **F3 full-width detail.** `DetailPresentation`: landscape presents the title page as a full-screen cover, so it gets the whole width; portrait keeps the sheet with its drag-to-dismiss. The style is chosen only while nothing is open and kept until the page closes, so rotating with a page open never dismisses or re-presents it (documented trade-off: a sheet opened in portrait stays a sheet after rotating until it is closed). The same rule applies to titles opened from a detail page (similar titles). Both presentations share one view and the same zoom transition. The close X still clears the presenter's own state, so nested pages close correctly. In landscape the backdrop runs into the side safe areas; the text, sections and the X stay inside them.
+- **Already correct, checked:** the cast row shows the full cast list from the source (no truncation) with initials when there is no portrait. Facts and credits come only from the catalogue response; nothing is invented. Trailers, seasons and episodes, and similar titles (respecting the profile's poster orientation) are unchanged.
+- **Tests:** `Phase9DiscoverTests` covers fill coverage (no strips) and uniform scale (no stretch) across sizes and focal points, the top-keeping crop, the poster inset (whole, aspect kept, inside the region, clear of the text column), the portrait fill, turning the inset off, zero sizes, bleed resolution and the sideways-only clip, the presentation mapping and the rotate-while-open rule, and the header frames (portrait two rows, landscape one grouped row, no overlaps, caps).
+- **Not verified on a device:** the landscape crop on real art, the full-screen cover's zoom transition, and the header at every width. These need a device pass.
+
+### §G Glass, continuous background and profile identity (checkpoint G, CI pending)
+
+- **G1 glass audit.** Reviewed in code (not on a device):
+  - Already grouped: the dock and rail (one scrub selector with its lens), the Apps folder (§A), player transport (`GlassGroup`), and the volume slider (§C).
+  - New: the Discover header's search field, filter and account button render as one glass group. Spacing is 0, so the shapes share one pass but never merge into each other.
+  - Detail controls, Profile cards, sheets and menus keep their single surfaces. Nesting more containers there would add cost without continuity, so nothing was wrapped indiscriminately.
+- **G2 continuous background.** Diagnosis: Profile and its sub-pages drew their own backdrop inside a page frame that, in landscape, starts after the rail. The gradient, glow and ambient picture therefore restarted at the rail edge (the seam). Fix:
+  - The backdrop is split into `AmbientCanvas` (the picture) and `AmbientBackdrop` (root use).
+  - Profile pages now use `ContinuousBackdrop`. It draws the window-sized canvas shifted onto the window origin (the pager publishes `windowCanvasSize`) and clipped to the page, so it matches the root backdrop under the rail and dock exactly.
+  - The picture stays fixed while the page pages vertically or scrolls.
+  - Navigation pushes still cover the page below, because sub-pages stay opaque.
+  - Sheets keep their own backdrop.
+  - The canvas is always laid out left-to-right, so right-to-left layouts can't mirror one copy against the other.
+- **G3 profile identity.**
+  - The dock and the landscape rail show the active profile's photo, or initials on its gradient, instead of the generic Profile glyph. The item keeps the "Profile" label.
+  - The avatar observes the profile store and cross-fades (motion token, reduced-motion aware) on a profile switch, a rename or a new photo.
+  - Ambient is now per profile, like the theme was. `ambientID` is decoded tolerantly: older profiles keep the current ambient until it is changed. New profiles start from the active profile's ambient, and a stored Mountains still migrates to Dusk.
+  - Switching profiles applies theme, ambient, motion and add-ons only. The profile store never touches the remote model, ADB, the Samsung connection or helpers (source-audited by a test).
+- **Adaptive palette.** Tones are already chosen by matching WCAG relative luminance per scheme, with the accent's luminance clamped (bounded contrast), so a yellow and a blue read alike. Hue selection still uses the existing saturation and brightness weighted histogram; it was not changed in this checkpoint.
+- **Tests:** `Phase9IdentityTests` covers backdrop placement (the window origin lines up, it stays fixed while paging, unknown or invalid sizes fall back) and the window canvas size; legacy settings, the Mountains migration, a round trip, and per-profile ambient with inheritance and persistence; the avatar redraw identity; and source audits for the profile backdrop, the dock avatar, and no connection access in the profile store.
+- **Not verified on a device:** the seam fix under every ambient, the avatar at rail size, and the cross-fade.
+
+## Phase 9 continuation v4 (brief: GlassRemote_Phase_9_Continuation_v4_Autonomous.md)
+
+Branch `Phase-9` (never reset or recreated). PRs #2-#5 are not merged; PR #5 is the draft CI tracking PR.
+
+### Commits and CI
+
+| Commit | What | CI run | Result |
+| --- | --- | --- | --- |
+| 9e10773 | (start of v4 pass) | 43084596909 | cancelled by the next push |
+| 875c865 | §F: fix the Phase9DiscoverTests compile error | 43084896581 (job 130746598257) | **success**: first complete green Phase 9 run (356 tests, device build, IPA 4.4M) |
+| af642e8 | §A: player redesign + Phase9PlayerTests + SEEKING_REPORT §A5 + checklist | 43088491292 (job 130759006667) | **success** (373 tests, 0 failures; device build succeeded; unsigned IPA 4.4M) |
+| (this commit) | §B audit tests, §C notes, this checkpoint | see PR #5 | pending at time of writing |
+
+### §A Player redesign (af642e8)
+
+- **Policy first.** `GlassRemote/PlayerPolicy.swift` holds every decision as pure, tested code: `PlayerLayoutPolicy` (aspect-fit sizing, portrait artwork share, landscape split), `PlayerArtworkKind` (2:3 poster, 16:9 key art, square app art), `PlayerSessionKind` (explicit audio packages only; Nuvio and catalogue apps are always video), `PlayerControls` (play/pause primary; rewind / fast-forward only when advertised; previous / next only for audio sessions; progress only with a real positive duration), `PlayerSessionPhase` (not connected, connecting, idle, playing, paused, buffering, stale after 30 s without a poll), `PlayerTimeline` (1 s ticks while playing, 5 s otherwise, frozen when stale), `PlayerTransition.key` (artwork and metadata change together; position polls never restart the fade) and `PlayerBackdropPolicy` (crop, luminance profile, scrim opacity that keeps white text >= 4.5:1).
+- **A1 portrait.** Artwork is the dominant element, aspect-fit (never stretched) inside the space left above title, state, transport and volume; tighter gaps; safe areas and the dock respected. Missing art falls back to the app's artwork or a symbol on a dark card. Reuses `ArtworkCache`, `PlayerArtworkStore`, `ThemeStore.submitArtwork` and `Motion`.
+- **A2 background.** `PlayerBackdrop.swift`: one store per artwork URL (LRU 12) makes the 24 px `ArtworkWash` and a luminance profile once, off the critical path; the canvas draws it enlarged with a theme-aware tone and a contrast scrim, no live blur. It is drawn in `RootPagerView`'s single root canvas, so in landscape it runs unbroken behind the rail, and fades with the page.
+- **A3 landscape.** Square artwork on the leading side; title, state/time, transport and volume beside it; the rail stays visible.
+- **A4 controls.** Explicit Play or Pause (buffering pauses). Relative seek kept, with the existing confirmation and 10 s relabelling. No previous / next for video; track skip only for explicit audio sessions, never Nuvio. Inert controls removed. Neutral glass volume slider (0-100 %, haptics, `VolumeSync` echo gate) on the Player page. `NowPlayingSheet` follows the same capability rules.
+- **A5 seekTo.** No verifiable route (details in SEEKING_REPORT.md "Phase 9 §A5"). Relative seek stays; no scrubber.
+- **A6 states and tests.** `Phase9PlayerTests`: layout fit and dominance, artwork kinds, landscape split, backdrop crop, scrim contrast over 41 luminance steps, brighter art gets a stronger scrim, pixel profile, capabilities, track-skip safety, progress needs a duration, play/pause routing, phases, throttling, transition key, volume readout.
+- **Not device-verified:** layout on real phones, backdrop legibility on real posters, Nuvio actions, Player-page volume, stale/foreground behaviour, landscape rail continuity.
+
+### §B Profiles and add-ons audit
+
+- **Already correct (checked in code and existing tests):** several Torrentio configurations install side by side with their own install id, enabled state, order and Keychain item (`Phase71AddonIdentityTests`); the saved list holds only a redacted link, written atomically with file protection; full links live in the Keychain (`KeychainStore`, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`) under `addon.<profile>.<install id>`; deleting a profile purges its list and items (`ProfileStore.delete`); the Samsung pairing token is in the Keychain; add-on links must be https, with http only for localhost, `.local` and private IPv4 ranges (`Phase7Tests`); `project.yml` adds no `NSAppTransportSecurity` exception (local-network http is allowed by ATS by default).
+- **Gaps closed with tests (`Phase9AddonAuditTests`):** migration runs once and repeated loads change nothing (same id, a clean list is not rewritten, link kept, old item gone, no link or `legacySecretKey` in the saved file); a mixed list migrates only the legacy record and keeps order and settings; a legacy record without a Keychain item migrates without inventing a link and Play skips it; purge removes links of records that were never loaded (including unmigrated ones) and leaves another profile's install of the same add-on alone; Keychain accounts are scoped by profile and install; the transport-security baseline (no arbitrary-loads exception, public http rejected, local http accepted).
+- **No code changes were needed**: the audit found no failing behaviour, so only tests were added.
+
+### §C Performance (static review; no profiling possible)
+
+No Instruments, device or simulator profiling was available in this environment (no macOS host; CI only builds and runs unit tests), so nothing below is a measurement.
+
+- Player: the elapsed-time `TimelineView` ticks every 1 s only while playing, every 5 s otherwise, and stops advancing when the session is stale.
+- Player background: one 24 px wash and one luminance profile per artwork URL (LRU 12), computed once and cached; no live blur or full-resolution redraws; the old blurred radial gradient is gone.
+- Artwork decodes are downsampled (`maxPixel` 900) off the main thread by `ArtworkCache`; palette extraction in `ThemeStore` is detached.
+- Known, left as is: `RemoteModel.pollMedia` assigns `media` on every poll, which republishes even when nothing changed. The Player's transition key ignores position, so it does not restart animations; making the assignment conditional is a safe follow-up once it can be measured.
+
+### Exact checkpoint (next session starts here)
+
+1. Read PR #5's latest bot comment and the check run for the newest `Phase-9` HEAD; confirm "Executed N tests", the Release/device build, ARM32/ARM64 helpers, "Bundle and verify helpers" and the `glassremote-unsigned-ipa` artifact.
+2. If anything failed, fix it from the annotations before any new work.
+3. Remaining brief items: §D regression checklist pass on a device by the user, §F physical-device checks (below), §G repo hygiene review.
+
+### Physical-device checks still needed (§F)
+
+- Player portrait/landscape layout on a small and a large iPhone; dock and rail never overlapped.
+- Backdrop legibility on bright, dark and greyscale posters in dark and light themes.
+- Nuvio: play/pause, rewind/fast-forward and the absence of previous/next; an audio app's track skip.
+- Volume from the Player page matches the Remote page and the TV.
+- Stale "Waiting for the TV", background/foreground and ADB reconnect recovery.
+- Landscape rail continuity of the backdrop.
+- Add-ons: two Torrentio configurations streaming side by side after an upgrade from a pre-install-id build; deleting a profile purges its add-ons.

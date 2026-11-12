@@ -43,6 +43,9 @@ extension DockMetrics {
     static let railWidth: CGFloat = 64
     static let railSegment: CGFloat = 62
     static let railInset: CGFloat = 6
+    /// v5 §2: the landscape Now Playing tile under the rail (artwork side, gap above the bottom edge).
+    static let railTileArtwork: CGFloat = 44
+    static let railMiniBottom: CGFloat = 8
     /// Gap between the rail and the leading safe-area edge, before the drop below.
     static let railGap: CGFloat = 6
     /// Space pages keep between the rail and their content.
@@ -55,6 +58,12 @@ extension DockMetrics {
     static func railDrop(safeLeading: CGFloat) -> CGFloat { min(max(safeLeading * 0.2, 0), 12) }
 
     static func railLength(count: Int) -> CGFloat { CGFloat(max(count, 1)) * railSegment + railInset * 2 }
+
+    /// v5 §2: whether the Now Playing tile fits below a vertically centred rail of `count` items in a
+    /// window `height` tall, without touching it.
+    static func railTileFits(height: CGFloat, count: Int) -> Bool {
+        (height - railLength(count: count)) / 2 >= railWidth + railMiniBottom + 4
+    }
 
     /// Leading space a page keeps clear of the rail, measured from the leading safe-area edge.
     static func railClearance(safeLeading: CGFloat) -> CGFloat {
@@ -69,26 +78,6 @@ extension DockMetrics {
 }
 
 // MARK: - Page depth
-
-/// Section transitions: while a page slides away it recedes slightly (scale and opacity) and the
-/// incoming page comes forward, so swipes and dock jumps read as one fluid motion. Off with
-/// Reduce Motion.
-enum PageDepth {
-    /// How far `item` is from the centre of the screen, in pages (0 = on screen, capped at 1).
-    static func distance(of item: AppPage, current: AppPage, travel: CGFloat, width: CGFloat) -> CGFloat {
-        guard width > 0 else { return 0 }
-        let position = CGFloat(item.rawValue - current.rawValue) + travel / width
-        return min(abs(position), 1)
-    }
-
-    static func scale(_ distance: CGFloat, reduceMotion: Bool) -> CGFloat {
-        reduceMotion ? 1 : 1 - 0.05 * min(max(distance, 0), 1)
-    }
-
-    static func opacity(_ distance: CGFloat, reduceMotion: Bool) -> Double {
-        reduceMotion ? 1 : Double(1 - 0.3 * min(max(distance, 0), 1))
-    }
-}
 
 // MARK: - Scrub selector geometry
 
@@ -124,17 +113,43 @@ enum ScrubGeometry {
     /// Where along the bar (0...1) the dock's reflected highlight sits. It follows the bubble but
     /// travels less than it, like a reflection on a curved surface.
     static func sheenCentre(progress: CGFloat) -> CGFloat { 0.12 + min(max(progress, 0), 1) * 0.76 }
-}
 
-// MARK: - Glass support
+    /// The bubble's scale along and across the bar. Dragging lifts it by 10 % and the finger's speed
+    /// stretches it along the bar (thinning it across, so the glass keeps its volume). At rest, and
+    /// always with Reduce Motion, it is rigid.
+    static func lensScale(dragging: Bool, speed: CGFloat, reduceMotion: Bool) -> (along: CGFloat, across: CGFloat) {
+        guard dragging, !reduceMotion else { return (1, 1) }
+        let s = stretch(speed: speed)
+        return (1.10 * s, 1.10 / s.squareRoot())
+    }
 
-enum GlassSupport {
-    /// True when the system renders native Liquid Glass (built with the iOS 26 SDK, running on iOS 26).
-    static var isNative: Bool {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) { return true }
-        #endif
-        return false
+    /// The bubble's rectangle in the bar's own coordinates (scale applied about its centre).
+    static func lensRect(offset: CGFloat, segment: CGFloat, thickness: CGFloat, inset: CGFloat, vertical: Bool,
+                         along: CGFloat, across: CGFloat) -> CGRect {
+        let alongLength = segment * along
+        let acrossLength = max(thickness - inset * 2, 0) * across
+        let centre = offset + segment / 2
+        return vertical
+            ? CGRect(x: thickness / 2 - acrossLength / 2, y: centre - alongLength / 2, width: acrossLength, height: alongLength)
+            : CGRect(x: centre - alongLength / 2, y: thickness / 2 - acrossLength / 2, width: alongLength, height: acrossLength)
+    }
+
+    /// Phase 9 recovery §2: the refraction never reaches past the bar. A lifted, stretched bubble on
+    /// an end segment overhangs the end cap, so the rectangle handed to the refraction shader is
+    /// clipped to the bar. A bubble entirely outside it refracts nothing (a zero-size lens is below
+    /// `RefractionPolicy.minimumSide`, so the effect switches off).
+    static func boundedLens(_ lens: CGRect, in bar: CGRect) -> CGRect {
+        let clipped = lens.intersection(bar)
+        return clipped.isNull ? CGRect(x: bar.midX, y: bar.midY, width: 0, height: 0) : clipped
+    }
+
+    /// Release-to-commit selectors (the page dock): lifting the finger more than this far beyond the
+    /// bar's thickness cancels, so sliding away is a way out, exactly like a button.
+    static let releaseSlop: CGFloat = 44
+
+    /// `cross` is the finger's position across the bar (y when horizontal, x when vertical).
+    static func releaseCommits(cross: CGFloat, thickness: CGFloat) -> Bool {
+        cross >= -releaseSlop && cross <= thickness + releaseSlop
     }
 }
 

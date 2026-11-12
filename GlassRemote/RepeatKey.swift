@@ -37,7 +37,7 @@ struct RepeatKey<Content: View, HitShape: Shape>: View {
         label()
             .scaleEffect(pressed ? 0.96 : 1)
             .opacity(pressed ? 0.88 : 1)
-            .animation(.easeOut(duration: 0.12), value: pressed)
+            .animation(Motion.adaptive(pressed ? Motion.press : Motion.snappy), value: pressed)
             .contentShape(hitShape)
             .gesture(
                 DragGesture(minimumDistance: 0)

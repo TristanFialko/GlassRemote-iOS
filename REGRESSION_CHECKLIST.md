@@ -93,3 +93,14 @@
 - [ ] Continue Watching shows 16:9 cards (backdrop, or whole poster on a dark panel when there is no backdrop); never stretched.
 - [ ] Detail sheet shows a 16:9 backdrop when one exists, otherwise the 2:3 poster.
 - [ ] Remote, trackpad, mouse, keyboard, helpers, Samsung, volume, YouTube launch: unchanged (no input/helper files were edited).
+
+## Phase 9 §A Player redesign (built and unit tested in CI only; nothing below has been run on a device)
+- [ ] Portrait: the artwork is the dominant element above the controls; title, state, transport and volume sit above the dock on an iPhone SE and a Pro Max; nothing overlaps the dock or the safe areas.
+- [ ] Posters keep 2:3, Discover key art keeps 16:9, app artwork is a smaller square; nothing is stretched. Without artwork the app artwork or a symbol shows on a dark card.
+- [ ] A new title cross-fades artwork and title together; position polls do not restart the fade.
+- [ ] Full-screen artwork background on the Player page only; it fades in and out when paging; the dock and header stay legible over bright and dark posters, in dark and light themes.
+- [ ] Landscape: square artwork on the leading side, title / time / transport / volume beside it; the rail stays visible and the background runs unbroken behind the rail (no split at its edge).
+- [ ] Play / pause sends explicit Play or Pause; buffering pauses. Rewind / fast-forward only when the session advertises them; Nuvio and other video apps never show previous / next.
+- [ ] Volume slider on the Player moves the TV volume 0-100 % with haptic ticks, matches the Remote page slider, and never fights a finger when a reading arrives.
+- [ ] States: not connected, connecting, nothing playing, playing, paused, buffering, "Waiting for the TV" after 30 s without a poll; backgrounding and returning, and an ADB reconnect, recover without a stuck state.
+- [ ] Elapsed time ticks once a second while playing and freezes when stale; no scrubber is shown (no duration is reported).
