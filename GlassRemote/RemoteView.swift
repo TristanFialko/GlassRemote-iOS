@@ -88,6 +88,11 @@ struct RemoteView: View {
     /// True while a finger is on the pad. GestureState resets on lift and on cancellation, so the pad's
     /// ownership session always closes (see RemoteInputGuard).
     @GestureState private var padTouching = false
+    /// True while a finger is on the mouse trackpad; resets on lift AND on a system cancellation,
+    /// which is the only signal SwiftUI gives when `onEnded` never arrives (audit BUG-008).
+    @GestureState private var mouseTouching = false
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.remoteSurfaceActive) private var remoteSurfaceActive
     private var lastPoint: CGPoint? {
         get { pointerBox.last }
         nonmutating set { pointerBox.last = newValue }
@@ -464,8 +469,10 @@ struct RemoteView: View {
                         remote.key("BACK")
                     }
                 )
+                .environment(\.remoteSurfaceActive, remoteSurfaceActive && !folder.isVisible)
             }
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .updating($mouseTouching) { _, state, _ in state = true }
                 .onChanged { value in
                     let box = pointerBox
                     if box.start == nil {
@@ -540,6 +547,21 @@ struct RemoteView: View {
                     resetPointer()
                 })
             .onChange(of: folder.isVisible) { _, _ in cancelPointer() }
+            .onChange(of: mouseTouching) { _, touching in
+                // A normal lift also resets the state; give `onEnded` a moment, then clean up a touch
+                // the system took away (no end ever came): release any held button, no cursor jump.
+                guard !touching, let started = pointerBox.start else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: InputCancellation.lostEndGrace)
+                    if pointerBox.start == started { cancelPointer() }
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { cancelPointer() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .glassRemoteCancelTouches)) { _ in
+                cancelPointer()
+            }
             .onDisappear { cancelPointer() }
     }
 

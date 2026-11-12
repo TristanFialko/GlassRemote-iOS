@@ -23,8 +23,12 @@ struct TitleDetailView: View {
     @StateObject private var model: TitleDetailModel
     @State private var season = 1
     @State private var result = ""
+    @State private var resultFailed = false
+    /// Only a handoff Android accepted offers "Continue on the TV" (BUG-022).
     @State private var handedOff = false
     @State private var showStreams = false
+    /// The episode the picker opens on: the tapped one, or the one being resumed (BUG-012).
+    @State private var pickerEpisode: Int?
     @State private var opened: MediaTitle?
     /// Continuation §F3: how a title opened from this page is presented, chosen while nothing is open.
     @State private var nestedStyle: DetailPresentation = .sheet
@@ -81,7 +85,7 @@ struct TitleDetailView: View {
         .animation(motion, value: model.phase)
         .sheet(isPresented: $showStreams) {
             StreamPickerSheet(title: title, episodes: model.detail?.episodes ?? [], initialSeason: season,
-                              onHandoff: { _ in handedOff = true })
+                              initialEpisode: pickerEpisode, onHandoff: { handoffFinished($0) })
                 .environmentObject(remote)
         }
         .sheet(item: openedBinding(.sheet)) { other in openedPage(other) }

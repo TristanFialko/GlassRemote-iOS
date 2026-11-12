@@ -6,8 +6,9 @@ import SwiftADB
 /// Nothing here shares state with the mouse: separate helper binary, separate remote
 /// path, separate ADB stream, separate queue, separate readiness flag, separate errors.
 /// `start` never throws, so a keyboard failure cannot affect the mouse or the app's
-/// connection state. While the keyboard is not ready, `send` returns false and the
-/// caller keeps using the existing ADB `input keyevent` path.
+/// connection state. While the keyboard is not ready, `send` returns false. Arrows and OK
+/// have no ADB fallback (RemoteModel.key reports that the helper needs a reconnect);
+/// BACK/HOME are not routed here and always use ADB `input keyevent`.
 @MainActor
 final class VirtualKeyboard {
     enum HIDUsage {
@@ -34,7 +35,8 @@ final class VirtualKeyboard {
 
     /// Human-readable keyboard status (shown in the Connection sheet).
     var onStatus: ((String) -> Void)?
-    /// Called when a write fails after being accepted, so the press can be re-sent via ADB.
+    /// Called with a routed button whose write failed after being accepted, so the caller can
+    /// report it. Navigation has no ADB fallback; live-typing failures go to `type`'s callback instead.
     var onFallback: ((String) -> Void)?
     /// Called when a running keyboard stream ends or fails on its own (not on stop()).
     var onStopped: (() -> Void)?
@@ -81,7 +83,7 @@ final class VirtualKeyboard {
         } catch {
             isReady = false
             stream = nil
-            report("Virtual keyboard unavailable · ADB fallback active: \(error.localizedDescription)")
+            report("Virtual keyboard unavailable · reconnect the TV box to restore arrows, OK and typing: \(error.localizedDescription)")
         }
     }
 
@@ -152,13 +154,20 @@ final class VirtualKeyboard {
         return true
     }
 
-    private func writeFailed(_ error: Error, key name: String, generation gen: Int) {
+    /// How long BACK/HOME wait for earlier arrow reports before going out anyway (BUG-023).
+    static let orderingDeadline: Double = 0.3
+
+    /// Finishes once every report queued before this call has been written (or has failed).
+    func pendingWrites() -> Task<Void, Never> { queue.barrier() }
+
+    /// `name` is nil for live-typing text, which is not a button and has no fallback.
+    private func writeFailed(_ error: Error, key name: String?, generation gen: Int) {
         guard gen == generation else { return }
         let wasReady = isReady
         isReady = false
-        report("Virtual keyboard stream failed · ADB fallback active: \(error.localizedDescription)")
+        report("Virtual keyboard stream failed · arrows, OK and typing paused until it reconnects: \(error.localizedDescription)")
         if wasReady {
-            onFallback?(name)
+            if let name { onFallback?(name) }
             onStopped?()
         }
     }
