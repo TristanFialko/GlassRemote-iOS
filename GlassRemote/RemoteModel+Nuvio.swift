@@ -41,14 +41,29 @@ extension RemoteModel {
     }
 
     nonisolated static func intentAccepted(_ output: String) -> Bool {
-        output.contains("GLASSREMOTE_INTENT_EXIT:0") && !output.localizedCaseInsensitiveContains("error")
-            && !output.localizedCaseInsensitiveContains("permission denial")
+        output.contains("GLASSREMOTE_INTENT_EXIT:0") && !intentReportedFailure(output)
+    }
+
+    /// `am start` echoes the intent (link included, e.g. `q=terror`) on its "Starting:" line, so only
+    /// the lines `am` uses to report a failure count, never a substring of the echoed data.
+    nonisolated static func intentReportedFailure(_ output: String) -> Bool {
+        for raw in output.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("Starting:") { continue }
+            if line.hasPrefix("Error:") || line.hasPrefix("Error type") || line.hasPrefix("Permission Denial") { return true }
+            if line.contains("unable to resolve Intent") || line.contains("Exception") { return true }
+        }
+        return false
     }
 
     @discardableResult
     func openInNuvio(_ title: MediaTitle) async -> String {
+        await openInNuvioResult(title).message
+    }
+
+    func openInNuvioResult(_ title: MediaTitle) async -> HandoffResult {
         guard let link = Self.nuvioDetailLink(kind: title.kind, id: title.id) else {
-            return "This title has no Nuvio-openable id."
+            return .failed("This title has no Nuvio-openable id.")
         }
         PlayerArtworkStore.shared.remember(title: title.name, posterURL: title.posterURL, landscapeURL: title.backgroundURL)
         return await sendNuvioLink(link, note: "detail \(title.id)")
@@ -56,23 +71,31 @@ extension RemoteModel {
 
     @discardableResult
     func searchInNuvio(_ query: String) async -> String {
-        guard let link = Self.nuvioSearchLink(query: query) else { return "Type at least two characters to search in Nuvio." }
+        await searchInNuvioResult(query).message
+    }
+
+    func searchInNuvioResult(_ query: String) async -> HandoffResult {
+        guard let link = Self.nuvioSearchLink(query: query) else { return .failed("Type at least two characters to search in Nuvio.") }
         return await sendNuvioLink(link, note: "search")
     }
 
-    private func sendNuvioLink(_ link: String, note: String) async -> String {
-        guard connected, let adb else { return "Not connected to the TV box." }
+    private func sendNuvioLink(_ link: String, note: String) async -> HandoffResult {
+        guard connected, let adb else { return .failed("Not connected to the TV box.") }
         do {
             let out = try await runShell(adb, ["sh", "-c", Self.nuvioIntentCommand(link: link)])
             GRLog.note("nuvio", "user-initiated link (\(note))")
-            if Self.intentAccepted(out) { return "Sent to Nuvio on the TV box. Android accepted the link; it doesn't confirm what Nuvio shows." }
-            // Link not handled or not exported: open Nuvio itself so the tap isn't wasted.
-            if let app = apps.first(where: { $0.package == Self.nuvioPackage }), await launchApp(app) {
-                return "This Nuvio build didn't accept the link, so Nuvio was opened instead."
+            if Self.intentAccepted(out) {
+                return HandoffResult(message: "Sent to Nuvio on the TV box. Android accepted the link; it doesn't confirm what Nuvio shows.",
+                                     succeeded: true)
             }
-            return "Nuvio didn't accept the link: \(out.trimmingCharacters(in: .whitespacesAndNewlines))"
+            // Link not handled or not exported: open Nuvio itself so the tap isn't wasted. Nuvio is then on
+            // screen, so continuing with the remote still makes sense.
+            if let app = apps.first(where: { $0.package == Self.nuvioPackage }), await launchApp(app) {
+                return HandoffResult(message: "This Nuvio build didn't accept the link, so Nuvio was opened instead.", succeeded: true)
+            }
+            return .failed("Nuvio didn't accept the link: \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
         } catch {
-            return "Couldn't send: \(error.localizedDescription)"
+            return .failed("Couldn't send: \(error.localizedDescription)")
         }
     }
 }

@@ -5,6 +5,8 @@ import UIKit
 struct AddonsPage: View {
     @ObservedObject private var store = AddonStore.shared
     @State private var showAdd = false
+    /// UX-017: swipe-to-delete asks first, like Remove on the detail page.
+    @State private var pendingRemoval: [String] = []
 
     var body: some View {
         List {
@@ -24,7 +26,8 @@ struct AddonsPage: View {
                         NavigationLink {
                             AddonDetailPage(addonID: addon.id)
                         } label: {
-                            AddonRow(addon: addon, name: store.displayName(for: addon), refreshing: store.refreshing.contains(addon.id))
+                            AddonRow(addon: addon, name: store.displayName(for: addon), refreshing: store.refreshing.contains(addon.id),
+                                     linkMissing: store.linkMissing(addon))
                         }
                         .swipeActions(edge: .leading) {
                             Button(addon.enabled ? "Disable" : "Enable") { store.setEnabled(addon.id, !addon.enabled) }
@@ -32,8 +35,7 @@ struct AddonsPage: View {
                         }
                     }
                     .onDelete { offsets in
-                        let ids = offsets.map { store.addons[$0].id }
-                        ids.forEach { store.remove($0) }
+                        pendingRemoval = offsets.map { store.addons[$0].id }
                     }
                     .onMove { store.move(fromOffsets: $0, toOffset: $1) }
                 } header: {
@@ -54,6 +56,20 @@ struct AddonsPage: View {
         }
         .refreshable { await store.refreshAll() }
         .sheet(isPresented: $showAdd) { AddAddonSheet() }
+        .confirmationDialog(removalTitle, isPresented: Binding(get: { !pendingRemoval.isEmpty },
+                                                               set: { if !$0 { pendingRemoval = [] } }),
+                            titleVisibility: .visible) {
+            Button("Remove", role: .destructive) {
+                let ids = pendingRemoval
+                pendingRemoval = []
+                ids.forEach { store.remove($0) }
+            }
+        }
+    }
+
+    private var removalTitle: String {
+        guard pendingRemoval.count == 1, let addon = store.addon(pendingRemoval[0]) else { return "Remove add-ons?" }
+        return "Remove \(store.displayName(for: addon))?"
     }
 }
 
@@ -101,6 +117,7 @@ struct AddonRow: View {
     /// Shown instead of the manifest name, e.g. "Torrentio 2" when an add-on is installed twice.
     var name: String? = nil
     var refreshing = false
+    var linkMissing = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -123,7 +140,10 @@ struct AddonRow: View {
                             .background(Capsule().fill(Color.secondary.opacity(0.14)))
                     }
                 }
-                if let error = addon.lastError {
+                if linkMissing {
+                    Label("Link missing — open to replace the link", systemImage: "link.badge.plus")
+                        .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                } else if let error = addon.lastError {
                     Text(error).font(.caption).foregroundStyle(.orange).lineLimit(2)
                 }
             }
