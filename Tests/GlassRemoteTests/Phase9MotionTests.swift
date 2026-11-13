@@ -93,12 +93,14 @@ final class Phase9MotionTests: XCTestCase {
 
     func testNoSleepsInNavigationOrTransitions() throws {
         // Timed waits stay only where they are protocol, polling, input or idle rules (ADB/Samsung
-        // transport, network scans, account polling, key repeat, hold-to-drag and click release, search
-        // debounce, palette settle, hero auto-advance, lens idle). Nothing sequences an animation.
+        // transport, Android TV Remote v2 pairing step/code timeouts and control-link idle timeout and
+        // reconnect backoff, network scans, account polling, key repeat, hold-to-drag and click release,
+        // search debounce, palette settle, hero auto-advance, lens idle). Nothing sequences an animation.
         let allowed: Set<String> = [
             "CinemetaCatalog.swift", "Concurrency.swift", "DiscoverHero.swift", "GlassStyle.swift",
             "NetworkScanner.swift", "NuvioAccount.swift", "RemoteModel+Cursor.swift", "RemoteModel+Features.swift",
-            "RemoteModel+Playback.swift", "RemoteModel.swift", "RemoteView.swift", "RepeatKey.swift",
+            "RemoteModel+Playback.swift", "RemoteModel.swift", "RemoteV2ControlConnection.swift",
+            "RemoteV2PairingSession.swift", "RemoteView.swift", "RepeatKey.swift",
             "SamsungTV.swift", "SamsungVolume.swift", "TVShell.swift", "Theme.swift",
         ]
         for file in try sources() where !allowed.contains(file.name) {
