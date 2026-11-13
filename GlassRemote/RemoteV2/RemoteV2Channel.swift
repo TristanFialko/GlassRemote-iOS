@@ -78,6 +78,10 @@ final class RemoteV2TLSChannel: RemoteV2Channel {
             if let chain = SecTrustCopyCertificateChain(secTrust) as? [SecCertificate], let leaf = chain.first {
                 box.key = RemoteV2TLSChannel.publicKey(of: leaf)
             }
+            // Accepted here because the TV's certificate is self-signed (no chain to check). The TV
+            // is authenticated by key instead: pairing verifies the code's check byte against this
+            // key, and RemoteV2ControlConnection refuses a control session whose key differs from
+            // the one pinned at pairing, before reading or sending anything.
             complete(true)
         }, queue)
         let tcp = NWProtocolTCP.Options()
@@ -168,23 +172,37 @@ final class RemoteV2TLSChannel: RemoteV2Channel {
     }
 }
 
-/// Which TVs this iPhone has paired with (a UX hint only; the TV keeps the real pairing, bound to the
-/// Keychain key). Never stores codes or secrets.
+/// Which TVs this iPhone has paired with, and the fingerprint of the RSA key each TV proved during
+/// pairing (the code's check byte binds that key to this TLS session). Control connections must
+/// present the same key. Fingerprints are public-key hashes, not secrets; codes and pairing secrets
+/// are never stored. A host without a fingerprint (a record from an earlier build) counts as unpaired.
 enum RemoteV2PairingRecord {
     static let defaultsKey = "remoteV2.pairedHosts"
+    static let fingerprintsKey = "remoteV2.tvKeyFingerprints"
 
     static func isPaired(_ host: String, defaults: UserDefaults = .standard) -> Bool {
         (defaults.stringArray(forKey: defaultsKey) ?? []).contains(host)
+            && tvKeyFingerprint(for: host, defaults: defaults) != nil
     }
 
-    static func markPaired(_ host: String, defaults: UserDefaults = .standard) {
+    static func tvKeyFingerprint(for host: String, defaults: UserDefaults = .standard) -> String? {
+        (defaults.dictionary(forKey: fingerprintsKey) as? [String: String])?[host]
+    }
+
+    static func markPaired(_ host: String, tvKey: RemoteV2RSAPublicKey, defaults: UserDefaults = .standard) {
         var hosts = defaults.stringArray(forKey: defaultsKey) ?? []
         if !hosts.contains(host) { hosts.append(host) }
         defaults.set(hosts, forKey: defaultsKey)
+        var prints = (defaults.dictionary(forKey: fingerprintsKey) as? [String: String]) ?? [:]
+        prints[host] = tvKey.fingerprint
+        defaults.set(prints, forKey: fingerprintsKey)
     }
 
     static func forget(_ host: String, defaults: UserDefaults = .standard) {
         let hosts = (defaults.stringArray(forKey: defaultsKey) ?? []).filter { $0 != host }
         defaults.set(hosts, forKey: defaultsKey)
+        var prints = (defaults.dictionary(forKey: fingerprintsKey) as? [String: String]) ?? [:]
+        prints[host] = nil
+        defaults.set(prints, forKey: fingerprintsKey)
     }
 }

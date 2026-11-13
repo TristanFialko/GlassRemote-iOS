@@ -73,6 +73,20 @@ struct RemoteV2RSAPublicKey: Equatable {
     }
 }
 
+extension RemoteV2RSAPublicKey {
+    /// SHA-256 (lowercase hex) over the length-prefixed minimal modulus and exponent. Identifies the
+    /// TV's key for pinning; a public value, safe to store.
+    var fingerprint: String {
+        var hash = SHA256()
+        for part in [RemoteV2PairingCode.minimal(modulus), RemoteV2PairingCode.minimal(exponent)] {
+            let n = UInt32(part.count)
+            hash.update(data: [UInt8(n >> 24 & 0xFF), UInt8(n >> 16 & 0xFF), UInt8(n >> 8 & 0xFF), UInt8(n & 0xFF)])
+            hash.update(data: part)
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 /// Just enough DER to read PKCS#1 keys (definite lengths only).
 struct RemoteV2DERReader {
     enum Failure: Error { case malformed }

@@ -4,7 +4,10 @@ import Foundation
 /// reports `.connected` only after RemoteStart, and sends keys and app links only while connected
 /// and only for negotiated features. A dropped link reconnects with bounded backoff; a rejected
 /// TLS handshake means the TV no longer knows this iPhone, so it stops and reports `.notPaired`.
-/// Volume and mute key codes are dropped here too, as a last line of defence.
+/// Before anything is read or sent, the TV must present the RSA key pinned at pairing; a different
+/// key stops the connection with `.identityMismatch` (no retry), and no pinned key means `.notPaired`.
+/// Volume/mute, power/standby/wake key codes and app links are dropped here too, as a last line of
+/// defence (all ADB-only by policy).
 final class RemoteV2ControlConnection {
     static let port: UInt16 = 6466
 
@@ -17,6 +20,7 @@ final class RemoteV2ControlConnection {
     private let loadCredential: () throws -> RemoteV2ClientCredential
     private let makeChannel: RemoteV2ChannelFactory
     private let idleTimeout: TimeInterval
+    private let expectedTVKey: () -> String?
 
     private var session = RemoteV2Session()
     private var decoder = RemoteV2FrameDecoder()
@@ -26,6 +30,7 @@ final class RemoteV2ControlConnection {
     private var running = false
     private var failures = 0
     private var state: RemoteV2LinkState = .off
+    private var peerVerified = false
 
     init(host: String,
          queue: DispatchQueue = DispatchQueue(label: "GlassRemote.RemoteV2.control"),
@@ -34,8 +39,10 @@ final class RemoteV2ControlConnection {
          loadCredential: @escaping () throws -> RemoteV2ClientCredential = {
              try RemoteV2KeychainIdentityStore.shared.loadOrCreate()
          },
-         makeChannel: @escaping RemoteV2ChannelFactory = RemoteV2TLSChannel.factory) {
+         makeChannel: @escaping RemoteV2ChannelFactory = RemoteV2TLSChannel.factory,
+         expectedTVKey: (() -> String?)? = nil) {
         self.host = host
+        self.expectedTVKey = expectedTVKey ?? { RemoteV2PairingRecord.tvKeyFingerprint(for: host) }
         self.queue = queue
         self.callbackQueue = callbackQueue
         self.idleTimeout = idleTimeout
@@ -73,6 +80,7 @@ final class RemoteV2ControlConnection {
         let token = generation
         session = RemoteV2Session()
         decoder.reset()
+        peerVerified = false
         let credential: RemoteV2ClientCredential
         do {
             credential = try loadCredential()
@@ -86,6 +94,7 @@ final class RemoteV2ControlConnection {
         self.channel = channel
         channel.onReady = { [weak self] in
             guard let self = self, self.generation == token else { return }
+            guard self.verifyPeer(self.channel?.peerPublicKey) else { return }
             self.armIdle()
         }
         channel.onReceive = { [weak self] bytes in
@@ -99,7 +108,27 @@ final class RemoteV2ControlConnection {
         channel.start()
     }
 
+    /// The TV must present the key it proved during pairing. Runs once the TLS handshake completes,
+    /// before any frame is processed or written.
+    private func verifyPeer(_ key: RemoteV2RSAPublicKey?) -> Bool {
+        guard let expected = expectedTVKey() else {
+            running = false
+            teardown()
+            set(.notPaired)
+            return false
+        }
+        guard let key = key, key.fingerprint == expected else {
+            running = false
+            teardown()
+            set(.identityMismatch)
+            return false
+        }
+        peerVerified = true
+        return true
+    }
+
     private func receive(_ bytes: [UInt8]) {
+        guard peerVerified else { return }
         let bodies: [[UInt8]]
         do {
             bodies = try decoder.append(bytes)
@@ -123,12 +152,13 @@ final class RemoteV2ControlConnection {
     }
 
     private func sendCommand(_ outbound: RemoteV2Outbound) {
-        guard channel != nil, session.ready else { return }
+        guard channel != nil, peerVerified, session.ready else { return }
         switch outbound {
         case let .key(code, _):
-            guard !RemoteV2KeyMap.forbidden.contains(code), session.supports(.key) else { return }
+            guard !RemoteV2KeyMap.forbidden.contains(code), !RemoteV2KeyMap.adbOnlyCodes.contains(code),
+                  session.supports(.key) else { return }
         case .appLink:
-            guard session.supports(.appLink) else { return }
+            return // app launch is ADB-only by policy
         case .configure, .setActive, .pingResponse:
             return
         }

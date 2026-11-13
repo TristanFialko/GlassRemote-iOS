@@ -16,9 +16,12 @@ enum RemoteOperation: String, CaseIterable {
     /// Transports that may carry this operation, most preferred first.
     var allowedTransports: [RemoteTransportKind] {
         switch self {
-        case .dpad, .select, .back, .home, .menu, .media, .power, .appLaunch:
+        case .dpad, .select, .back, .home, .menu, .media:
             return [.remoteV2, .adb]
-        case .text, .mouse, .scroll, .appDiscovery, .diagnostics, .helpers, .soundbarVolume:
+        // Power/standby/wake and app launch stay on ADB by policy, even when the TV negotiates the
+        // v2 power or app-link features (handoff transport policy; see REMOTE_V2_SECURITY_REVIEW.md).
+        case .power, .appLaunch,
+             .text, .mouse, .scroll, .appDiscovery, .diagnostics, .helpers, .soundbarVolume:
             return [.adb]
         }
     }
@@ -26,8 +29,7 @@ enum RemoteOperation: String, CaseIterable {
     /// The v2 feature the TV must have negotiated for this operation.
     var requiredV2Feature: RemoteV2Features? {
         switch self {
-        case .dpad, .select, .back, .home, .menu, .media, .power: return .key
-        case .appLaunch: return .appLink
+        case .dpad, .select, .back, .home, .menu, .media: return .key
         default: return nil
         }
     }
@@ -127,15 +129,17 @@ enum RemoteV2KeyMap {
         "UP": 19, "DOWN": 20, "LEFT": 21, "RIGHT": 22, "OK": 23,
         "BACK": 4, "HOME": 3, "MENU": 82,
         "PLAY_PAUSE": 85, "STOP": 86, "NEXT": 87, "PREVIOUS": 88,
-        "REWIND": 89, "FAST_FORWARD": 90, "PLAY": 126, "PAUSE": 127,
-        "POWER": 26
+        "REWIND": 89, "FAST_FORWARD": 90, "PLAY": 126, "PAUSE": 127
     ]
 
     /// VOLUME_UP, VOLUME_DOWN, VOLUME_MUTE, MUTE (microphone).
     static let forbidden: Set<Int32> = [24, 25, 164, 91]
 
+    /// POWER, SLEEP (standby) and WAKEUP: ADB-only by policy. The control connection drops them too.
+    static let adbOnlyCodes: Set<Int32> = [26, 223, 224]
+
     static func code(for key: String) -> Int32? {
-        guard let code = codes[key], !forbidden.contains(code) else { return nil }
+        guard let code = codes[key], !forbidden.contains(code), !adbOnlyCodes.contains(code) else { return nil }
         return code
     }
 
@@ -146,7 +150,7 @@ enum RemoteV2KeyMap {
 
     /// The operation for a discrete Android key code, or nil when that code must stay on ADB.
     static func discreteOperation(forAndroidCode code: Int) -> RemoteOperation? {
-        guard let code32 = Int32(exactly: code), !forbidden.contains(code32),
+        guard let code32 = Int32(exactly: code), !forbidden.contains(code32), !adbOnlyCodes.contains(code32),
               discreteMediaCodes.contains(code32) else { return nil }
         return .media
     }
@@ -158,7 +162,6 @@ enum RemoteV2KeyMap {
         case "BACK": return .back
         case "HOME": return .home
         case "MENU": return .menu
-        case "POWER": return .power
         case "PLAY_PAUSE", "STOP", "NEXT", "PREVIOUS", "REWIND", "FAST_FORWARD", "PLAY", "PAUSE": return .media
         default: return nil
         }
@@ -172,12 +175,16 @@ enum RemoteV2LinkState: Equatable {
     case connecting
     case connected
     case unreachable(retryIn: Int)
+    /// The TV presented a different RSA key from the one it proved during pairing. Fails closed
+    /// (no commands, no automatic retry) until the user pairs again.
+    case identityMismatch
     case failed(String)
 
     var label: String {
         switch self {
         case .off: return "Remote v2 off"
         case .notPaired: return "Remote v2 not paired"
+        case .identityMismatch: return "Remote v2 blocked · TV identity changed, pair again"
         case .pairing: return "Remote v2 pairing…"
         case .connecting: return "Remote v2 connecting…"
         case .connected: return "Remote v2 connected"

@@ -5,7 +5,7 @@ Reference: tronikos/androidtvremote2 v0.3.3 (commit f95bfb4046668dcd770e569479f6
 ## Transports
 - Pairing: TLS on TCP 6467, Polo protocol v2, varint-length-prefixed protobuf frames.
 - Control: TLS on TCP 6466, RemoteMessage protobuf, same framing (frames capped by RemoteV2FrameDecoder).
-- Client identity: RSA 2048 in the Keychain (AfterFirstUnlockThisDeviceOnly, tag com.glassremote.remotev2.client-key) and a self-signed X.509 v3 certificate (CN=atvremote, SHA-256/RSA, 20 years). The TV's self-signed certificate is accepted without chain validation, and its leaf public key is captured per TLS session.
+- Client identity: RSA 2048 in the Keychain (AfterFirstUnlockThisDeviceOnly, tag com.glassremote.remotev2.client-key) and a self-signed X.509 v3 certificate (CN=atvremote, SHA-256/RSA, 20 years). The TV's self-signed certificate has no chain to validate; instead its leaf RSA key is captured per TLS session, checked against the pairing code's check byte, pinned per host at pairing (SHA-256 fingerprint), and required to match on every control connection (mismatch: "TV identity changed, pair again", no retry). See `REMOTE_V2_SECURITY_REVIEW.md`.
 
 ## Pairing (RemoteV2PairingSession)
 1. PairingRequest(service "atvremote", client "GlassRemote") -> ack
@@ -27,7 +27,7 @@ Reference: tronikos/androidtvremote2 v0.3.3 (commit f95bfb4046668dcd770e569479f6
 - Always ADB: text/IME, mouse/UHID, trackpad scroll, app discovery, diagnostics, helpers, soundbar volume.
 - Volume and mute never use Remote v2: codes 24, 25, 164 and 91 are blocked in the key map and again in the control connection.
 - A held key is pinned to the transport that started it; if that transport goes down, the rest of the hold is dropped.
-- Power stays on its existing paths by design: standby/wake send SLEEP 223 / WAKEUP 224 over ADB (idempotent), and "turn everything off" adds the Samsung TV_POWER key. Remote v2's POWER 26 is a toggle, which would change the meaning of standby/wake, so it is not used. SLEEP/WAKEUP over v2 is not enabled until verified on hardware.
+- Power stays on its existing paths by design: standby/wake send SLEEP 223 / WAKEUP 224 over ADB (idempotent), and "turn everything off" adds the Samsung TV_POWER key. Remote v2's POWER 26 is a toggle, which would change the meaning of standby/wake, so it is not used. SLEEP/WAKEUP over v2 is not enabled until verified on hardware. Enforced in code: `RemoteOperation.power`/`.appLaunch` allow ADB only, POWER is not in the v2 key map, and the control connection drops codes 26/223/224 and app links.
 - App launch stays on ADB by design: the app launches by package/activity over ADB with its existing feedback, while v2 offers only an app-link URI (`RemoteV2Outbound.appLink`) with no launch result. App discovery is ADB-only.
 
 ## Hardware acceptance (not yet done, requires a real Android TV / Google TV)

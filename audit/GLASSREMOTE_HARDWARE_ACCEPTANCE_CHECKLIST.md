@@ -1098,7 +1098,7 @@ Stream picker shows “Open in Nuvio” first, then add-on streams. Handoff to N
 
 ## 12. Android TV Remote v2 (optional transport)
 
-Status: **not tested on hardware.** Protocol and routing details: `audit/REMOTE_V2_PROTOCOL_NOTES.md`.
+Status: **not tested on hardware.** Protocol and routing details: `audit/REMOTE_V2_PROTOCOL_NOTES.md`. Trust model: `audit/REMOTE_V2_SECURITY_REVIEW.md`. Full 12-step procedure (all NOT TESTED): `audit/REMOTE_V2_HARDWARE_TEST_PROCEDURE.md`.
 
 ### HW-RV2-01 — Pairing
 
@@ -1108,7 +1108,7 @@ Status: **not tested on hardware.** Protocol and routing details: `audit/REMOTE_
 - **Steps:**
   1. Tap Pair; read the code on the TV.
   2. Type a wrong code, then the correct code.
-- **Expected:** The wrong code is refused locally without ending pairing; the correct code pairs and the status reads "Remote v2 connected".
+- **Expected:** The wrong code is refused locally without ending pairing; the correct code pairs and the status reads "Remote v2 connected" (not "TV identity changed": the TV key pinned at pairing must match the control port, HW-P03).
 - **Result:** ☐ Pass ☐ Fail ☐ Blocked  **Notes:** ________________________________
 
 ### HW-RV2-02 — Reconnect after relaunch

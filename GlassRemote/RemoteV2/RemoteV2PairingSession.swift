@@ -28,6 +28,8 @@ final class RemoteV2PairingSession {
     private var decoder = RemoteV2FrameDecoder()
     private var channel: RemoteV2Channel?
     private var credential: RemoteV2ClientCredential?
+    /// The TV key the accepted code was checked against; pinned when the TV confirms the secret.
+    private var verifiedServerKey: RemoteV2RSAPublicKey?
     private var generation = 0
     private var timeoutToken = 0
     private var started = false
@@ -142,6 +144,7 @@ final class RemoteV2PairingSession {
             return
         }
         guard let message = machine.submit(secret: secret) else { return }
+        verifiedServerKey = server
         write(message)
         armTimeout(Self.stepTimeout)
         publish()
@@ -173,7 +176,9 @@ final class RemoteV2PairingSession {
         generation += 1
         channel?.cancel()
         channel = nil
-        if machine.phase == .paired { RemoteV2PairingRecord.markPaired(host) }
+        if machine.phase == .paired, let tvKey = verifiedServerKey {
+            RemoteV2PairingRecord.markPaired(host, tvKey: tvKey)
+        }
         publish()
     }
 
