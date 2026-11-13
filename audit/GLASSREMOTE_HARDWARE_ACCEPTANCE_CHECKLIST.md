@@ -1137,8 +1137,9 @@ Status: **not tested on hardware.** Protocol and routing details: `audit/REMOTE_
 - **Devices:** iPhone, Box
 - **Preconditions:** Remote v2 connected; media playing.
 - **Steps:**
-  1. Use Play, Pause, Next, Previous, Rewind and Fast-forward from Player, Now Playing and Remote.
-- **Expected:** Each tap acts once; the app log shows "sent over Remote v2"; an unconfirmed Play/Pause is reported as not accepted, with no ADB retry.
+  1. Use Play, Pause, Next, Previous, Rewind and Fast-forward from Now Playing and the compact now-playing bar (the Remote page has no media buttons).
+  2. Disable ADB (USB/network debugging) with v2 still connected, open Now Playing, and use Rewind, Play/Pause and Fast-forward.
+- **Expected:** Step 1: each tap acts once; the app log shows "sent over Remote v2"; an unconfirmed Play/Pause is reported as not accepted, with no ADB retry. Step 2: each tap acts once on the TV; the app shows "sent over Remote v2 · not confirmed"; the log shows no ADB attempt and no dispatch retry; with v2 also down the buttons are disabled and nothing is sent.
 - **Result:** ☐ Pass ☐ Fail ☐ Blocked  **Notes:** ________________________________
 
 ### HW-RV2-05 — Link lost mid-hold

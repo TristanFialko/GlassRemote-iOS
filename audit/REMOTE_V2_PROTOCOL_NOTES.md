@@ -21,9 +21,10 @@ Reference: tronikos/androidtvremote2 v0.3.3 (commit f95bfb4046668dcd770e569479f6
 
 ## Routing
 - Remote v2 is opt-in (off by default). When enabled and connected, D-pad, OK, Back and Home use v2; otherwise they use ADB.
-- Media transport keys (PLAY_PAUSE 85, STOP 86, NEXT 87, PREVIOUS 88, REWIND 89, FAST_FORWARD 90, PLAY 126, PAUSE 127) sent through `androidKey(_:)` (Player, now-playing card, Remote media buttons) use v2 when it is enabled, connected and has negotiated the key feature; otherwise ADB `input keyevent`. Each tap goes over exactly one transport (`RemoteTransportPolicy`, `RemoteV2KeyMap.discreteMediaCodes`).
+- Media transport keys (PLAY_PAUSE 85, STOP 86, NEXT 87, PREVIOUS 88, REWIND 89, FAST_FORWARD 90, PLAY 126, PAUSE 127) sent through `sendMedia` → `androidKey(_:)` (Now Playing transport and the compact now-playing bar; the Remote page has no media buttons) use v2 when it is enabled, connected and has negotiated the key feature; otherwise ADB `input keyevent`. Each tap goes over exactly one transport (`RemoteTransportPolicy`, `RemoteV2KeyMap.discreteMediaCodes`).
 - Play/pause verification still reads the media session over ADB. The `cmd media_session dispatch` retry runs only when the key itself went over ADB (`MediaRetryPolicy`); a key handed to v2 is never re-sent on ADB, so an unconfirmed v2 play/pause is reported as not accepted.
-- Media commands still require the ADB connection (unchanged guard in `sendMedia`), because their result is checked against the ADB media session.
+- Media commands no longer require ADB. `sendMedia` needs a permitted media transport (`MediaCommandPlan`): with ADB down and v2 enabled, connected and key-negotiated, the key is sent once over v2 and reported as "sent over Remote v2 · not confirmed". There is no ADB poll, no `media_session dispatch` retry, and no seek measurement. If ADB drops while a v2 key is in flight, the result is also reported as unconfirmed, never "not accepted". With neither transport ready, nothing is sent and "Not connected" is shown.
+- UI gating (`MediaControlMode`): with ADB up, the Player's controls follow the ADB session as before. With ADB down and v2 ready, the Player shows a plain Rewind / Play-Pause (toggle, 85) / Fast-forward row, because no session state is known. Otherwise media controls are disabled. The compact now-playing bar only appears for a live ADB session, so it is unchanged.
 - Always ADB: text/IME, mouse/UHID, trackpad scroll, app discovery, diagnostics, helpers, soundbar volume.
 - Volume and mute never use Remote v2: codes 24, 25, 164 and 91 are blocked in the key map and again in the control connection.
 - A held key is pinned to the transport that started it; if that transport goes down, the rest of the hold is dropped.
@@ -35,6 +36,7 @@ Reference: tronikos/androidtvremote2 v0.3.3 (commit f95bfb4046668dcd770e569479f6
 - [ ] Relaunch the app: it reconnects without pairing again (Keychain identity persists).
 - [ ] D-pad, OK, Back and Home act once per tap; holds repeat and stop on release.
 - [ ] With v2 connected: Play, Pause, Next, Previous, Rewind and Fast-forward act once per tap (log shows "sent over Remote v2"); Play/Pause are confirmed by the session, or reported as not accepted with no ADB retry.
+- [ ] With ADB disabled and v2 connected: the Player's Rewind / Play-Pause / Fast-forward row acts once per tap, shows "sent over Remote v2 · not confirmed", and makes no ADB attempt.
 - [ ] With v2 off or disconnected: the same media buttons behave exactly as before (ADB keyevent, dispatch retry for play/pause).
 - [ ] Standby, wake and "turn everything off" behave exactly as before with v2 on and off.
 - [ ] Turn Wi-Fi off and on mid-hold: no stray or duplicate keys; v2 reconnects with backoff.

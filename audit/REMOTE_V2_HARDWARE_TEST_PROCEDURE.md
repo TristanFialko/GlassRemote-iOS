@@ -13,6 +13,6 @@ Every item below is **NOT TESTED**. These checks have no automated equivalent; u
 | HW-P07 | Volume never over v2 | With v2 connected, use volume up/down/mute on every route (soundbar, Samsung). | Soundbar changes via ADB 24/25/164 over HDMI-CEC. Nothing is sent over v2. | NOT TESTED |
 | HW-P08 | Power and app launch over ADB | With v2 connected, use standby/wake and launch an app. | Works over ADB. The log never shows these over v2. | NOT TESTED |
 | HW-P09 | Link lost mid-hold | Hold a D-pad key, then toggle the iPhone's Wi-Fi. | The hold stops. No duplicate input on ADB. Backoff of 1/2/4/8/16/30 s. | NOT TESTED |
-| HW-P10 | ADB down, v2 up | Stop ADB (disable debugging). | Navigation and media go over v2. Text, trackpad, apps and power report "unavailable". | NOT TESTED |
+| HW-P10 | ADB down, v2 up | Stop ADB (disable debugging). Use the D-pad, OK, Back and Home, then the Now Playing Rewind / Play-Pause / Fast-forward row. | Navigation goes over v2. Each media tap is sent once over v2 and shows "sent over Remote v2 · not confirmed". The log shows no ADB attempt and no dispatch retry. Text, trackpad, apps and power report "unavailable". | NOT TESTED |
 | HW-P11 | Pairing removed on TV | Remove GlassRemote in the TV's settings. | "Remote v2 not paired". Pairing again works. | NOT TESTED |
 | HW-P12 | TV identity change | Factory-reset the box (or put a different box on the same IP). | "Remote v2 blocked · TV identity changed, pair again". No commands are sent. Pair again or Forget recovers. | NOT TESTED |
