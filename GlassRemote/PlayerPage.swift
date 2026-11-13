@@ -24,6 +24,8 @@ struct PlayerPage: View {
     @EnvironmentObject private var remote: RemoteModel
     @EnvironmentObject private var navigator: PageNavigator
     @ObservedObject private var artwork = PlayerArtworkStore.shared
+    /// Re-renders when the Remote v2 link changes: it decides whether media keys are reachable.
+    @ObservedObject private var remoteV2 = RemoteV2Controller.shared
     @Environment(\.glassTheme) private var theme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -166,6 +168,10 @@ struct PlayerPage: View {
             if spread { Spacer(minLength: PlayerLayoutPolicy.landscapeMinRowGap) }
             if scene.media.isActive {
                 transport(media: scene.media, controls: scene.controls)
+                    .transition(.opacity)
+                if spread { Spacer(minLength: PlayerLayoutPolicy.landscapeMinRowGap) }
+            } else if remote.mediaControlMode == .remoteV2Only {
+                remoteV2Transport()
                     .transition(.opacity)
                 if spread { Spacer(minLength: PlayerLayoutPolicy.landscapeMinRowGap) }
             }
@@ -324,7 +330,7 @@ struct PlayerPage: View {
                      caption: PlayerCaptionPolicy.caption(phase: phase, seek: failureNote(now: now) ?? seekNote(now: now)))
                 .transition(.opacity)
         } else {
-            Text(phase.hint)
+            Text(failureNote(now: now) ?? (remote.mediaControlMode == .remoteV2Only ? MediaControlMode.remoteV2OnlyHint : phase.hint))
                 .scaledFont(15)
                 .foregroundStyle(Color.inkAlpha(PlayerTextContrast.secondary(increased: increaseContrast)))
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -404,26 +410,43 @@ struct PlayerPage: View {
     /// and no bar behind them: the glyphs sit directly on the artwork backdrop.
     private func transport(media: MediaState, controls: PlayerControls) -> some View {
         let busy = remote.mediaCommandPending
+        // Enabled only while a permitted transport can carry the key (MediaControlMode).
+        let reachable = remote.mediaControlMode != .unavailable
         // Relabelled "10 s" only once BOTH keys have been measured, repeatedly, at about ten seconds.
         let tenSecond = remote.seekLearner.isTenSecond(package: media.package)
         return HStack(spacing: 0) {
             if controls.previousTrack {
-                control("backward.end.fill", "Previous track", enabled: !busy) { remote.sendMedia(.previous) }
+                control("backward.end.fill", "Previous track", enabled: !busy && reachable) { remote.sendMedia(.previous) }
             }
             if controls.rewind {
-                control(tenSecond ? "gobackward.10" : "backward.fill", tenSecond ? "Back 10 seconds" : "Rewind", enabled: !busy) {
+                control(tenSecond ? "gobackward.10" : "backward.fill", tenSecond ? "Back 10 seconds" : "Rewind", enabled: !busy && reachable) {
                     remote.sendMedia(.rewind)
                 }
             }
-            playButton(media: media, enabled: controls.playPause && !busy, busy: busy)
+            playButton(media: media, enabled: controls.playPause && !busy && reachable, busy: busy)
             if controls.fastForward {
-                control(tenSecond ? "goforward.10" : "forward.fill", tenSecond ? "Forward 10 seconds" : "Fast forward", enabled: !busy) {
+                control(tenSecond ? "goforward.10" : "forward.fill", tenSecond ? "Forward 10 seconds" : "Fast forward", enabled: !busy && reachable) {
                     remote.sendMedia(.fastForward)
                 }
             }
             if controls.nextTrack {
-                control("forward.end.fill", "Next track", enabled: !busy) { remote.sendMedia(.next) }
+                control("forward.end.fill", "Next track", enabled: !busy && reachable) { remote.sendMedia(.next) }
             }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: PlayerLayoutPolicy.transportHeight)
+        .padding(.horizontal, PlayerLayoutPolicy.transportInset)
+    }
+
+    /// ADB is down but Remote v2 carries media keys (MediaControlMode.remoteV2Only). With no session to
+    /// read, the row offers plain keys: Play/Pause (the toggle, since the current state is unknown),
+    /// rewind and fast-forward. Each tap is sent once over Remote v2 and reported as not confirmed.
+    private func remoteV2Transport() -> some View {
+        let busy = remote.mediaCommandPending
+        return HStack(spacing: 0) {
+            control("backward.fill", "Rewind", enabled: !busy) { remote.sendMedia(.rewind) }
+            control("playpause.fill", "Play or pause", enabled: !busy) { remote.sendMedia(.playPause) }
+            control("forward.fill", "Fast forward", enabled: !busy) { remote.sendMedia(.fastForward) }
         }
         .frame(maxWidth: .infinity)
         .frame(height: PlayerLayoutPolicy.transportHeight)

@@ -222,3 +222,65 @@ enum MediaRetryPolicy {
         originalTransport == .adb
     }
 }
+
+/// How one media command is reported after its single send (final pass §2).
+enum MediaVerification: Equatable {
+    /// Not sent: no permitted transport is ready. Reported as unavailable.
+    case unavailable
+    /// The ADB media session can be read: the result is checked against it as before.
+    case readSession
+    /// Sent once over Remote v2 with no ADB media session to read: reported as sent but not
+    /// independently confirmed. Never retried and never re-sent on ADB.
+    case unconfirmed
+}
+
+/// What one media command does on the links available when it starts (pure, unit tested). It names at
+/// most one transport, so a command can never be sent twice or moved to the other link.
+struct MediaCommandPlan: Equatable {
+    /// The single transport the key goes on, or nil when nothing is sent.
+    var transport: RemoteTransportKind?
+    var verification: MediaVerification
+    /// Whether an unconfirmed play / pause may get its one `cmd media_session dispatch` retry (ADB only).
+    var mayRetryViaDispatch: Bool
+
+    /// Only media transport keys (RemoteV2KeyMap.discreteMediaCodes) have a media plan; volume, mute,
+    /// power, standby, wake and text keys never enter the media path and get no transport here.
+    static func make(keycode: Int, hasDispatchRetry: Bool, links: RemoteTransportAvailability) -> MediaCommandPlan {
+        guard let operation = RemoteV2KeyMap.discreteOperation(forAndroidCode: keycode),
+              let transport = RemoteTransportPolicy.route(operation, links) else {
+            return MediaCommandPlan(transport: nil, verification: .unavailable, mayRetryViaDispatch: false)
+        }
+        return MediaCommandPlan(transport: transport,
+                                verification: verification(carrier: transport, sessionReadable: links.adbReady),
+                                mayRetryViaDispatch: hasDispatchRetry && MediaRetryPolicy.mayRetryViaDispatch(originalTransport: transport))
+    }
+
+    /// How to report a command once its key went out (or did not). `sessionReadable` is re-read at that
+    /// moment, so an ADB link that dropped while a Remote v2 key was in flight is reported as
+    /// unconfirmed, never as "the TV refused".
+    static func verification(carrier: RemoteTransportKind?, sessionReadable: Bool) -> MediaVerification {
+        guard let carrier = carrier else { return .unavailable }
+        if carrier == .remoteV2 && !sessionReadable { return .unconfirmed }
+        return .readSession
+    }
+}
+
+/// Which media controls the UI may offer (pure, unit tested). Controls are enabled only when at least
+/// one permitted transport can carry a media key.
+enum MediaControlMode: Equatable {
+    /// Neither link can carry media keys: nothing is enabled.
+    case unavailable
+    /// ADB is up: the session is read and the controls follow it (behaviour unchanged).
+    case session
+    /// ADB is down and Remote v2 (enabled, connected, key feature negotiated) carries media keys. There
+    /// is no session to read, so the Player offers plain keys, each sent once and reported unconfirmed.
+    case remoteV2Only
+
+    static func resolve(_ links: RemoteTransportAvailability) -> MediaControlMode {
+        if links.adbReady { return .session }
+        return RemoteTransportPolicy.route(.media, links) == .remoteV2 ? .remoteV2Only : .unavailable
+    }
+
+    /// The Player's hint while only Remote v2 can carry media keys.
+    static let remoteV2OnlyHint = "Media keys via Remote v2 · sent once, not confirmed (ADB not connected)"
+}

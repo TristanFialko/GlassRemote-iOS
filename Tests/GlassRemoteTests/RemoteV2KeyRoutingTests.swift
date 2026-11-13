@@ -100,3 +100,135 @@ final class RemoteV2KeyRoutingTests: XCTestCase {
         XCTAssertFalse(MediaRetryPolicy.mayRetryViaDispatch(originalTransport: nil))
     }
 }
+
+/// Final pass §2: supported media keys over Remote v2 while ADB is down, with no duplicate send and no
+/// ADB retry, and UI availability that follows transport readiness.
+final class RemoteV2MediaWithoutADBTests: XCTestCase {
+    private let v2Only = RemoteTransportAvailability(v2Ready: true, v2Features: [.key], adbReady: false, preferV2: true)
+    private let both = RemoteTransportAvailability(v2Ready: true, v2Features: [.key], adbReady: true, preferV2: true)
+    private let adbOnly = RemoteTransportAvailability(v2Ready: false, v2Features: [], adbReady: true, preferV2: true)
+    private let neither = RemoteTransportAvailability(v2Ready: false, v2Features: [], adbReady: false, preferV2: true)
+    private let commands: [MediaCommand] = [.play, .pause, .playPause, .next, .previous, .rewind, .fastForward]
+    private let forbiddenCodes = [24, 25, 164, 91, 26, 223, 224]
+
+    private func everyLinkState() -> [RemoteTransportAvailability] {
+        var out: [RemoteTransportAvailability] = []
+        for v2Ready in [false, true] {
+            for adbReady in [false, true] {
+                for preferV2 in [false, true] {
+                    for features in [RemoteV2Features(), [.key], RemoteV2Features.requested] {
+                        out.append(RemoteTransportAvailability(v2Ready: v2Ready, v2Features: features,
+                                                               adbReady: adbReady, preferV2: preferV2))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    func testV2ReadyADBDownSendsExactlyOnceOverV2AndReportsUnconfirmed() {
+        for command in commands {
+            let plan = MediaCommandPlan.make(command, links: v2Only)
+            XCTAssertEqual(plan.transport, .remoteV2, "\(command)")
+            XCTAssertEqual(plan.verification, .unconfirmed, "\(command)")
+            XCTAssertFalse(plan.mayRetryViaDispatch, "\(command)")
+        }
+        XCTAssertEqual(MediaControlMode.resolve(v2Only), .remoteV2Only)
+        let note = MediaFailureReport.sentUnconfirmed(.pause, via: .remoteV2, at: Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(note.text, "Pause sent over Remote v2 · not confirmed")
+    }
+
+    func testNeitherTransportSendsNothingAndReportsUnavailable() {
+        for command in commands {
+            let plan = MediaCommandPlan.make(command, links: neither)
+            XCTAssertNil(plan.transport, "\(command)")
+            XCTAssertEqual(plan.verification, .unavailable)
+            XCTAssertFalse(plan.mayRetryViaDispatch)
+        }
+        XCTAssertEqual(MediaControlMode.resolve(neither), .unavailable)
+        XCTAssertEqual(MediaCommandPlan.verification(carrier: nil, sessionReadable: true), .unavailable)
+
+        var noKeyFeature = v2Only
+        noKeyFeature.v2Features = [.appLink]
+        XCTAssertNil(MediaCommandPlan.make(.play, links: noKeyFeature).transport, "v2 without the key feature cannot carry media")
+        XCTAssertEqual(MediaControlMode.resolve(noKeyFeature), .unavailable)
+
+        var disabled = v2Only
+        disabled.preferV2 = false
+        XCTAssertNil(MediaCommandPlan.make(.play, links: disabled).transport, "Remote v2 off + ADB down: nothing sent, as before")
+        XCTAssertEqual(MediaControlMode.resolve(disabled), .unavailable)
+    }
+
+    func testV2SendWithoutADBNeverGetsTheMediaSessionDispatchRetry() {
+        for command in [MediaCommand.play, .pause] {
+            XCTAssertNotNil(command.dispatchName, "play / pause are the only commands with a dispatch retry")
+            XCTAssertFalse(MediaCommandPlan.make(command, links: v2Only).mayRetryViaDispatch)
+        }
+        XCTAssertFalse(MediaRetryPolicy.mayRetryViaDispatch(originalTransport: .remoteV2))
+        // ADB dropping while a v2 key is in flight: reported unconfirmed, never "not accepted", never retried.
+        XCTAssertEqual(MediaCommandPlan.verification(carrier: .remoteV2, sessionReadable: false), .unconfirmed)
+    }
+
+    func testV2SendWithADBUpKeepsVerificationWithoutCrossTransportRetry() {
+        for command in commands {
+            let plan = MediaCommandPlan.make(command, links: both)
+            XCTAssertEqual(plan.transport, .remoteV2, "\(command)")
+            XCTAssertEqual(plan.verification, .readSession, "\(command): the ADB session still checks the result")
+            XCTAssertFalse(plan.mayRetryViaDispatch, "\(command): a v2 key is never re-sent on ADB")
+        }
+        XCTAssertEqual(MediaControlMode.resolve(both), .session)
+        XCTAssertEqual(MediaCommandPlan.verification(carrier: .remoteV2, sessionReadable: true), .readSession)
+    }
+
+    func testRemoteV2OffLeavesTheADBPathUnchanged() {
+        for v2Ready in [false, true] {
+            let links = RemoteTransportAvailability(v2Ready: v2Ready, v2Features: [.key], adbReady: true, preferV2: false)
+            for command in commands {
+                let plan = MediaCommandPlan.make(command, links: links)
+                XCTAssertEqual(plan.transport, .adb, "\(command)")
+                XCTAssertEqual(plan.verification, .readSession)
+                XCTAssertEqual(plan.mayRetryViaDispatch, command.dispatchName != nil, "\(command)")
+            }
+            XCTAssertEqual(MediaControlMode.resolve(links), .session)
+        }
+        XCTAssertEqual(MediaCommandPlan.make(.pause, links: adbOnly).transport, .adb)
+        XCTAssertTrue(MediaCommandPlan.make(.pause, links: adbOnly).mayRetryViaDispatch)
+        XCTAssertEqual(MediaCommandPlan.verification(carrier: .adb, sessionReadable: true), .readSession)
+    }
+
+    func testUIAvailabilityFollowsTransportReadinessUnderEveryLinkState() {
+        for links in everyLinkState() {
+            let mode = MediaControlMode.resolve(links)
+            let routable = RemoteTransportPolicy.route(.media, links) != nil
+            XCTAssertEqual(mode != .unavailable, routable, "\(links)")
+            for command in commands {
+                XCTAssertEqual(MediaCommandPlan.make(command, links: links).transport != nil, mode != .unavailable,
+                               "\(command) \(links)")
+            }
+            if mode == .remoteV2Only {
+                XCTAssertFalse(links.adbReady)
+                XCTAssertEqual(RemoteTransportPolicy.route(.media, links), .remoteV2)
+            }
+            if mode == .session { XCTAssertTrue(links.adbReady) }
+        }
+    }
+
+    func testForbiddenCodesNeverGetAMediaSendUnderAnyLinkState() {
+        for links in everyLinkState() {
+            for code in forbiddenCodes {
+                let plan = MediaCommandPlan.make(keycode: code, hasDispatchRetry: true, links: links)
+                XCTAssertNil(plan.transport, "\(code) \(links)")
+                XCTAssertFalse(plan.mayRetryViaDispatch, "\(code) \(links)")
+                XCTAssertNil(RemoteV2KeyMap.discreteOperation(forAndroidCode: code), "\(code)")
+            }
+        }
+        for command in commands {
+            XCTAssertFalse(forbiddenCodes.contains(command.keycode), "\(command)")
+            XCTAssertTrue(RemoteV2KeyMap.discreteMediaCodes.contains(Int32(command.keycode)), "\(command)")
+        }
+        XCTAssertEqual(MediaCommand.playPause.keycode, 85)
+        XCTAssertNil(MediaCommand.playPause.dispatchName, "the toggle has no dispatch retry")
+        XCTAssertNil(MediaCommand.playPause.satisfied(by: .idle), "the toggle has no checkable result")
+        XCTAssertEqual(MediaCommand.playPause.displayName, "Play/Pause")
+    }
+}
