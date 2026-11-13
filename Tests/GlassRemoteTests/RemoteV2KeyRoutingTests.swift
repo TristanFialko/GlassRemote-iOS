@@ -55,4 +55,48 @@ final class RemoteV2KeyRoutingTests: XCTestCase {
         XCTAssertFalse(router.ledger.hasHeldKeys)
         XCTAssertEqual(router.route("UP", operation: .dpad, links: v2Down, now: t0 + 0.1), .adb)
     }
+
+    // MARK: Discrete media keys (androidKey / sendMedia)
+
+    func testOnlyMediaTransportCodesMayUseRemoteV2() {
+        for code in [85, 86, 87, 88, 89, 90, 126, 127] {
+            XCTAssertEqual(RemoteV2KeyMap.discreteOperation(forAndroidCode: code), .media, "code \(code)")
+        }
+        // Volume, mute, microphone mute, SLEEP/WAKEUP (standby and wake), POWER, keyboard-sheet keys.
+        for code in [24, 25, 164, 91, 223, 224, 26, 66, 67, 61, 0, -1, Int.max] {
+            XCTAssertNil(RemoteV2KeyMap.discreteOperation(forAndroidCode: code), "code \(code) must stay on ADB")
+        }
+    }
+
+    func testDiscreteMediaRoutesToExactlyOneTransport() {
+        XCTAssertEqual(RemoteTransportPolicy.route(.media, v2Up), .remoteV2)
+        XCTAssertEqual(RemoteTransportPolicy.route(.media, v2Down), .adb)
+        XCTAssertNil(RemoteTransportPolicy.route(.media, nothing))
+
+        var noKeyFeature = v2Up
+        noKeyFeature.v2Features = [.appLink]
+        XCTAssertEqual(RemoteTransportPolicy.route(.media, noKeyFeature), .adb,
+                       "Media needs the negotiated key feature; otherwise it stays on ADB")
+
+        var disabled = v2Up
+        disabled.preferV2 = false
+        XCTAssertEqual(RemoteTransportPolicy.route(.media, disabled), .adb)
+    }
+
+    func testVolumeNeverRoutesOverRemoteV2() {
+        XCTAssertEqual(RemoteOperation.soundbarVolume.allowedTransports, [.adb])
+        XCTAssertEqual(RemoteTransportPolicy.route(.soundbarVolume, v2Up), .adb)
+        for name in ["VOLUME_UP", "VOLUME_DOWN", "MUTE", "VOL_UP", "VOL_DOWN"] {
+            XCTAssertNil(RemoteV2KeyMap.code(for: name))
+            XCTAssertNil(RemoteV2KeyMap.operation(for: name))
+        }
+        XCTAssertTrue(RemoteV2KeyMap.codes.values.allSatisfy { !RemoteV2KeyMap.forbidden.contains($0) })
+    }
+
+    func testMediaSessionDispatchRetryOnlyAfterAnADBSend() {
+        XCTAssertTrue(MediaRetryPolicy.mayRetryViaDispatch(originalTransport: .adb))
+        XCTAssertFalse(MediaRetryPolicy.mayRetryViaDispatch(originalTransport: .remoteV2),
+                       "A key handed to Remote v2 is never re-sent on ADB")
+        XCTAssertFalse(MediaRetryPolicy.mayRetryViaDispatch(originalTransport: nil))
+    }
 }

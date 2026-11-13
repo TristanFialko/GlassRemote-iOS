@@ -32,4 +32,18 @@ extension RemoteModel {
             return false
         }
     }
+
+    /// Discrete media keys (Player, now-playing card, Remote media row) through the same policy.
+    /// True: sent once over Remote v2. False: continue on the existing ADB `input keyevent` path.
+    /// Codes outside RemoteV2KeyMap.discreteMediaCodes (volume, mute, SLEEP/WAKEUP, text keys) always
+    /// return false, as does everything while Remote v2 is disabled.
+    func sendAndroidKeyViaRemoteV2IfRouted(_ code: Int) -> Bool {
+        let v2 = RemoteV2Controller.shared
+        guard v2.enabled, let operation = RemoteV2KeyMap.discreteOperation(forAndroidCode: code),
+              let code32 = Int32(exactly: code) else { return false }
+        guard v2.routeDiscrete(operation, adbReady: connected) == .remoteV2 else { return false }
+        v2.send(.key(code: code32, direction: .short))
+        GRLog.note("remotev2", "keyevent \(code) sent over Remote v2")
+        return true
+    }
 }

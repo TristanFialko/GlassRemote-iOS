@@ -139,6 +139,18 @@ enum RemoteV2KeyMap {
         return code
     }
 
+    /// Android key codes that a discrete (tapped, never held) command may send over Remote v2:
+    /// the media transport keys only. Everything else `androidKey(_:)` sends (text-editing keys from the
+    /// keyboard sheet, SLEEP 223 / WAKEUP 224 for standby and wake, volume) stays on ADB.
+    static let discreteMediaCodes: Set<Int32> = [85, 86, 87, 88, 89, 90, 126, 127]
+
+    /// The operation for a discrete Android key code, or nil when that code must stay on ADB.
+    static func discreteOperation(forAndroidCode code: Int) -> RemoteOperation? {
+        guard let code32 = Int32(exactly: code), !forbidden.contains(code32),
+              discreteMediaCodes.contains(code32) else { return nil }
+        return .media
+    }
+
     static func operation(for key: String) -> RemoteOperation? {
         switch key {
         case "UP", "DOWN", "LEFT", "RIGHT": return .dpad
@@ -192,5 +204,14 @@ enum RemoteV2Backoff {
         guard failures > 0 else { return 0 }
         let exponent = Double(min(failures - 1, 10))
         return min(cap, pow(2, exponent))
+    }
+}
+
+/// Whether an unconfirmed play/pause may be retried with `cmd media_session dispatch` (pure, unit
+/// tested). The retry is an ADB shell command, so it is allowed only when the original key also went
+/// over ADB: a command already handed to Remote v2 is never re-sent on the other link.
+enum MediaRetryPolicy {
+    static func mayRetryViaDispatch(originalTransport: RemoteTransportKind?) -> Bool {
+        originalTransport == .adb
     }
 }

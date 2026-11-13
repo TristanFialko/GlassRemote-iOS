@@ -102,6 +102,11 @@ final class RemoteV2Controller: ObservableObject {
         router.route(key, operation: operation, links: availability(adbReady: adbReady), now: Date())
     }
 
+    /// One discrete command (a tap, never a hold): the policy picks exactly one transport.
+    func routeDiscrete(_ operation: RemoteOperation, adbReady: Bool) -> RemoteTransportKind? {
+        RemoteTransportPolicy.route(operation, availability(adbReady: adbReady))
+    }
+
     func send(_ outbound: RemoteV2Outbound) {
         control?.send(outbound)
     }

@@ -64,7 +64,7 @@ extension RemoteModel {
         mediaCommandPending = true
         defer { mediaCommandPending = false }
 
-        androidKey(command.keycode)
+        let carrier = androidKey(command.keycode)
         try? await Task.sleep(nanoseconds: 600_000_000)
         await pollMedia()
         guard let wanted = command.satisfied(by: media) else {
@@ -74,8 +74,11 @@ extension RemoteModel {
         }
         if wanted { GRLog.note("media", "\(command.rawValue) confirmed (state \(media.state))"); return }
 
-        // Not confirmed: one retry through the media-session dispatcher.
-        if let name = command.dispatchName, let connection = adb {
+        // Not confirmed: one retry through the media-session dispatcher, only when the key itself went
+        // over ADB. A key handed to Remote v2 is never re-sent on ADB (one transport per command).
+        if !MediaRetryPolicy.mayRetryViaDispatch(originalTransport: carrier) {
+            GRLog.note("media", "\(command.rawValue) sent over \(carrier?.rawValue ?? "no transport"); not retried on ADB")
+        } else if let name = command.dispatchName, let connection = adb {
             GRLog.note("media", "\(command.rawValue) not confirmed; retrying via media_session dispatch")
             _ = try? await runShell(connection, ["sh", "-c", "cmd media_session dispatch \(name)"])
             try? await Task.sleep(nanoseconds: 700_000_000)

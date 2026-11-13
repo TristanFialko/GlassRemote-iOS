@@ -21,15 +21,22 @@ Reference: tronikos/androidtvremote2 v0.3.3 (commit f95bfb4046668dcd770e569479f6
 
 ## Routing
 - Remote v2 is opt-in (off by default). When enabled and connected, D-pad, OK, Back and Home use v2; otherwise they use ADB.
+- Media transport keys (PLAY_PAUSE 85, STOP 86, NEXT 87, PREVIOUS 88, REWIND 89, FAST_FORWARD 90, PLAY 126, PAUSE 127) sent through `androidKey(_:)` (Player, now-playing card, Remote media buttons) use v2 when it is enabled, connected and has negotiated the key feature; otherwise ADB `input keyevent`. Each tap goes over exactly one transport (`RemoteTransportPolicy`, `RemoteV2KeyMap.discreteMediaCodes`).
+- Play/pause verification still reads the media session over ADB. The `cmd media_session dispatch` retry runs only when the key itself went over ADB (`MediaRetryPolicy`); a key handed to v2 is never re-sent on ADB, so an unconfirmed v2 play/pause is reported as not accepted.
+- Media commands still require the ADB connection (unchanged guard in `sendMedia`), because their result is checked against the ADB media session.
 - Always ADB: text/IME, mouse/UHID, trackpad scroll, app discovery, diagnostics, helpers, soundbar volume.
 - Volume and mute never use Remote v2: codes 24, 25, 164 and 91 are blocked in the key map and again in the control connection.
 - A held key is pinned to the transport that started it; if that transport goes down, the rest of the hold is dropped.
-- Not yet routed over v2: media keys, power and app launch (they still use their existing paths).
+- Power stays on its existing paths by design: standby/wake send SLEEP 223 / WAKEUP 224 over ADB (idempotent), and "turn everything off" adds the Samsung TV_POWER key. Remote v2's POWER 26 is a toggle, which would change the meaning of standby/wake, so it is not used. SLEEP/WAKEUP over v2 is not enabled until verified on hardware.
+- App launch stays on ADB by design: the app launches by package/activity over ADB with its existing feedback, while v2 offers only an app-link URI (`RemoteV2Outbound.appLink`) with no launch result. App discovery is ADB-only.
 
 ## Hardware acceptance (not yet done, requires a real Android TV / Google TV)
 - [ ] Pair: the code appears on the TV; a mistyped code is refused without ending pairing; the correct code pairs.
 - [ ] Relaunch the app: it reconnects without pairing again (Keychain identity persists).
 - [ ] D-pad, OK, Back and Home act once per tap; holds repeat and stop on release.
+- [ ] With v2 connected: Play, Pause, Next, Previous, Rewind and Fast-forward act once per tap (log shows "sent over Remote v2"); Play/Pause are confirmed by the session, or reported as not accepted with no ADB retry.
+- [ ] With v2 off or disconnected: the same media buttons behave exactly as before (ADB keyevent, dispatch retry for play/pause).
+- [ ] Standby, wake and "turn everything off" behave exactly as before with v2 on and off.
 - [ ] Turn Wi-Fi off and on mid-hold: no stray or duplicate keys; v2 reconnects with backoff.
 - [ ] Remove the pairing on the TV: the app shows "not paired", and pairing again works.
 - [ ] Volume and mute still follow "Volume goes to" (soundbar via ADB 24/25/164, or the Samsung route).

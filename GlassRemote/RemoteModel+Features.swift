@@ -91,11 +91,17 @@ extension RemoteModel {
         }
     }
 
-    /// Sends an Android keycode over the persistent ADB command shell.
-    func androidKey(_ code: Int) {
+    /// Sends an Android keycode on exactly one transport. Media transport keys go over Remote v2 when
+    /// it is enabled, connected and has negotiated key input; everything else, and every key while
+    /// Remote v2 is off, uses the persistent ADB command shell exactly as before.
+    /// Returns the transport that carried the key, or nil when it was not sent.
+    @discardableResult
+    func androidKey(_ code: Int) -> RemoteTransportKind? {
         GRLog.note("media", "user-initiated keyevent \(code)")
-        guard connected else { status = "Button failed · not connected"; return }
+        if sendAndroidKeyViaRemoteV2IfRouted(code) { return .remoteV2 }
+        guard connected else { status = "Button failed · not connected"; return nil }
         sendPersistentCommand("input keyevent \(code)")   // the pressed button already gave haptic feedback
+        return .adb
     }
 
     // MARK: - Volume routing
