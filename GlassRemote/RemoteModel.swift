@@ -271,6 +271,7 @@ final class RemoteModel: ObservableObject {
         // Connect to the Samsung TV on launch and keep it connected, independent of ADB.
         startTVSupervisor()
         configureVolumeLink()
+        RemoteV2Controller.shared.setHost(host)
 
         NotificationCenter.default.addObserver(
             forName: UIApplication.willResignActiveNotification,
@@ -319,6 +320,7 @@ final class RemoteModel: ObservableObject {
 
     func connect() {
         wantsConnection = true
+        RemoteV2Controller.shared.setHost(host)
         requiresUserReconnect = false
         sessionID += 1
         let session = sessionID
@@ -558,6 +560,8 @@ final class RemoteModel: ObservableObject {
             if !tv.send(key) { status = "TV key needs the Samsung link · enable it in Settings" }
             return
         }
+        // Remote v2 (opt-in): D-pad, OK, Back and Home go on exactly one transport (RemoteModel+RemoteV2.swift).
+        if sendViaRemoteV2IfRouted(key) { return }
         let adbCodes: [String: String] = [
             "UP": "19", "DOWN": "20", "LEFT": "21", "RIGHT": "22",
             "OK": "23", "BACK": "4", "HOME": "3"

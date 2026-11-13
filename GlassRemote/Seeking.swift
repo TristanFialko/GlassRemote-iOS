@@ -105,6 +105,7 @@ extension MediaCommand {
         switch self {
         case .play: return "Play"
         case .pause: return "Pause"
+        case .playPause: return "Play/Pause"
         case .next: return "Next"
         case .previous: return "Previous"
         case .rewind: return "Rewind"

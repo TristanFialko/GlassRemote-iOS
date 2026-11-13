@@ -1096,6 +1096,84 @@ Stream picker shows “Open in Nuvio” first, then add-on streams. Handoff to N
 - **Result:** ☐ Pass ☐ Fail ☐ Blocked  **Notes:** ________________________________
 
 
+## 12. Android TV Remote v2 (optional transport)
+
+Status: **not tested on hardware.** Protocol and routing details: `audit/REMOTE_V2_PROTOCOL_NOTES.md`. Trust model: `audit/REMOTE_V2_SECURITY_REVIEW.md`. Full 12-step procedure (all NOT TESTED): `audit/REMOTE_V2_HARDWARE_TEST_PROCEDURE.md`.
+
+### HW-RV2-01 — Pairing
+
+- **Audit IDs:** Remote v2 (PR #10)
+- **Devices:** iPhone, Box
+- **Preconditions:** Remote v2 enabled in Connection settings; box address set.
+- **Steps:**
+  1. Tap Pair; read the code on the TV.
+  2. Type a wrong code, then the correct code.
+- **Expected:** The wrong code is refused locally without ending pairing; the correct code pairs and the status reads "Remote v2 connected" (not "TV identity changed": the TV key pinned at pairing must match the control port, HW-P03).
+- **Result:** ☐ Pass ☐ Fail ☐ Blocked  **Notes:** ________________________________
+
+### HW-RV2-02 — Reconnect after relaunch
+
+- **Audit IDs:** Remote v2 (PR #10)
+- **Devices:** iPhone, Box
+- **Preconditions:** Paired (HW-RV2-01).
+- **Steps:**
+  1. Force-quit and relaunch the app.
+- **Expected:** Remote v2 reconnects without pairing again.
+- **Result:** ☐ Pass ☐ Fail ☐ Blocked  **Notes:** ________________________________
+
+### HW-RV2-03 — Navigation over v2
+
+- **Audit IDs:** Remote v2 (PR #10)
+- **Devices:** iPhone, Box
+- **Preconditions:** Remote v2 connected.
+- **Steps:**
+  1. Tap and hold each D-pad key, OK, Back and Home.
+- **Expected:** One action per tap; holds repeat and stop on lift; OK never repeats Enter.
+- **Result:** ☐ Pass ☐ Fail ☐ Blocked  **Notes:** ________________________________
+
+### HW-RV2-04 — Media keys over v2
+
+- **Audit IDs:** Remote v2 (PR #10)
+- **Devices:** iPhone, Box
+- **Preconditions:** Remote v2 connected; media playing.
+- **Steps:**
+  1. Use Play, Pause, Next, Previous, Rewind and Fast-forward from Now Playing and the compact now-playing bar (the Remote page has no media buttons).
+  2. Disable ADB (USB/network debugging) with v2 still connected, open Now Playing, and use Rewind, Play/Pause and Fast-forward.
+- **Expected:** Step 1: each tap acts once; the app log shows "sent over Remote v2"; an unconfirmed Play/Pause is reported as not accepted, with no ADB retry. Step 2: each tap acts once on the TV; the app shows "sent over Remote v2 · not confirmed"; the log shows no ADB attempt and no dispatch retry; with v2 also down the buttons are disabled and nothing is sent.
+- **Result:** ☐ Pass ☐ Fail ☐ Blocked  **Notes:** ________________________________
+
+### HW-RV2-05 — Link lost mid-hold
+
+- **Audit IDs:** Remote v2 (PR #10)
+- **Devices:** iPhone, Box
+- **Preconditions:** Remote v2 connected.
+- **Steps:**
+  1. Hold a D-pad key, then turn the iPhone's Wi-Fi off and on.
+- **Expected:** The hold stops; no stray or duplicate keys on ADB; v2 reconnects with backoff (1, 2, 4, 8, 16, 30 s).
+- **Result:** ☐ Pass ☐ Fail ☐ Blocked  **Notes:** ________________________________
+
+### HW-RV2-06 — ADB-only paths unchanged
+
+- **Audit IDs:** Remote v2 (PR #10)
+- **Devices:** iPhone, Box
+- **Preconditions:** Remote v2 connected, then disabled.
+- **Steps:**
+  1. Use volume and mute, typing, trackpad and scroll, the app list and app launch, diagnostics, standby and wake.
+- **Expected:** Identical with v2 on and off; volume still follows "Volume goes to" (soundbar via ADB 24/25/164 or the Samsung route).
+- **Result:** ☐ Pass ☐ Fail ☐ Blocked  **Notes:** ________________________________
+
+### HW-RV2-07 — Pairing removed on the TV
+
+- **Audit IDs:** Remote v2 (PR #10)
+- **Devices:** iPhone, Box
+- **Preconditions:** Paired.
+- **Steps:**
+  1. Remove GlassRemote from the TV's remote settings; reopen the app.
+  2. Pair again.
+- **Expected:** The app shows "Remote v2 not paired" and pairing again works; every command falls back to ADB meanwhile.
+- **Result:** ☐ Pass ☐ Fail ☐ Blocked  **Notes:** ________________________________
+
+
 ## Summary results
 
 | § | Section | Checks | Pass | Fail | Blocked | Notes / issue refs |
@@ -1111,7 +1189,8 @@ Stream picker shows “Open in Nuvio” first, then add-on streams. Handoff to N
 | 9 | Accessibility | 5 | | | | |
 | 10 | Privacy/security | 7 | | | | |
 | 11 | Rotation/layout | 4 | | | | |
-| | **Total** | **90** | | | | |
+| 12 | Remote v2 | 7 | | | | |
+| | **Total** | **97** | | | | |
 
 **Release decision:** ☐ All non-deferred checks pass ☐ Failures filed (list): ____________
 

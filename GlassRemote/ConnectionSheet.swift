@@ -71,6 +71,7 @@ struct ConnectionSheet: View {
                     }
                 }
 
+                RemoteV2SettingsSection()
                 Section("Volume") {
                     Picker("Volume goes to", selection: $remote.volumeOutput) {
                         ForEach(VolumeOutput.allCases) { output in

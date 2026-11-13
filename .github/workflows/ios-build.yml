@@ -4,7 +4,8 @@ on:
   push:
     # Phase branches build on every push too, so each phase is verified as it lands.
     # The Phase 6 rebuild branch is lower-case, so it is listed explicitly (filters are case-sensitive).
-    branches: [ main, v0.4-dev, 'Phase-*', 'phase-6-ui-nuvio-rebuild' ]
+    # The Android TV Remote v2 feature branch builds too, so each milestone is verified on its exact HEAD.
+    branches: [ main, v0.4-dev, 'Phase-*', 'phase-6-ui-nuvio-rebuild', 'feature/android-tv-remote-v2' ]
 
 # A newer push to the same branch supersedes the running build, so CI time goes to the latest commit.
 concurrency:
@@ -803,7 +804,7 @@ jobs:
           exit 0
 
       - name: Report results on the tracking pull request
-        if: ${{ github.ref_name == 'phase-6-ui-nuvio-rebuild' || startsWith(github.ref_name, 'Phase-9') }}
+        if: ${{ github.ref_name == 'phase-6-ui-nuvio-rebuild' || startsWith(github.ref_name, 'Phase-9') || github.ref_name == 'feature/android-tv-remote-v2' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
